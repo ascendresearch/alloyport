@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package alloyport.artifact.v1;
+
+service ArtifactService {
+  rpc BeginUpload(BeginUploadRequest) returns (UploadSession);
+  rpc GetUpload(GetUploadRequest) returns (UploadSession);
+  rpc Upload(stream UploadChunk) returns (UploadSession);
+  rpc FinalizeUpload(FinalizeUploadRequest) returns (ArtifactIdentity);
+  rpc Download(DownloadRequest) returns (stream DownloadChunk);
+}
+
+message BeginUploadRequest {
+  string upload_key = 1;
+  string expected_digest = 2;
+  uint64 expected_size_bytes = 3;
+  string media_type = 4;
+  uint64 ttl_ms = 5;
+}
+
+message GetUploadRequest {
+  string upload_id = 1;
+}
+
+message UploadChunk {
+  string upload_id = 1;
+  uint64 offset = 2;
+  bytes data = 3;
+}
+
+message FinalizeUploadRequest {
+  string upload_id = 1;
+}
+
+message DownloadRequest {
+  string digest = 1;
+  uint64 offset = 2;
+  // Zero streams through EOF.
+  uint64 max_bytes = 3;
+}
+
+message DownloadChunk {
+  uint64 offset = 1;
+  bytes data = 2;
+}
+
+message ArtifactIdentity {
+  string digest = 1;
+  uint64 size_bytes = 2;
+}
+
+enum UploadState {
+  UPLOAD_STATE_UNSPECIFIED = 0;
+  UPLOAD_STATE_OPEN = 1;
+  UPLOAD_STATE_FINALIZING = 2;
+  UPLOAD_STATE_COMPLETED = 3;
+  UPLOAD_STATE_FAILED = 4;
+}
+
+message UploadSession {
+  string upload_id = 1;
+  string upload_key = 2;
+  string expected_digest = 3;
+  uint64 expected_size_bytes = 4;
+  string media_type = 5;
+  uint64 committed_offset = 6;
+  UploadState state = 7;
+  uint64 expires_at_ms = 8;
+  optional ArtifactIdentity artifact = 9;
+}

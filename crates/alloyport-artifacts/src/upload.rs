@@ -278,6 +278,23 @@ impl SqliteUploadStore {
         Ok(session)
     }
 
+    pub fn owns_completed_artifact(
+        &self,
+        owner_id: &str,
+        digest: Sha256Digest,
+    ) -> Result<bool, UploadError> {
+        let database = self.connection()?;
+        let found = database.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM upload_sessions
+                WHERE owner_id = ?1 AND artifact_digest = ?2 AND state = ?3
+            )",
+            params![owner_id, digest.to_string(), UploadState::Completed as i64],
+            |row| row.get(0),
+        )?;
+        Ok(found)
+    }
+
     pub fn append(
         &self,
         owner_id: &str,
@@ -720,6 +737,8 @@ mod tests {
             uploads.status("worker-1", &upload_id)?.state,
             UploadState::Completed
         );
+        assert!(uploads.owns_completed_artifact("worker-1", artifact.digest)?);
+        assert!(!uploads.owns_completed_artifact("other-worker", artifact.digest)?);
         assert_eq!(uploads.finalize("worker-1", &upload_id, &cas, 5)?, artifact);
         let mut reader = cas.open(artifact.digest)?;
         let mut bytes = Vec::new();

@@ -1,4 +1,4 @@
-//! Versioned worker wire protocol and validation at the RPC boundary.
+//! Versioned worker-control and artifact protocols plus RPC-boundary validation.
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -9,10 +9,23 @@ use std::path::{Component, Path};
     clippy::doc_markdown,
     clippy::large_enum_variant,
     clippy::missing_errors_doc,
-    clippy::must_use_candidate
+    clippy::must_use_candidate,
+    clippy::too_many_lines
 )]
 pub mod v1 {
     tonic::include_proto!("alloyport.worker.v1");
+}
+
+#[allow(
+    clippy::default_trait_access,
+    clippy::doc_markdown,
+    clippy::large_enum_variant,
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    clippy::too_many_lines
+)]
+pub mod artifact_v1 {
+    tonic::include_proto!("alloyport.artifact.v1");
 }
 
 pub const PROTOCOL_MAJOR: u32 = 1;

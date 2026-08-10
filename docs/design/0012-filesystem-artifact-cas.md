@@ -51,9 +51,9 @@ canonical artifact inputs.
 ## Deliberate limits
 
 The original CAS decision did not define the network Artifact service or resumable upload sessions;
-the local session follow-up is recorded below. Authorization, global quota accounting, reference
-metadata, garbage collection, remote object-store adapters, and replication remain out of scope.
-The next slice adds a separate streaming RPC; bulk bytes stay off the worker control stream.
+the implemented follow-ups are recorded below. Global and per-owner quota accounting, general
+reference metadata, garbage collection, certificate enrollment/rotation mapping, remote object-store
+adapters, and replication remain out of scope. Bulk bytes stay off the worker control stream.
 
 The filesystem implementation assumes hard-link support within one storage root. A future object
 store adapter must provide an equivalent create-if-absent publication primitive and integrity check,
@@ -68,12 +68,32 @@ offset, the next append truncates that tail before continuing. Finalization is s
 idempotent; transient storage I/O remains retryable, while digest, size, or existing-object integrity
 failures become terminal.
 
-The owner string is not yet authentication. The Artifact service must supply it from an injectable
-resolver bound to the authenticated connection rather than accepting it as an authoritative request
-field.
+The owner string is not itself authentication. The Artifact RPC adapter supplies it through an
+injectable access policy rather than accepting it as an authoritative request field. The binary
+policy uses the SHA-256 fingerprint of tonic's verified mTLS client leaf certificate. This prevents
+metadata impersonation but does not yet preserve a stable owner across certificate rotation.
+
+## Artifact RPC follow-up
+
+`alloyport.artifact.v1.ArtifactService` is a separate service from worker control. Begin, status, and
+finalize are unary operations; upload accepts a client stream of exact-offset chunks; download is a
+bounded-buffer server stream with offset and optional length. Reconnection opens a new upload stream
+and resumes at the session's durable committed offset. A single stream cannot mix session IDs.
+
+The server adapter moves SQLite and filesystem operations onto blocking tasks and delegates owner
+resolution and digest-read authorization to `ArtifactAccessPolicy`. The policy receives both RPC
+metadata and tonic transport extensions, allowing a production implementation to inspect verified
+TLS peer certificates. The adapter never accepts a client host path and never buffers a whole
+artifact. The server binary registers the service; plaintext calls remain unauthenticated because
+the production policy requires TLS connection information. A completed upload record is the first
+durable owner-to-digest read reference.
 
 ## Verification
 
 Tests cover canonical digest parsing, bounded streaming read/write, declared digest mismatch,
 per-artifact size exhaustion, interrupted readers, staging cleanup, restart recovery, duplicate and
-concurrent publication, read-only objects, verified readback, and corrupted-object refusal.
+concurrent publication, read-only objects, verified readback, corrupted-object refusal, session
+reopen/resume/finalize, and failure-state semantics. A loopback gRPC integration test resumes one
+upload across two client streams, finalizes it, and downloads a bounded range from a nonzero offset.
+An end-to-end mutual-TLS test proves that two client certificates signed by the same CA remain
+separate owners and that forged owner metadata cannot cross session or artifact boundaries.

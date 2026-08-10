@@ -1,5 +1,6 @@
 //! Server-side worker sessions backed by a crash-durable control repository.
 
+pub mod artifact;
 pub mod storage;
 
 use alloyport_proto::v1::worker_control_server::WorkerControl;

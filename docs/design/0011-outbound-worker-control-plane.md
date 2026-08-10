@@ -120,8 +120,10 @@ The contract, durable repository, and assignment-level reconciliation slices wer
 
 This is not the complete control plane. Replacement-worker selection and automatic invocation of
 reassignment are not implemented, ephemeral heartbeat/output-preview traffic is intentionally not
-durable, execution and running-process signal delivery are not wired to a container, and the
-artifact service is not implemented. Those omissions keep the implementation at Stage 1 rather than
+durable, and execution and running-process signal delivery are not wired to a container. A separate
+Artifact gRPC service now provides resumable upload, immutable download, and mTLS certificate-
+fingerprint isolation, but still lacks quotas, general reference metadata, garbage collection, and
+certificate rotation mapping. Those omissions keep the implementation at Stage 1 rather than
 claiming production readiness.
 
 ## Product topology

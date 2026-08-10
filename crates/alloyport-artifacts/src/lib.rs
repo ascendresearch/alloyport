@@ -33,6 +33,17 @@ impl Sha256Digest {
         self.0
     }
 
+    /// Computes the canonical SHA-256 identity of one byte slice.
+    #[must_use]
+    pub fn digest_bytes(bytes: &[u8]) -> Self {
+        let mut context = Context::new(&SHA256);
+        context.update(bytes);
+        let digest = context.finish();
+        let mut value = [0_u8; SHA256_BYTES];
+        value.copy_from_slice(digest.as_ref());
+        Self(value)
+    }
+
     fn hexadecimal(self) -> String {
         let mut value = String::with_capacity(SHA256_BYTES * 2);
         for byte in self.0 {

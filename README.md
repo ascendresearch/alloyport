@@ -46,9 +46,10 @@ automation, and replay; an agent's narrative remains distinct from verified migr
 - `alloyport-core`: dependency-light domain model and lifecycle invariants.
 - `alloyport-events`: versioned producer/canonical events, lifecycle reduction, JSONL, and plain
   rendering shared with the Python executor bridge.
-- `alloyport-proto`: versioned Protobuf/gRPC worker protocol and strict edge validation.
+- `alloyport-proto`: versioned worker-control and Artifact Protobuf/gRPC protocols plus strict edge
+  validation.
 - `alloyport-server`: worker connection registry, SQLite control repository, attempt leases, and gRPC
-  control service.
+  control service, plus the mTLS-authorized Artifact service and filesystem CAS.
 - `alloyport-worker`: outbound worker client, local assignment admission, reconnect, and heartbeat
   runtime.
 - `alloyport-cli`: command-line entry point; orchestration will grow here only until service
@@ -88,10 +89,13 @@ Remote server mode requires `ALLOYPORT_TLS_CERT`, `ALLOYPORT_TLS_KEY`, and
 `ALLOYPORT_TLS_SERVER_CA` and `ALLOYPORT_TLS_SERVER_NAME`; remote plaintext endpoints are rejected.
 The server database is selected with `ALLOYPORT_DATABASE` and defaults to
 `alloyport-control.sqlite3`; the worker journal uses `ALLOYPORT_WORKER_DATABASE` and defaults to
-`alloyport-worker.sqlite3`. The current slice proves registration, heartbeat, durable assignment
-admission, server/worker restart reconciliation, finished-result replay, cancellation ordering, and
-server-side lease expiry. It does not yet expose an external scheduling API or execute assignments on
-devices.
+`alloyport-worker.sqlite3`. Artifact state is rooted at `ALLOYPORT_ARTIFACT_ROOT` (default
+`alloyport-artifacts`); `ALLOYPORT_ARTIFACT_MAX_BYTES` and
+`ALLOYPORT_ARTIFACT_MAX_CHUNK_BYTES` set positive byte limits. Artifact RPCs require mTLS even when
+worker control uses permitted loopback plaintext. The current slice proves registration, heartbeat,
+durable assignment admission, server/worker restart reconciliation, finished-result replay,
+cancellation ordering, server-side lease expiry, and certificate-isolated artifact transfer. It does
+not yet expose an external scheduling API or execute assignments on devices.
 
 No license has been selected yet. Do not publish packages or redistribute the code until that
 decision is recorded.

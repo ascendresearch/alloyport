@@ -7,9 +7,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     tonic_prost_build::configure().compile_with_config(
         prost,
-        &["proto/alloyport/worker/v1/worker_control.proto"],
+        &[
+            "proto/alloyport/worker/v1/worker_control.proto",
+            "proto/alloyport/artifact/v1/artifact_service.proto",
+        ],
         &["proto"],
     )?;
     println!("cargo:rerun-if-changed=proto/alloyport/worker/v1/worker_control.proto");
+    println!("cargo:rerun-if-changed=proto/alloyport/artifact/v1/artifact_service.proto");
     Ok(())
 }
