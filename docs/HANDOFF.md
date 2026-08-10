@@ -152,6 +152,8 @@ Current behavior:
   reconnects;
 - persists cancellation requests, replays them after reconnect, records the worker acknowledgement
   separately from terminal completion, and prevents cancellation from reviving expired work;
+- records assignment/cancel frame references in a durable per-connection server outbox before send
+  and compacts only sequences cumulatively acknowledged after domain processing;
 - marks a worker disconnected only if the closing stream still owns its connection ID, so an old
   superseded stream cannot disconnect a newer session.
 
@@ -243,7 +245,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 29 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
+There are 30 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -259,6 +261,7 @@ repository tests for:
 - monotonic cumulative acknowledgement validation in both directions;
 - cancellation request/acknowledgement/terminal ordering, cancellation-before-admission races,
   duplicate cancellation, and lease-expiry/cancellation races;
+- server outbox persistence and cumulative compaction boundaries;
 - worker-local idempotency and changed-content conflict;
 - default shell-executor denial and explicit local opt-in;
 - protocol validation for sandbox paths and artifact digests.
@@ -283,8 +286,9 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 
 - No reassignment engine or proactive startup reconciliation before a worker reconnects.
 - No disk-backed worker journal or artifact/output spool.
-- Cumulative acknowledgement bounds are validated, but durable transport-frame replay from a cursor
-  and acknowledgement compaction are not implemented.
+- Cumulative acknowledgement bounds are validated and the server direction has a durable frame
+  reference outbox with ACK compaction. The worker direction, direct replay from durable cursors,
+  orphaned-connection outbox retention, and full compaction policy are not implemented.
 - No content-addressed Artifact service or object-store adapter.
 - No container/process executor, output streaming, resource enforcement, running-process signal
   delivery, or device reset. Cancellation currently terminates admitted no-executor attempts only.
@@ -303,10 +307,10 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 ### 1. Complete transport replay and reassignment
 
 Server and worker SQLite state, assignment-level restart reconciliation, cumulative acknowledgement
-validation, finished-result replay, and cancellation races are implemented. Next, persist outbound
-control frames until cumulatively acknowledged, replay them from a connection/session cursor without
-confusing sequence with attempt identity, compact acknowledged frames, and add an explicit
-lease-expiry reassignment engine that always creates a new attempt ID.
+validation, finished-result replay, cancellation races, and the first server-outbox/ACK-compaction
+slice are implemented. Next, add the worker-direction outbox, replay both directions from a
+connection/session cursor without confusing sequence with attempt identity, define orphan retention,
+and add an explicit lease-expiry reassignment engine that always creates a new attempt ID.
 
 ### 2. Content-addressed Artifact service
 
@@ -350,10 +354,11 @@ evidence.
 
 Complete step 1 with the transport-outbox and reassignment slice:
 
-> Read `docs/HANDOFF.md` and Design 0011. Add durable per-direction transport outboxes and explicit
+> Read `docs/HANDOFF.md` and Design 0011. Complete the worker-direction transport outbox and explicit
 > replay cursors without using sequence numbers as attempt identity. Persist frames required for
-> lifecycle closure before send, validate acknowledgements against the durable outbox, compact only
-> acknowledged frames, and prove reconnect replay cannot duplicate admission or terminal results.
+> lifecycle closure before send, validate acknowledgements against both durable outboxes, compact only
+> acknowledged frames, define orphaned-session retention, and prove reconnect replay cannot duplicate
+> admission or terminal results.
 > Then implement lease-expiry reassignment as a new attempt over the same immutable assignment
 > contract and classify the old attempt's late result as stale. Preserve strict Clippy and do not add
 > real command execution yet.

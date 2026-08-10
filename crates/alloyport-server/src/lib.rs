@@ -21,8 +21,8 @@ use storage::{
     ArtifactIdentity, AssignmentContract, AttemptObservation, CancellationStoreOutcome, Clock,
     ConnectionRegistration, ControlRepository, EnvironmentEntry, ExecutionContract,
     FinishedObservation, ObservationDisposition, ObservedAttempt, RepositoryError,
-    ResourceContract, SqliteControlRepository, StoreAssignmentOutcome, SystemClock,
-    WorkerCapabilities, WorkerRegistration,
+    ResourceContract, ServerFrameKind, ServerOutboxFrame, SqliteControlRepository,
+    StoreAssignmentOutcome, SystemClock, WorkerCapabilities, WorkerRegistration,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
@@ -350,6 +350,16 @@ impl WorkerControlService {
             now_ms,
             ATTEMPT_LEASE_MS,
         )?;
+        self.repository.record_server_frame(
+            &ServerOutboxFrame {
+                connection_id: worker.connection_id.clone(),
+                sequence,
+                worker_id: worker_id.to_owned(),
+                kind: ServerFrameKind::Assignment,
+                attempt_id: Some(attempt_id.to_owned()),
+            },
+            now_ms,
+        )?;
         worker.next_server_sequence += 1;
         self.repository.update_connection_sequences(
             &worker.connection_id,
@@ -394,8 +404,18 @@ impl WorkerControlService {
             return Ok(None);
         }
         let sequence = worker.next_server_sequence;
-        worker.next_server_sequence += 1;
         let now_ms = self.clock.now_unix_ms();
+        self.repository.record_server_frame(
+            &ServerOutboxFrame {
+                connection_id: worker.connection_id.clone(),
+                sequence,
+                worker_id: worker_id.to_owned(),
+                kind: ServerFrameKind::Cancel,
+                attempt_id: Some(attempt_id.to_owned()),
+            },
+            now_ms,
+        )?;
+        worker.next_server_sequence += 1;
         self.repository.update_connection_sequences(
             &worker.connection_id,
             worker.last_worker_sequence,
@@ -549,6 +569,9 @@ impl WorkerControlService {
 
         worker.last_worker_sequence = frame.sequence;
         worker.last_server_sequence_acknowledged = frame.acknowledges_server_through;
+        self.repository
+            .compact_server_frames(connection_id, frame.acknowledges_server_through, now_ms)
+            .map_err(repository_status)?;
         self.repository
             .update_connection_sequences(
                 connection_id,

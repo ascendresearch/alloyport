@@ -96,6 +96,8 @@ The contract, durable repository, and assignment-level reconciliation slices wer
 - both stream directions reject cumulative acknowledgements that regress or exceed the sequence
   actually sent; cancellation is durably requested, independently acknowledged, eventually terminal,
   replayed after reconnect, and tested against admission and lease-expiry races;
+- the server direction records assignment/cancel frame references before send and compacts them only
+  after a valid cumulative acknowledgement and successful domain-message processing;
 - runnable server and worker binaries support mTLS from environment-provided certificates and permit
   plaintext only on loopback for development;
 - loopback and repository tests cover handshake, assignment delivery, worker acceptance,
@@ -104,10 +106,11 @@ The contract, durable repository, and assignment-level reconciliation slices wer
   finished-result replay, acknowledgement bounds, and cancellation races without CUDA or Ascend
   hardware.
 
-This is not the complete control plane. Transport frames are not yet replayed from durable cursors,
-expired work is not automatically reassigned, execution and running-process signal delivery are not
-wired to a container, and the artifact service is not implemented. Those omissions keep the
-implementation at Stage 1 rather than claiming production readiness.
+This is not the complete control plane. The worker-direction outbox and direct transport replay from
+durable cursors are not implemented, expired work is not automatically reassigned, execution and
+running-process signal delivery are not wired to a container, and the artifact service is not
+implemented. Those omissions keep the implementation at Stage 1 rather than claiming production
+readiness.
 
 ## Product topology
 

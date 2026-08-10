@@ -76,6 +76,18 @@ CREATE TABLE IF NOT EXISTS attempt_observations (
 );
 CREATE INDEX IF NOT EXISTS attempt_observations_attempt
     ON attempt_observations(attempt_id, observation_id);
+CREATE TABLE IF NOT EXISTS server_outbox_frames (
+    connection_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    worker_id TEXT NOT NULL,
+    kind INTEGER NOT NULL,
+    attempt_id TEXT,
+    created_at_ms INTEGER NOT NULL,
+    acknowledged_at_ms INTEGER,
+    PRIMARY KEY(connection_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS server_outbox_unacknowledged
+    ON server_outbox_frames(connection_id, acknowledged_at_ms, sequence);
 COMMIT;
 ";
 
@@ -336,6 +348,22 @@ pub struct CancellationRecord {
     pub outcome: CancellationStoreOutcome,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i64)]
+pub enum ServerFrameKind {
+    Assignment = 1,
+    Cancel = 2,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServerOutboxFrame {
+    pub connection_id: String,
+    pub sequence: u64,
+    pub worker_id: String,
+    pub kind: ServerFrameKind,
+    pub attempt_id: Option<String>,
+}
+
 /// Storage failures are kept distinct from RPC validation failures.
 #[derive(Debug)]
 pub enum RepositoryError {
@@ -468,6 +496,21 @@ pub trait ControlRepository: Debug + Send + Sync {
         reason: &str,
         now_ms: u64,
     ) -> Result<CancellationRecord, RepositoryError>;
+
+    fn record_server_frame(
+        &self,
+        frame: &ServerOutboxFrame,
+        now_ms: u64,
+    ) -> Result<(), RepositoryError>;
+
+    fn compact_server_frames(
+        &self,
+        connection_id: &str,
+        acknowledged_through: u64,
+        now_ms: u64,
+    ) -> Result<usize, RepositoryError>;
+
+    fn server_outbox_len(&self, connection_id: &str) -> Result<usize, RepositoryError>;
 
     fn lease(&self, attempt_id: &str) -> Result<Option<LeaseRecord>, RepositoryError>;
 }
@@ -967,6 +1010,63 @@ impl ControlRepository for SqliteControlRepository {
         Ok(CancellationRecord { worker_id, outcome })
     }
 
+    fn record_server_frame(
+        &self,
+        frame: &ServerOutboxFrame,
+        now_ms: u64,
+    ) -> Result<(), RepositoryError> {
+        self.connection()?.execute(
+            "INSERT INTO server_outbox_frames(
+                 connection_id, sequence, worker_id, kind, attempt_id, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                frame.connection_id,
+                to_i64(frame.sequence)?,
+                frame.worker_id,
+                frame.kind as i64,
+                frame.attempt_id,
+                to_i64(now_ms)?
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn compact_server_frames(
+        &self,
+        connection_id: &str,
+        acknowledged_through: u64,
+        now_ms: u64,
+    ) -> Result<usize, RepositoryError> {
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "UPDATE server_outbox_frames SET acknowledged_at_ms = ?3
+             WHERE connection_id = ?1 AND sequence <= ?2 AND acknowledged_at_ms IS NULL",
+            params![
+                connection_id,
+                to_i64(acknowledged_through)?,
+                to_i64(now_ms)?
+            ],
+        )?;
+        let deleted = transaction.execute(
+            "DELETE FROM server_outbox_frames
+             WHERE connection_id = ?1 AND acknowledged_at_ms IS NOT NULL",
+            [connection_id],
+        )?;
+        transaction.commit()?;
+        Ok(deleted)
+    }
+
+    fn server_outbox_len(&self, connection_id: &str) -> Result<usize, RepositoryError> {
+        let count = self.connection()?.query_row(
+            "SELECT COUNT(*) FROM server_outbox_frames WHERE connection_id = ?1",
+            [connection_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        usize::try_from(count)
+            .map_err(|_| RepositoryError::Corrupt(format!("negative outbox count {count}")))
+    }
+
     fn lease(&self, attempt_id: &str) -> Result<Option<LeaseRecord>, RepositoryError> {
         self.connection()?
             .query_row(
@@ -1316,6 +1416,39 @@ mod tests {
                 .state,
             AttemptState::LeaseExpired
         );
+        Ok(())
+    }
+
+    #[test]
+    fn server_outbox_compacts_only_cumulatively_acknowledged_frames() -> Result<(), Box<dyn Error>>
+    {
+        let repository = SqliteControlRepository::in_memory()?;
+        for (sequence, kind) in [
+            (2, ServerFrameKind::Assignment),
+            (3, ServerFrameKind::Cancel),
+        ] {
+            repository.record_server_frame(
+                &ServerOutboxFrame {
+                    connection_id: "connection-1".to_owned(),
+                    sequence,
+                    worker_id: "worker-1".to_owned(),
+                    kind,
+                    attempt_id: Some("attempt-1".to_owned()),
+                },
+                1_000 + sequence,
+            )?;
+        }
+        assert_eq!(repository.server_outbox_len("connection-1")?, 2);
+        assert_eq!(
+            repository.compact_server_frames("connection-1", 2, 1_010)?,
+            1
+        );
+        assert_eq!(repository.server_outbox_len("connection-1")?, 1);
+        assert_eq!(
+            repository.compact_server_frames("connection-1", 3, 1_011)?,
+            1
+        );
+        assert_eq!(repository.server_outbox_len("connection-1")?, 0);
         Ok(())
     }
 
