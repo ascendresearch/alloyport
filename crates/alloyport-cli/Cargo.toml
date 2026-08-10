@@ -1,0 +1,13 @@
+[package]
+name = "alloyport-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloyport-core = { path = "../alloyport-core" }
+alloyport-events = { path = "../alloyport-events" }
+serde_json = "1.0"

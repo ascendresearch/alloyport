@@ -1,0 +1,17 @@
+[package]
+name = "alloyport-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloyport-proto = { path = "../alloyport-proto" }
+tokio = { version = "1.47", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1.17", features = ["net"] }
+tonic = { version = "0.14.6", features = ["tls-ring", "transport"] }
+
+[dev-dependencies]
+alloyport-worker = { path = "../alloyport-worker" }

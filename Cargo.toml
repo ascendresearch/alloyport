@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "crates/alloyport-cli",
+    "crates/alloyport-core",
+    "crates/alloyport-events",
+    "crates/alloyport-proto",
+    "crates/alloyport-server",
+    "crates/alloyport-worker",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

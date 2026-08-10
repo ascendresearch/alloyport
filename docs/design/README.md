@@ -1,0 +1,34 @@
+# Design documents
+
+This directory is the canonical home for AlloyPort architecture and system-design decisions.
+Documents are numbered so that discussions, implementation work, and evidence can reference a
+stable identifier.
+
+## Index
+
+| ID | Document | Status |
+| --- | --- | --- |
+| 0001 | [System architecture](0001-system-architecture.md) | Product boundary superseded by 0009 |
+| 0002 | [Long-horizon runtime and goal persistence](0002-long-horizon-runtime.md) | Proposed |
+| 0003 | [Operator specification and workload corpus](0003-operator-spec-and-workload-corpus.md) | Proposed; revision required by 0009 |
+| 0004 | [Candidate routing and backend strategy](0004-candidate-routing-and-backend-strategy.md) | Proposed; revision required by 0009 |
+| 0005 | [Correctness oracle and calibration](0005-correctness-oracle-and-calibration.md) | Proposed |
+| 0006 | [Performance evidence and claims](0006-performance-evidence-and-claims.md) | Proposed |
+| 0007 | [Worker isolation, receipts, and reproducibility](0007-worker-isolation-receipts-and-reproducibility.md) | Proposed |
+| 0008 | [Evidence-backed knowledge lifecycle](0008-evidence-backed-knowledge-lifecycle.md) | Proposed |
+| 0009 | [Product definition and staged CUDA scope](0009-product-definition-and-staged-cuda-scope.md) | Accepted |
+| 0010 | [Interactive terminal and event stream](0010-interactive-terminal-and-event-stream.md) | Accepted; first vertical slice implemented |
+| 0011 | [Outbound worker control plane](0011-outbound-worker-control-plane.md) | Accepted; first contract slice implemented |
+
+## Convention
+
+Each design document records its status, context, decision, applicable invariants, rejected
+alternatives, and verification plan. Use one of these states:
+
+- **Proposed:** open for design review; implementation must be treated as experimental.
+- **Accepted:** the current implementation target.
+- **Implemented:** the design is backed by code and automated verification.
+- **Superseded:** retained for history and linked to its replacement.
+
+Accepted documents should not be silently rewritten when an architectural decision changes. Add a
+new numbered document, mark the old one as superseded, and preserve the reasoning trail.

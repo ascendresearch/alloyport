@@ -1,0 +1,229 @@
+syntax = "proto3";
+
+package alloyport.worker.v1;
+
+service WorkerControl {
+  rpc OpenControlStream(stream WorkerToServer) returns (stream ServerToWorker);
+}
+
+message WorkerToServer {
+  uint64 sequence = 1;
+  uint64 acknowledges_server_through = 2;
+
+  oneof message {
+    WorkerHello hello = 10;
+    Heartbeat heartbeat = 11;
+    AssignmentAccepted assignment_accepted = 12;
+    AssignmentRejected assignment_rejected = 13;
+    ExecutionStarted execution_started = 14;
+    OutputChunk output_chunk = 15;
+    ExecutionFinished execution_finished = 16;
+    WorkerStatus status = 17;
+  }
+}
+
+message ServerToWorker {
+  uint64 sequence = 1;
+  uint64 acknowledges_worker_through = 2;
+
+  oneof message {
+    ServerWelcome welcome = 10;
+    Assignment assignment = 11;
+    CancelAttempt cancel = 12;
+    DrainWorker drain = 13;
+  }
+}
+
+message WorkerHello {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  string worker_id = 3;
+  string instance_id = 4;
+  string worker_version = 5;
+  repeated string features = 6;
+  WorkerCapabilities capabilities = 7;
+  repeated ActiveAttempt active_attempts = 8;
+}
+
+message WorkerCapabilities {
+  Backend backend = 1;
+  string architecture = 2;
+  uint32 device_count = 3;
+  uint32 max_concurrency = 4;
+  string driver_version = 5;
+  string toolkit_version = 6;
+  string container_runtime = 7;
+}
+
+enum Backend {
+  BACKEND_UNSPECIFIED = 0;
+  BACKEND_CUDA = 1;
+  BACKEND_ASCEND = 2;
+}
+
+message ActiveAttempt {
+  string assignment_id = 1;
+  string attempt_id = 2;
+  AttemptPhase phase = 3;
+}
+
+message Heartbeat {
+  repeated ActiveAttempt active_attempts = 1;
+  uint32 available_slots = 2;
+  WorkerHealth health = 3;
+}
+
+enum WorkerHealth {
+  WORKER_HEALTH_UNSPECIFIED = 0;
+  WORKER_HEALTH_READY = 1;
+  WORKER_HEALTH_DEGRADED = 2;
+  WORKER_HEALTH_DRAINING = 3;
+}
+
+message WorkerStatus {
+  WorkerHealth health = 1;
+  string detail = 2;
+}
+
+message ServerWelcome {
+  string connection_id = 1;
+  uint32 protocol_major = 2;
+  uint32 protocol_minor = 3;
+  uint64 heartbeat_interval_ms = 4;
+  uint64 attempt_lease_ms = 5;
+}
+
+message Assignment {
+  string assignment_id = 1;
+  string attempt_id = 2;
+  uint32 attempt_number = 3;
+  string idempotency_key = 4;
+  string task_id = 5;
+  string candidate_id = 6;
+  ExecutionSpec execution = 7;
+  repeated string required_features = 8;
+}
+
+message ExecutionSpec {
+  ExecutorKind executor_kind = 1;
+  repeated string argv = 2;
+  string working_directory = 3;
+  repeated EnvironmentVariable environment = 4;
+  uint64 timeout_ms = 5;
+  ArtifactRef bundle = 6;
+  ArtifactRef image = 7;
+  ResourceLimits limits = 8;
+}
+
+enum ExecutorKind {
+  EXECUTOR_KIND_UNSPECIFIED = 0;
+  EXECUTOR_KIND_PROCESS = 1;
+  EXECUTOR_KIND_CONTAINER = 2;
+  EXECUTOR_KIND_SHELL = 3;
+}
+
+message EnvironmentVariable {
+  string name = 1;
+  string value = 2;
+}
+
+message ArtifactRef {
+  string digest = 1;
+  uint64 size_bytes = 2;
+  string media_type = 3;
+}
+
+message ResourceLimits {
+  uint64 cpu_millis = 1;
+  uint64 memory_bytes = 2;
+  uint64 disk_bytes = 3;
+  uint32 process_count = 4;
+  uint64 output_bytes = 5;
+  uint32 device_count = 6;
+  NetworkPolicy network = 7;
+}
+
+enum NetworkPolicy {
+  NETWORK_POLICY_UNSPECIFIED = 0;
+  NETWORK_POLICY_DISABLED = 1;
+  NETWORK_POLICY_DEPENDENCY_FETCH = 2;
+}
+
+message AssignmentAccepted {
+  string assignment_id = 1;
+  string attempt_id = 2;
+  bool already_known = 3;
+}
+
+message AssignmentRejected {
+  string assignment_id = 1;
+  string attempt_id = 2;
+  RejectionReason reason = 3;
+  string detail = 4;
+}
+
+enum RejectionReason {
+  REJECTION_REASON_UNSPECIFIED = 0;
+  REJECTION_REASON_INVALID = 1;
+  REJECTION_REASON_UNSUPPORTED = 2;
+  REJECTION_REASON_POLICY = 3;
+  REJECTION_REASON_CAPACITY = 4;
+  REJECTION_REASON_CONFLICT = 5;
+}
+
+message ExecutionStarted {
+  string assignment_id = 1;
+  string attempt_id = 2;
+}
+
+message OutputChunk {
+  string attempt_id = 1;
+  OutputStream stream = 2;
+  uint64 byte_offset = 3;
+  bytes payload = 4;
+  bool display_sanitized = 5;
+}
+
+enum OutputStream {
+  OUTPUT_STREAM_UNSPECIFIED = 0;
+  OUTPUT_STREAM_STDOUT = 1;
+  OUTPUT_STREAM_STDERR = 2;
+}
+
+message ExecutionFinished {
+  string assignment_id = 1;
+  string attempt_id = 2;
+  AttemptOutcome outcome = 3;
+  optional int32 exit_code = 4;
+  uint64 elapsed_ms = 5;
+  ArtifactRef receipt = 6;
+  ArtifactRef stdout = 7;
+  ArtifactRef stderr = 8;
+  string detail = 9;
+}
+
+enum AttemptOutcome {
+  ATTEMPT_OUTCOME_UNSPECIFIED = 0;
+  ATTEMPT_OUTCOME_SUCCEEDED = 1;
+  ATTEMPT_OUTCOME_CANDIDATE_FAILED = 2;
+  ATTEMPT_OUTCOME_TIMED_OUT = 3;
+  ATTEMPT_OUTCOME_CANCELLED = 4;
+  ATTEMPT_OUTCOME_INFRA_ERROR = 5;
+  ATTEMPT_OUTCOME_INTEGRITY_VIOLATION = 6;
+}
+
+enum AttemptPhase {
+  ATTEMPT_PHASE_UNSPECIFIED = 0;
+  ATTEMPT_PHASE_ACCEPTED = 1;
+  ATTEMPT_PHASE_RUNNING = 2;
+  ATTEMPT_PHASE_FINISHED = 3;
+}
+
+message CancelAttempt {
+  string attempt_id = 1;
+  string reason = 2;
+}
+
+message DrainWorker {
+  string reason = 1;
+}
