@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/alloyport-artifacts",
     "crates/alloyport-cli",
     "crates/alloyport-core",
     "crates/alloyport-events",

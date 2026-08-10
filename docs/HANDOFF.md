@@ -26,6 +26,8 @@ Read these documents before changing architecture or implementation:
    for the accepted server/worker architecture.
 6. [`design/0007-worker-isolation-receipts-and-reproducibility.md`](design/0007-worker-isolation-receipts-and-reproducibility.md)
    before implementing real execution or artifact persistence.
+7. [`design/0012-filesystem-artifact-cas.md`](design/0012-filesystem-artifact-cas.md) for the first
+   immutable artifact storage boundary and its remaining service-layer gaps.
 
 Design documents state intended behavior. Tests and code state what this revision actually implements.
 
@@ -80,6 +82,39 @@ translate between them.
 ## Implemented workspace
 
 The workspace requires Rust 1.88 or newer.
+
+### `alloyport-artifacts`
+
+Defines an object-safe immutable `ArtifactStore`, canonical `Sha256Digest`, streaming `Read`-based
+ingestion, verified readers, and a filesystem CAS. The filesystem implementation:
+
+- hashes and writes through a bounded 64 KiB buffer rather than loading an artifact into memory;
+- enforces a configured per-artifact byte limit plus optional declared digest and size;
+- writes to a same-filesystem private staging directory, syncs and seals the file read-only, then
+  atomically publishes with a hard link so an existing digest path is never overwritten;
+- treats concurrent or repeated identical uploads as idempotent and verifies an existing object
+  before reporting it as already present;
+- removes failed uploads immediately and cleans crash-left staging files when the store reopens;
+- verifies stored bytes against their digest when opening them and reports tampering as an integrity
+  violation;
+- uses `sha256/<first-two-hex>/<full-hex>` fanout paths while keeping media type and retention outside
+  the content identity.
+
+The crate also implements a SQLite-backed resumable upload session layer:
+
+- sessions bind an authenticated-owner placeholder, idempotent upload key, expected digest/size,
+  media type, committed offset, state, and expiry;
+- chunks must match the exact committed offset and stay within configured chunk and upload limits;
+- bytes are appended and synced before the SQLite offset transaction commits; after a crash, a
+  longer uncommitted file tail is truncated back to the durable offset on the next append;
+- finalization is serialized, idempotent, and publishes through the CAS; integrity failures become
+  terminal while transient CAS I/O failures remain retryable in `Finalizing` state;
+- completed data files and expired partial sessions are cleaned without deleting published CAS
+  objects.
+
+This is the storage and resumable-session core, not yet a network Artifact service. Owner identity is
+an authorization seam supplied by the future service, not yet bound to mTLS identity. There is no
+Artifact RPC, total-store quota, reference tracking, or garbage collection.
 
 ### `alloyport-core`
 
@@ -256,7 +291,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 36 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
+There are 51 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -279,6 +314,12 @@ repository tests for:
 - worker-local idempotency and changed-content conflict;
 - default shell-executor denial and explicit local opt-in;
 - protocol validation for sandbox paths and artifact digests.
+
+Artifact coverage includes streaming read/write, canonical digest parsing, digest and size rejection,
+interrupted-reader cleanup, concurrent duplicate publication, read-only publication, restart cleanup,
+verified readback, refusal to replace a corrupted existing object, idempotent session creation,
+offset-conflict rejection, crash-tail truncation, reopen/resume/finalize, expiry pruning, and terminal
+versus retryable finalization failures.
 
 CI runs stable fmt/clippy/tests and a separate Rust 1.88.0 locked-dependency test job.
 
@@ -305,7 +346,9 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 - Durable lifecycle replay and seven-day orphaned-delivery retention are implemented. Heartbeats,
   status, output previews, welcomes, and ACK-only frames deliberately remain ephemeral; there is no
   generalized durable message bus or server replication.
-- No content-addressed Artifact service or object-store adapter.
+- The filesystem content-addressed store and durable resumable-upload session core are implemented.
+  There is no Artifact RPC, mTLS-to-owner authorization binding, object-store adapter, reference
+  metadata, total quota accounting, or GC.
 - No container/process executor, output streaming, resource enforcement, running-process signal
   delivery, or device reset. Cancellation currently terminates admitted no-executor attempts only.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
@@ -322,10 +365,10 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 
 ### 1. Content-addressed Artifact service
 
-Start with a filesystem CAS behind a trait, using SHA-256, atomic temporary-file-to-digest promotion,
-size limits, and digest verification. Add separate upload/download streaming RPCs; do not put bundles
-or full logs on the control stream. Add tests for partial uploads, reconnect, digest mismatch,
-duplicate content, quota exhaustion, and garbage-collection reachability.
+The filesystem CAS and durable upload-session state machine are implemented. Next add separate
+upload/download streaming RPCs over the existing begin/status/append/finalize operations; do not put
+bundles or full logs on the control stream. Bind the session owner seam to authenticated identity,
+then add total-store quota, reference reachability, and garbage collection.
 
 ### 2. Executor abstraction and fake executor
 
@@ -360,10 +403,11 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Begin the filesystem content-addressed Artifact service:
+Add the network and resumable-session layer over the filesystem CAS:
 
-> Read `docs/HANDOFF.md`, Design 0007, and Design 0011. Define a storage trait and a filesystem SHA-256
-> CAS with streaming ingestion, size limits, digest verification, atomic temporary-file promotion,
-> duplicate-content idempotency, and crash-safe cleanup. Keep bulk bytes off the worker control
-> stream. Add tests for partial upload cleanup, digest mismatch, duplicate content, and restart
-> recovery before wiring a fake executor.
+> Read `docs/HANDOFF.md`, Design 0007, Design 0011, and Design 0012. Define a separate versioned
+> Artifact gRPC service with begin/status/finalize unary operations plus streaming chunk upload and
+> download. Adapt RPC traffic onto the existing SQLite upload sessions and filesystem CAS without
+> buffering whole artifacts in memory or trusting client paths. Bind owner identity through an
+> injectable authorization resolver, enforce bounded chunks, and add loopback reconnect/download
+> tests. Keep all bulk bytes off `OpenControlStream`; follow with total-store quota accounting.

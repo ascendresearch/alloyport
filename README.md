@@ -41,6 +41,8 @@ automation, and replay; an agent's narrative remains distinct from verified migr
 
 ## Workspace
 
+- `alloyport-artifacts`: content-addressed artifact interfaces and the crash-recoverable filesystem
+  SHA-256 store.
 - `alloyport-core`: dependency-light domain model and lifecycle invariants.
 - `alloyport-events`: versioned producer/canonical events, lifecycle reduction, JSONL, and plain
   rendering shared with the Python executor bridge.
