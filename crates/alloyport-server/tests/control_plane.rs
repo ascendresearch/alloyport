@@ -4,9 +4,13 @@ use alloyport_proto::v1::{
     WorkerCapabilities, WorkerHello,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
-use alloyport_server::{AssignmentState, CancelOutcome, EnqueueOutcome, WorkerControlService};
+use alloyport_server::storage::SqliteControlRepository;
+use alloyport_server::{
+    AssignmentState, CancelOutcome, EnqueueOutcome, ManualClock, WorkerControlService,
+};
 use alloyport_worker::{OutboundWorker, StoredFinished};
 use std::error::Error;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -64,6 +68,7 @@ async fn worker_handshake_assignment_and_duplicate_suppression() -> Result<(), B
         service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Accepted)
     })
     .await?;
+    wait_until(|| async { worker_state.lock().await.outbox_len().ok() == Some(0) }).await?;
 
     assert_eq!(
         service.enqueue_assignment("cuda-1", assignment).await?,
@@ -273,17 +278,20 @@ async fn worker_restart_replays_durable_finished_result() -> Result<(), Box<dyn 
             detail: "durable fixture result".to_owned(),
         },
     )?;
+    assert_eq!(first_state.lock().await.outbox_len()?, 1);
     drop(first_state);
 
     let mut restarted_hello = hello();
     restarted_hello.instance_id = "cuda-1-restarted-process".to_owned();
     let restarted_worker =
         OutboundWorker::open_sqlite(endpoint, restarted_hello, &worker_database)?;
+    let restarted_state = restarted_worker.state();
     let restarted_session = tokio::spawn(async move { restarted_worker.run_session().await });
     wait_until(|| async {
         service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Finished)
     })
     .await?;
+    wait_until(|| async { restarted_state.lock().await.outbox_len().ok() == Some(0) }).await?;
 
     restarted_session.abort();
     let _ = restarted_session.await;
@@ -398,6 +406,93 @@ async fn assignment_queued_while_disconnected_is_replayed_after_reconnect()
         service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Accepted)
     })
     .await?;
+
+    second_session.abort();
+    let _ = second_session.await;
+    let _ = shutdown_send.send(());
+    server_task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn expired_attempt_is_reassigned_with_a_new_identity_and_old_result_stays_stale()
+-> Result<(), Box<dyn Error>> {
+    let repository = Arc::new(SqliteControlRepository::in_memory()?);
+    let clock = Arc::new(ManualClock::new(1_000));
+    let service = WorkerControlService::with_repository(repository, clock.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (shutdown_send, shutdown_receive) = oneshot::channel();
+    let server_service = service.clone();
+    let server_task = tokio::spawn(async move {
+        Server::builder()
+            .add_service(WorkerControlServer::new(server_service))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_receive.await;
+            })
+            .await
+    });
+
+    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?;
+    let worker_state = worker.state();
+    let first_worker = worker.clone();
+    let first_session = tokio::spawn(async move { first_worker.run_session().await });
+    wait_until(|| async {
+        service
+            .worker_snapshot("cuda-1")
+            .await
+            .is_some_and(|snapshot| snapshot.connected)
+    })
+    .await?;
+    assert_eq!(
+        service.enqueue_assignment("cuda-1", assignment()).await?,
+        EnqueueOutcome::Sent
+    );
+    wait_until(|| async {
+        service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Accepted)
+    })
+    .await?;
+
+    first_session.abort();
+    let _ = first_session.await;
+    wait_until(|| async {
+        service
+            .worker_snapshot("cuda-1")
+            .await
+            .is_some_and(|snapshot| !snapshot.connected)
+    })
+    .await?;
+    clock.advance(30_000);
+    assert_eq!(service.expire_leases()?, vec!["attempt-1"]);
+    assert_eq!(
+        service
+            .reassign_expired_attempt("attempt-1", "cuda-1", "attempt-2")
+            .await?,
+        EnqueueOutcome::Pending
+    );
+    worker_state.lock().await.mark_finished(
+        "attempt-1",
+        &StoredFinished {
+            outcome: AttemptOutcome::Succeeded.into(),
+            exit_code: Some(0),
+            elapsed_ms: 30_001,
+            receipt: None,
+            stdout: None,
+            stderr: None,
+            detail: "late result from expired process".to_owned(),
+        },
+    )?;
+
+    let second_session = tokio::spawn(async move { worker.run_session().await });
+    wait_until(|| async {
+        service.assignment_state("attempt-2").ok().flatten() == Some(AssignmentState::Accepted)
+    })
+    .await?;
+    assert_eq!(
+        service.assignment_state("attempt-1")?,
+        Some(AssignmentState::LeaseExpired)
+    );
+    assert!(worker_state.lock().await.contains_attempt("attempt-2")?);
 
     second_session.abort();
     let _ = second_session.await;

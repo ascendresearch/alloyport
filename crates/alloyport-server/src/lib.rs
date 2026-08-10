@@ -5,9 +5,9 @@ pub mod storage;
 use alloyport_proto::v1::worker_control_server::WorkerControl;
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, CancelAttempt,
-    CancellationAcknowledged, EnvironmentVariable, ExecutionFinished, ExecutionSpec,
-    ExecutionStarted, Heartbeat, ResourceLimits, ServerToWorker, ServerWelcome, WorkerHello,
-    WorkerStatus, WorkerToServer, server_to_worker, worker_to_server,
+    CancellationAcknowledged, ControlAcknowledgement, EnvironmentVariable, ExecutionFinished,
+    ExecutionSpec, ExecutionStarted, Heartbeat, ResourceLimits, ServerToWorker, ServerWelcome,
+    WorkerHello, WorkerStatus, WorkerToServer, server_to_worker, worker_to_server,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR, ValidationError, validate_assignment};
 use std::collections::BTreeMap;
@@ -31,6 +31,7 @@ use tonic::{Request, Response, Status, Streaming};
 const HEARTBEAT_INTERVAL_MS: u64 = 5_000;
 const ATTEMPT_LEASE_MS: u64 = 30_000;
 const LEASE_REAPER_INTERVAL_MS: u64 = 1_000;
+const OUTBOX_ORPHAN_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 
 pub use storage::{AttemptState as AssignmentState, LeaseRecord, ManualClock};
 
@@ -280,6 +281,47 @@ impl WorkerControlService {
         Ok(EnqueueOutcome::Sent)
     }
 
+    /// Creates and dispatches a new process attempt for one durably expired attempt.
+    ///
+    /// The replacement copies the immutable assignment contract, increments its attempt number,
+    /// and uses the caller-supplied fresh attempt ID. The expired record remains authoritative for
+    /// classifying any late observations from the old worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnqueueError`] unless the source attempt is lease-expired, the replacement ID is
+    /// fresh, and the copied assignment remains valid.
+    pub async fn reassign_expired_attempt(
+        &self,
+        expired_attempt_id: &str,
+        replacement_worker_id: impl Into<String>,
+        replacement_attempt_id: impl Into<String>,
+    ) -> Result<EnqueueOutcome, EnqueueError> {
+        let replacement_worker_id = replacement_worker_id.into();
+        let replacement_attempt_id = replacement_attempt_id.into();
+        let reassignment = self.repository.reassign_expired(
+            expired_attempt_id,
+            &replacement_worker_id,
+            &replacement_attempt_id,
+            self.clock.now_unix_ms(),
+        )?;
+        validate_assignment(&contract_to_assignment(&reassignment.assignment.contract))?;
+        if reassignment.outcome == StoreAssignmentOutcome::Duplicate {
+            return Ok(EnqueueOutcome::Duplicate);
+        }
+        let outbound = self
+            .prepare_assignment(&replacement_worker_id, &replacement_attempt_id)
+            .await?;
+        let Some((sender, message)) = outbound else {
+            return Ok(EnqueueOutcome::Pending);
+        };
+        if sender.send(Ok(message)).await.is_err() {
+            self.mark_send_failed(&replacement_worker_id).await;
+            return Ok(EnqueueOutcome::Pending);
+        }
+        Ok(EnqueueOutcome::Sent)
+    }
+
     /// Durably requests cancellation and sends it when the owning worker is connected.
     ///
     /// # Errors
@@ -354,6 +396,7 @@ impl WorkerControlService {
             &ServerOutboxFrame {
                 connection_id: worker.connection_id.clone(),
                 sequence,
+                message_id: format!("assignment:{attempt_id}"),
                 worker_id: worker_id.to_owned(),
                 kind: ServerFrameKind::Assignment,
                 attempt_id: Some(attempt_id.to_owned()),
@@ -373,6 +416,7 @@ impl WorkerControlService {
             ServerToWorker {
                 sequence,
                 acknowledges_worker_through: worker.last_worker_sequence,
+                message_id: format!("assignment:{attempt_id}"),
                 message: Some(server_to_worker::Message::Assignment(
                     contract_to_assignment(&assignment.contract),
                 )),
@@ -409,6 +453,7 @@ impl WorkerControlService {
             &ServerOutboxFrame {
                 connection_id: worker.connection_id.clone(),
                 sequence,
+                message_id: format!("cancel:{attempt_id}"),
                 worker_id: worker_id.to_owned(),
                 kind: ServerFrameKind::Cancel,
                 attempt_id: Some(attempt_id.to_owned()),
@@ -428,6 +473,7 @@ impl WorkerControlService {
             ServerToWorker {
                 sequence,
                 acknowledges_worker_through: worker.last_worker_sequence,
+                message_id: format!("cancel:{attempt_id}"),
                 message: Some(server_to_worker::Message::Cancel(CancelAttempt {
                     attempt_id: attempt_id.to_owned(),
                     reason: reason.to_owned(),
@@ -444,8 +490,11 @@ impl WorkerControlService {
         let number = self.connection_counter.fetch_add(1, Ordering::Relaxed);
         let connection_id = format!("connection-{number}");
         let worker_id = hello.worker_id.clone();
+        let negotiated_protocol_minor = hello.protocol_minor.min(PROTOCOL_MINOR);
         let now_ms = self.clock.now_unix_ms();
         self.repository.expire_leases(now_ms)?;
+        self.repository
+            .prune_orphaned_server_frames(now_ms.saturating_sub(OUTBOX_ORPHAN_RETENTION_MS))?;
         self.repository.register_worker(
             &hello_to_registration(&hello),
             &ConnectionRegistration {
@@ -475,10 +524,11 @@ impl WorkerControlService {
         let mut messages = vec![ServerToWorker {
             sequence: 1,
             acknowledges_worker_through: 1,
+            message_id: String::new(),
             message: Some(server_to_worker::Message::Welcome(ServerWelcome {
                 connection_id: connection_id.clone(),
                 protocol_major: PROTOCOL_MAJOR,
-                protocol_minor: PROTOCOL_MINOR,
+                protocol_minor: negotiated_protocol_minor,
                 heartbeat_interval_ms: HEARTBEAT_INTERVAL_MS,
                 attempt_lease_ms: ATTEMPT_LEASE_MS,
             })),
@@ -508,7 +558,7 @@ impl WorkerControlService {
         worker_id: &str,
         connection_id: &str,
         frame: WorkerToServer,
-    ) -> Result<(), Status> {
+    ) -> Result<bool, Status> {
         let mut state = self.state.lock().await;
         let worker = state
             .workers
@@ -530,6 +580,23 @@ impl WorkerControlService {
             worker.last_server_sequence_acknowledged,
             sent_server_through,
         )?;
+
+        let durable_message_id = expected_worker_message_id(frame.message.as_ref());
+        let supports_durable_message_ids = worker.hello.protocol_minor >= 2;
+        if supports_durable_message_ids {
+            if let Some(expected) = durable_message_id.as_ref()
+                && frame.message_id != *expected
+            {
+                return Err(Status::invalid_argument(format!(
+                    "worker message ID must be {expected}"
+                )));
+            }
+            if durable_message_id.is_none() && !frame.message_id.is_empty() {
+                return Err(Status::invalid_argument(
+                    "ephemeral worker frame cannot carry a message ID",
+                ));
+            }
+        }
 
         let now_ms = self.clock.now_unix_ms();
         match frame.message {
@@ -581,7 +648,44 @@ impl WorkerControlService {
                 now_ms,
             )
             .map_err(repository_status)?;
-        Ok(())
+        Ok(supports_durable_message_ids && durable_message_id.is_some())
+    }
+
+    async fn prepare_transport_ack(
+        &self,
+        worker_id: &str,
+        connection_id: &str,
+    ) -> Result<
+        Option<(mpsc::Sender<Result<ServerToWorker, Status>>, ServerToWorker)>,
+        RepositoryError,
+    > {
+        let mut state = self.state.lock().await;
+        let Some(worker) = state.workers.get_mut(worker_id) else {
+            return Ok(None);
+        };
+        if !worker.connected || worker.connection_id != connection_id {
+            return Ok(None);
+        }
+        let sequence = worker.next_server_sequence;
+        worker.next_server_sequence += 1;
+        self.repository.update_connection_sequences(
+            connection_id,
+            worker.last_worker_sequence,
+            sequence,
+            worker.last_server_sequence_acknowledged,
+            self.clock.now_unix_ms(),
+        )?;
+        Ok(Some((
+            worker.sender.clone(),
+            ServerToWorker {
+                sequence,
+                acknowledges_worker_through: worker.last_worker_sequence,
+                message_id: String::new(),
+                message: Some(server_to_worker::Message::Acknowledgement(
+                    ControlAcknowledgement {},
+                )),
+            },
+        )))
     }
 
     fn observe_heartbeat(
@@ -732,12 +836,27 @@ impl WorkerControlService {
     ) {
         loop {
             match inbound.next().await {
-                Some(Ok(frame)) => {
-                    if let Err(status) = self.ingest(&worker_id, &connection_id, frame).await {
+                Some(Ok(frame)) => match self.ingest(&worker_id, &connection_id, frame).await {
+                    Ok(true) => {
+                        match self.prepare_transport_ack(&worker_id, &connection_id).await {
+                            Ok(Some((sender, message))) => {
+                                if sender.send(Ok(message)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(error) => {
+                                let _ = outbound.send(Err(repository_status(error))).await;
+                                break;
+                            }
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(status) => {
                         let _ = outbound.send(Err(status)).await;
                         break;
                     }
-                }
+                },
                 Some(Err(status)) => {
                     let _ = outbound.send(Err(status)).await;
                     break;
@@ -770,6 +889,9 @@ impl WorkerControl for WorkerControlService {
             return Err(Status::invalid_argument(
                 "hello cannot acknowledge a server connection that is not open",
             ));
+        }
+        if !first.message_id.is_empty() {
+            return Err(Status::invalid_argument("hello cannot carry a message ID"));
         }
         let Some(worker_to_server::Message::Hello(hello)) = first.message else {
             return Err(Status::invalid_argument(
@@ -807,6 +929,32 @@ fn repository_status(error: RepositoryError) -> Status {
         RepositoryError::InvalidTransition { .. } => Status::failed_precondition(error.to_string()),
         _ => Status::internal(error.to_string()),
     }
+}
+
+fn expected_worker_message_id(message: Option<&worker_to_server::Message>) -> Option<String> {
+    let (kind, attempt_id) = match message? {
+        worker_to_server::Message::AssignmentAccepted(accepted) => {
+            ("assignment-accepted", accepted.attempt_id.as_str())
+        }
+        worker_to_server::Message::AssignmentRejected(rejected) => {
+            ("assignment-rejected", rejected.attempt_id.as_str())
+        }
+        worker_to_server::Message::ExecutionStarted(started) => {
+            ("execution-started", started.attempt_id.as_str())
+        }
+        worker_to_server::Message::ExecutionFinished(finished) => {
+            ("execution-finished", finished.attempt_id.as_str())
+        }
+        worker_to_server::Message::CancellationAcknowledged(acknowledged) => (
+            "cancellation-acknowledged",
+            acknowledged.attempt_id.as_str(),
+        ),
+        worker_to_server::Message::Hello(_)
+        | worker_to_server::Message::Heartbeat(_)
+        | worker_to_server::Message::OutputChunk(_)
+        | worker_to_server::Message::Status(_) => return None,
+    };
+    Some(format!("{kind}:{attempt_id}"))
 }
 
 fn hello_to_registration(hello: &WorkerHello) -> WorkerRegistration {

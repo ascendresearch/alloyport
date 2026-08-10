@@ -9,6 +9,8 @@ service WorkerControl {
 message WorkerToServer {
   uint64 sequence = 1;
   uint64 acknowledges_server_through = 2;
+  // Stable across reconnects for durable lifecycle messages. Empty for hello and heartbeat.
+  string message_id = 3;
 
   oneof message {
     WorkerHello hello = 10;
@@ -26,14 +28,21 @@ message WorkerToServer {
 message ServerToWorker {
   uint64 sequence = 1;
   uint64 acknowledges_worker_through = 2;
+  // Stable across reconnects for durable assignment and cancellation messages.
+  string message_id = 3;
 
   oneof message {
     ServerWelcome welcome = 10;
     Assignment assignment = 11;
     CancelAttempt cancel = 12;
     DrainWorker drain = 13;
+    ControlAcknowledgement acknowledgement = 14;
   }
 }
+
+// Carries only the envelope's cumulative acknowledgement. It is intentionally not durable and
+// does not require an acknowledgement of its own.
+message ControlAcknowledgement {}
 
 message WorkerHello {
   uint32 protocol_major = 1;

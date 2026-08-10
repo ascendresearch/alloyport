@@ -112,6 +112,7 @@ tonic generates a client endpoint constructor named `connect`, producing a Rust 
 The schema currently includes:
 
 - hello/welcome and protocol version fields;
+- stable logical message IDs for durable control traffic plus a non-durable cumulative ACK frame;
 - static worker/backend capabilities and dynamic heartbeat state;
 - typed assignment and execution specifications;
 - accepted/rejected, started, output, and finished lifecycle messages;
@@ -154,6 +155,11 @@ Current behavior:
   separately from terminal completion, and prevents cancellation from reviving expired work;
 - records assignment/cancel frame references in a durable per-connection server outbox before send
   and compacts only sequences cumulatively acknowledged after domain processing;
+- retains disconnected-session frame mappings for seven days before policy-driven pruning while
+  reconstructing still-relevant assignments and cancellations from durable domain records;
+- exposes an explicit transactional lease-expiry reassignment operation that copies the immutable
+  contract into a caller-supplied fresh attempt ID, increments the attempt number, and preserves the
+  expired attempt for stale-result classification;
 - marks a worker disconnected only if the closing stream still owns its connection ID, so an old
   superseded stream cannot disconnect a newer session.
 
@@ -189,6 +195,11 @@ Current behavior:
 - rejects reuse of an attempt ID with changed content;
 - persists accepted/running/finished lifecycle and terminal result fields across worker process
   restart, and replays a durable finished result after an idempotent assignment replay;
+- persists acceptance/rejection, started, finished, and cancellation-acknowledged messages in a
+  logical outbox before send, maps them to connection-local sequences, replays them on reconnect,
+  and deletes them only after an explicit server cumulative ACK;
+- retains logical worker messages indefinitely until acknowledgement while pruning obsolete
+  per-connection delivery mappings after seven days;
 - denies the shell executor by default; only an explicit local `AdmissionPolicy` can allow it;
 - exits a session on drain; cancellation is durably acknowledged and becomes terminal immediately
   while no executor process exists.
@@ -245,7 +256,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 30 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
+There are 36 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -262,6 +273,9 @@ repository tests for:
 - cancellation request/acknowledgement/terminal ordering, cancellation-before-admission races,
   duplicate cancellation, and lease-expiry/cancellation races;
 - server outbox persistence and cumulative compaction boundaries;
+- worker outbox persistence, reconnect remapping, cumulative compaction boundaries, and orphaned
+  delivery pruning without logical-message loss;
+- explicit expired-attempt reassignment with a new identity and stale old-result retention;
 - worker-local idempotency and changed-content conflict;
 - default shell-executor denial and explicit local opt-in;
 - protocol validation for sandbox paths and artifact digests.
@@ -284,11 +298,13 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 
 ## Known gaps: do not claim these are implemented
 
-- No reassignment engine or proactive startup reconciliation before a worker reconnects.
-- No disk-backed worker journal or artifact/output spool.
-- Cumulative acknowledgement bounds are validated and the server direction has a durable frame
-  reference outbox with ACK compaction. The worker direction, direct replay from durable cursors,
-  orphaned-connection outbox retention, and full compaction policy are not implemented.
+- Lease-expiry reassignment is explicit and durable, but there is no scheduler policy that chooses a
+  replacement worker or proactively invokes it for every expired lease.
+- The worker journal and lifecycle outbox are disk backed, but executor process identity and
+  artifact/output spooling are not.
+- Durable lifecycle replay and seven-day orphaned-delivery retention are implemented. Heartbeats,
+  status, output previews, welcomes, and ACK-only frames deliberately remain ephemeral; there is no
+  generalized durable message bus or server replication.
 - No content-addressed Artifact service or object-store adapter.
 - No container/process executor, output streaming, resource enforcement, running-process signal
   delivery, or device reset. Cancellation currently terminates admitted no-executor attempts only.
@@ -304,22 +320,14 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 
 ## Recommended next implementation order
 
-### 1. Complete transport replay and reassignment
-
-Server and worker SQLite state, assignment-level restart reconciliation, cumulative acknowledgement
-validation, finished-result replay, cancellation races, and the first server-outbox/ACK-compaction
-slice are implemented. Next, add the worker-direction outbox, replay both directions from a
-connection/session cursor without confusing sequence with attempt identity, define orphan retention,
-and add an explicit lease-expiry reassignment engine that always creates a new attempt ID.
-
-### 2. Content-addressed Artifact service
+### 1. Content-addressed Artifact service
 
 Start with a filesystem CAS behind a trait, using SHA-256, atomic temporary-file-to-digest promotion,
 size limits, and digest verification. Add separate upload/download streaming RPCs; do not put bundles
 or full logs on the control stream. Add tests for partial uploads, reconnect, digest mismatch,
 duplicate content, quota exhaustion, and garbage-collection reachability.
 
-### 3. Executor abstraction and fake executor
+### 2. Executor abstraction and fake executor
 
 Define typed executor input/output and a fake executor before Docker integration. It must consume
 logical artifact/mount references, never server-supplied host paths. Wire start/output/finish to both
@@ -329,21 +337,21 @@ backpressure, full-output artifact production, timeout, cancellation, and termin
 Keep shell execution disabled. If later enabled for probes, require an explicit worker policy and a
 separate executor kind; do not reduce assignments to a shell string.
 
-### 4. One CUDA vertical slice
+### 3. One CUDA vertical slice
 
 Port the existing content-addressed bundle-to-container behavior from the Python harness into the new
 worker path. Do not copy the old SSH wrapper. Run a fixed fixture once through the old path and once
 through the new path as separate attempts, then compare bundle digest, image/environment identity,
 stdout/stderr, exit classification, and receipt fields.
 
-### 5. One Ascend vertical slice
+### 4. One Ascend vertical slice
 
 Add device discovery, CANN/driver identity, enumerated device-node policy, occupancy/health reporting,
 device leases, driver mount rules, and post-crash health/reset handling. Preserve the epistemic split:
 CUDA reference output and Ascend target output are independently executed receipts joined by an
 experiment and judged by the oracle.
 
-### 6. Cut over and remove SSH from runtime
+### 5. Cut over and remove SSH from runtime
 
 Only after evidence parity, make the outbound worker client the sole scheduler path. Remove SSH host,
 key, root-directory, remote-shell, and SCP configuration from AlloyPort runtime. Keep any operational
@@ -352,13 +360,10 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Complete step 1 with the transport-outbox and reassignment slice:
+Begin the filesystem content-addressed Artifact service:
 
-> Read `docs/HANDOFF.md` and Design 0011. Complete the worker-direction transport outbox and explicit
-> replay cursors without using sequence numbers as attempt identity. Persist frames required for
-> lifecycle closure before send, validate acknowledgements against both durable outboxes, compact only
-> acknowledged frames, define orphaned-session retention, and prove reconnect replay cannot duplicate
-> admission or terminal results.
-> Then implement lease-expiry reassignment as a new attempt over the same immutable assignment
-> contract and classify the old attempt's late result as stale. Preserve strict Clippy and do not add
-> real command execution yet.
+> Read `docs/HANDOFF.md`, Design 0007, and Design 0011. Define a storage trait and a filesystem SHA-256
+> CAS with streaming ingestion, size limits, digest verification, atomic temporary-file promotion,
+> duplicate-content idempotency, and crash-safe cleanup. Keep bulk bytes off the worker control
+> stream. Add tests for partial upload cleanup, digest mismatch, duplicate content, and restart
+> recovery before wiring a fake executor.

@@ -43,6 +43,7 @@ service WorkerControl {
 message WorkerToServer {
   uint64 sequence = 1;
   uint64 acknowledges_server_through = 2;
+  string message_id = 3;
   oneof message {
     WorkerHello hello = 10;
     Heartbeat heartbeat = 11;
@@ -58,11 +59,13 @@ message WorkerToServer {
 message ServerToWorker {
   uint64 sequence = 1;
   uint64 acknowledges_worker_through = 2;
+  string message_id = 3;
   oneof message {
     ServerWelcome welcome = 10;
     Assignment assignment = 11;
     CancelAttempt cancel = 12;
     DrainWorker drain = 13;
+    ControlAcknowledgement acknowledgement = 14;
   }
 }
 ```
@@ -98,6 +101,15 @@ The contract, durable repository, and assignment-level reconciliation slices wer
   replayed after reconnect, and tested against admission and lease-expiry races;
 - the server direction records assignment/cancel frame references before send and compacts them only
   after a valid cumulative acknowledgement and successful domain-message processing;
+- durable control messages now carry stable logical message IDs distinct from connection-local
+  sequence numbers; the worker persists lifecycle messages and delivery mappings before send,
+  replays pending logical messages with fresh sequences on reconnect, and compacts only after the
+  server emits an explicit cumulative acknowledgement;
+- obsolete per-connection delivery mappings have a seven-day retention policy without deleting
+  unacknowledged worker logical messages, and disconnected server frame mappings follow the same
+  retention window while replay remains driven by durable assignment/cancellation records;
+- an explicit transactional operation reassigns only lease-expired work into a fresh attempt ID,
+  increments the attempt number, and preserves the old record and late-result classification;
 - runnable server and worker binaries support mTLS from environment-provided certificates and permit
   plaintext only on loopback for development;
 - loopback and repository tests cover handshake, assignment delivery, worker acceptance,
@@ -106,11 +118,11 @@ The contract, durable repository, and assignment-level reconciliation slices wer
   finished-result replay, acknowledgement bounds, and cancellation races without CUDA or Ascend
   hardware.
 
-This is not the complete control plane. The worker-direction outbox and direct transport replay from
-durable cursors are not implemented, expired work is not automatically reassigned, execution and
-running-process signal delivery are not wired to a container, and the artifact service is not
-implemented. Those omissions keep the implementation at Stage 1 rather than claiming production
-readiness.
+This is not the complete control plane. Replacement-worker selection and automatic invocation of
+reassignment are not implemented, ephemeral heartbeat/output-preview traffic is intentionally not
+durable, execution and running-process signal delivery are not wired to a container, and the
+artifact service is not implemented. Those omissions keep the implementation at Stage 1 rather than
+claiming production readiness.
 
 ## Product topology
 

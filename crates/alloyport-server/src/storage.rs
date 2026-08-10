@@ -53,6 +53,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS assignments_assignment_attempt
     ON assignments(assignment_id, attempt_id);
 CREATE INDEX IF NOT EXISTS assignments_worker_state
     ON assignments(worker_id, state, created_at_ms);
+CREATE TABLE IF NOT EXISTS attempt_reassignments (
+    expired_attempt_id TEXT PRIMARY KEY REFERENCES assignments(attempt_id),
+    replacement_attempt_id TEXT NOT NULL UNIQUE REFERENCES assignments(attempt_id),
+    replacement_worker_id TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS attempt_leases (
     attempt_id TEXT PRIMARY KEY REFERENCES assignments(attempt_id),
@@ -79,6 +85,7 @@ CREATE INDEX IF NOT EXISTS attempt_observations_attempt
 CREATE TABLE IF NOT EXISTS server_outbox_frames (
     connection_id TEXT NOT NULL,
     sequence INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
     worker_id TEXT NOT NULL,
     kind INTEGER NOT NULL,
     attempt_id TEXT,
@@ -334,6 +341,12 @@ pub enum StoreAssignmentOutcome {
     Duplicate,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReassignmentRecord {
+    pub outcome: StoreAssignmentOutcome,
+    pub assignment: AssignmentRecord,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CancellationStoreOutcome {
     Requested,
@@ -359,6 +372,7 @@ pub enum ServerFrameKind {
 pub struct ServerOutboxFrame {
     pub connection_id: String,
     pub sequence: u64,
+    pub message_id: String,
     pub worker_id: String,
     pub kind: ServerFrameKind,
     pub attempt_id: Option<String>,
@@ -466,6 +480,14 @@ pub trait ControlRepository: Debug + Send + Sync {
         worker_id: &str,
     ) -> Result<Vec<AssignmentRecord>, RepositoryError>;
 
+    fn reassign_expired(
+        &self,
+        expired_attempt_id: &str,
+        replacement_worker_id: &str,
+        replacement_attempt_id: &str,
+        at_ms: u64,
+    ) -> Result<ReassignmentRecord, RepositoryError>;
+
     fn mark_sent_and_grant_lease(
         &self,
         attempt_id: &str,
@@ -511,6 +533,11 @@ pub trait ControlRepository: Debug + Send + Sync {
     ) -> Result<usize, RepositoryError>;
 
     fn server_outbox_len(&self, connection_id: &str) -> Result<usize, RepositoryError>;
+
+    fn prune_orphaned_server_frames(
+        &self,
+        disconnected_before_ms: u64,
+    ) -> Result<usize, RepositoryError>;
 
     fn lease(&self, attempt_id: &str) -> Result<Option<LeaseRecord>, RepositoryError>;
 }
@@ -564,9 +591,15 @@ impl SqliteControlRepository {
             transaction
                 .execute_batch("ALTER TABLE assignments ADD COLUMN cancellation_reason TEXT;")?;
         }
-        transaction.execute(
-            "INSERT OR IGNORE INTO schema_migrations(version) VALUES (2)",
-            [],
+        if !column_exists(&transaction, "server_outbox_frames", "message_id")? {
+            transaction.execute_batch(
+                "ALTER TABLE server_outbox_frames
+                 ADD COLUMN message_id TEXT NOT NULL DEFAULT '';",
+            )?;
+        }
+        transaction.execute_batch(
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);",
         )?;
         transaction.commit()?;
         Ok(Self {
@@ -737,6 +770,55 @@ impl ControlRepository for SqliteControlRepository {
                     .and_then(|value| value)
             })
             .collect()
+    }
+
+    fn reassign_expired(
+        &self,
+        expired_attempt_id: &str,
+        replacement_worker_id: &str,
+        replacement_attempt_id: &str,
+        at_ms: u64,
+    ) -> Result<ReassignmentRecord, RepositoryError> {
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(assignment) = existing_reassignment(
+            &transaction,
+            expired_attempt_id,
+            replacement_worker_id,
+            replacement_attempt_id,
+        )? {
+            transaction.commit()?;
+            return Ok(ReassignmentRecord {
+                outcome: StoreAssignmentOutcome::Duplicate,
+                assignment,
+            });
+        }
+
+        let original = assignment_in_transaction(&transaction, expired_attempt_id)?;
+        if original.state != AttemptState::LeaseExpired {
+            return Err(RepositoryError::InvalidTransition {
+                from: original.state,
+                to: AttemptState::Queued,
+            });
+        }
+        if replacement_attempt_id.is_empty() || replacement_attempt_id == expired_attempt_id {
+            return Err(RepositoryError::ConflictingAttempt(
+                replacement_attempt_id.to_owned(),
+            ));
+        }
+        let replacement = insert_reassignment(
+            &transaction,
+            original,
+            expired_attempt_id,
+            replacement_worker_id,
+            replacement_attempt_id,
+            at_ms,
+        )?;
+        transaction.commit()?;
+        Ok(ReassignmentRecord {
+            outcome: StoreAssignmentOutcome::Inserted,
+            assignment: replacement,
+        })
     }
 
     fn mark_sent_and_grant_lease(
@@ -1017,11 +1099,12 @@ impl ControlRepository for SqliteControlRepository {
     ) -> Result<(), RepositoryError> {
         self.connection()?.execute(
             "INSERT INTO server_outbox_frames(
-                 connection_id, sequence, worker_id, kind, attempt_id, created_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 connection_id, sequence, message_id, worker_id, kind, attempt_id, created_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 frame.connection_id,
                 to_i64(frame.sequence)?,
+                frame.message_id,
                 frame.worker_id,
                 frame.kind as i64,
                 frame.attempt_id,
@@ -1067,6 +1150,22 @@ impl ControlRepository for SqliteControlRepository {
             .map_err(|_| RepositoryError::Corrupt(format!("negative outbox count {count}")))
     }
 
+    fn prune_orphaned_server_frames(
+        &self,
+        disconnected_before_ms: u64,
+    ) -> Result<usize, RepositoryError> {
+        self.connection()?
+            .execute(
+                "DELETE FROM server_outbox_frames
+                 WHERE connection_id IN (
+                     SELECT connection_id FROM worker_connections
+                     WHERE disconnected_at_ms IS NOT NULL AND disconnected_at_ms < ?1
+                 )",
+                [to_i64(disconnected_before_ms)?],
+            )
+            .map_err(RepositoryError::from)
+    }
+
     fn lease(&self, attempt_id: &str) -> Result<Option<LeaseRecord>, RepositoryError> {
         self.connection()?
             .query_row(
@@ -1100,6 +1199,104 @@ impl ControlRepository for SqliteControlRepository {
             })
             .transpose()
     }
+}
+
+fn assignment_in_transaction(
+    transaction: &Transaction<'_>,
+    attempt_id: &str,
+) -> Result<AssignmentRecord, RepositoryError> {
+    transaction
+        .query_row(
+            "SELECT worker_id, contract_json, state, created_at_ms, updated_at_ms,
+                    cancellation_reason
+             FROM assignments WHERE attempt_id = ?1",
+            [attempt_id],
+            assignment_from_row,
+        )
+        .optional()?
+        .ok_or_else(|| RepositoryError::NotFound(attempt_id.to_owned()))?
+}
+
+fn existing_reassignment(
+    transaction: &Transaction<'_>,
+    expired_attempt_id: &str,
+    replacement_worker_id: &str,
+    replacement_attempt_id: &str,
+) -> Result<Option<AssignmentRecord>, RepositoryError> {
+    let existing = transaction
+        .query_row(
+            "SELECT replacement_attempt_id, replacement_worker_id
+             FROM attempt_reassignments WHERE expired_attempt_id = ?1",
+            [expired_attempt_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    let Some((existing_attempt, existing_worker)) = existing else {
+        return Ok(None);
+    };
+    if existing_attempt != replacement_attempt_id || existing_worker != replacement_worker_id {
+        return Err(RepositoryError::ConflictingAttempt(
+            expired_attempt_id.to_owned(),
+        ));
+    }
+    assignment_in_transaction(transaction, replacement_attempt_id).map(Some)
+}
+
+fn insert_reassignment(
+    transaction: &Transaction<'_>,
+    mut replacement: AssignmentRecord,
+    expired_attempt_id: &str,
+    replacement_worker_id: &str,
+    replacement_attempt_id: &str,
+    at_ms: u64,
+) -> Result<AssignmentRecord, RepositoryError> {
+    if transaction
+        .query_row(
+            "SELECT 1 FROM assignments WHERE attempt_id = ?1",
+            [replacement_attempt_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some()
+    {
+        return Err(RepositoryError::ConflictingAttempt(
+            replacement_attempt_id.to_owned(),
+        ));
+    }
+    replacement_worker_id.clone_into(&mut replacement.worker_id);
+    replacement_attempt_id.clone_into(&mut replacement.contract.attempt_id);
+    replacement.contract.attempt_number = replacement.contract.attempt_number.saturating_add(1);
+    replacement.state = AttemptState::Queued;
+    replacement.created_at_ms = at_ms;
+    replacement.updated_at_ms = at_ms;
+    replacement.cancellation_reason = None;
+    let contract_json = serde_json::to_string(&replacement.contract)?;
+    transaction.execute(
+        "INSERT INTO assignments(
+             attempt_id, assignment_id, worker_id, contract_json, state,
+             created_at_ms, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![
+            replacement.contract.attempt_id,
+            replacement.contract.assignment_id,
+            replacement.worker_id,
+            contract_json,
+            AttemptState::Queued as i64,
+            to_i64(at_ms)?
+        ],
+    )?;
+    transaction.execute(
+        "INSERT INTO attempt_reassignments(
+             expired_attempt_id, replacement_attempt_id, replacement_worker_id, created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            expired_attempt_id,
+            replacement_attempt_id,
+            replacement_worker_id,
+            to_i64(at_ms)?
+        ],
+    )?;
+    Ok(replacement)
 }
 
 fn assignment_from_row(
@@ -1289,6 +1486,17 @@ mod tests {
             "assignments",
             "cancellation_reason"
         )?);
+        assert!(column_exists_raw(
+            &database,
+            "server_outbox_frames",
+            "message_id"
+        )?);
+        let version_three: i64 = database.query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 3",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(version_three, 1);
         Ok(())
     }
 
@@ -1342,6 +1550,60 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(observation_count, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn expired_attempt_reassignment_creates_a_fresh_linked_contract() -> Result<(), Box<dyn Error>>
+    {
+        let repository = SqliteControlRepository::in_memory()?;
+        repository.store_assignment("worker-1", &contract(), 1_000)?;
+        repository.mark_sent_and_grant_lease("attempt-1", "worker-1", "lease-1", 1_000, 100)?;
+        assert!(matches!(
+            repository.reassign_expired("attempt-1", "worker-2", "attempt-2", 1_050),
+            Err(RepositoryError::InvalidTransition {
+                from: AttemptState::Sent,
+                to: AttemptState::Queued,
+            })
+        ));
+        assert_eq!(repository.expire_leases(1_100)?, vec!["attempt-1"]);
+
+        let reassigned =
+            repository.reassign_expired("attempt-1", "worker-2", "attempt-2", 1_101)?;
+        assert_eq!(reassigned.outcome, StoreAssignmentOutcome::Inserted);
+        assert_eq!(reassigned.assignment.worker_id, "worker-2");
+        assert_eq!(reassigned.assignment.contract.attempt_id, "attempt-2");
+        assert_eq!(reassigned.assignment.contract.attempt_number, 2);
+        assert_eq!(reassigned.assignment.state, AttemptState::Queued);
+        assert_eq!(
+            repository
+                .assignment("attempt-1")?
+                .expect("expired source remains auditable")
+                .state,
+            AttemptState::LeaseExpired
+        );
+        assert_eq!(
+            repository
+                .reassign_expired("attempt-1", "worker-2", "attempt-2", 1_102)?
+                .outcome,
+            StoreAssignmentOutcome::Duplicate
+        );
+
+        assert_eq!(
+            repository.observe_attempt(&observation(
+                1_103,
+                AttemptObservation::Finished(FinishedObservation {
+                    outcome: 1,
+                    exit_code: Some(0),
+                    elapsed_ms: 100,
+                    receipt: None,
+                    stdout: None,
+                    stderr: None,
+                    detail: "late old result".to_owned(),
+                }),
+            ))?,
+            ObservationDisposition::Stale
+        );
         Ok(())
     }
 
@@ -1431,6 +1693,7 @@ mod tests {
                 &ServerOutboxFrame {
                     connection_id: "connection-1".to_owned(),
                     sequence,
+                    message_id: format!("fixture:{sequence}"),
                     worker_id: "worker-1".to_owned(),
                     kind,
                     attempt_id: Some("attempt-1".to_owned()),
@@ -1448,6 +1711,54 @@ mod tests {
             repository.compact_server_frames("connection-1", 3, 1_011)?,
             1
         );
+        assert_eq!(repository.server_outbox_len("connection-1")?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn orphaned_server_frames_are_retained_until_the_policy_cutoff() -> Result<(), Box<dyn Error>> {
+        let repository = SqliteControlRepository::in_memory()?;
+        repository.register_worker(
+            &WorkerRegistration {
+                protocol_major: 1,
+                protocol_minor: 2,
+                worker_id: "worker-1".to_owned(),
+                instance_id: "instance-1".to_owned(),
+                worker_version: "test".to_owned(),
+                features: Vec::new(),
+                capabilities: WorkerCapabilities {
+                    backend: 1,
+                    architecture: "test".to_owned(),
+                    device_count: 1,
+                    max_concurrency: 1,
+                    driver_version: "test".to_owned(),
+                    toolkit_version: "test".to_owned(),
+                    container_runtime: "test".to_owned(),
+                },
+            },
+            &ConnectionRegistration {
+                connection_id: "connection-1".to_owned(),
+                worker_id: "worker-1".to_owned(),
+                instance_id: "instance-1".to_owned(),
+                connected_at_ms: 1_000,
+            },
+        )?;
+        repository.record_server_frame(
+            &ServerOutboxFrame {
+                connection_id: "connection-1".to_owned(),
+                sequence: 2,
+                message_id: "assignment:attempt-1".to_owned(),
+                worker_id: "worker-1".to_owned(),
+                kind: ServerFrameKind::Assignment,
+                attempt_id: Some("attempt-1".to_owned()),
+            },
+            1_001,
+        )?;
+        repository.disconnect("connection-1", 1_010)?;
+
+        assert_eq!(repository.prune_orphaned_server_frames(1_010)?, 0);
+        assert_eq!(repository.server_outbox_len("connection-1")?, 1);
+        assert_eq!(repository.prune_orphaned_server_frames(1_011)?, 1);
         assert_eq!(repository.server_outbox_len("connection-1")?, 0);
         Ok(())
     }

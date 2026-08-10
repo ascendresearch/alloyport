@@ -13,7 +13,7 @@ use alloyport_proto::{ValidationError, validate_assignment, validate_worker_hell
 use journal::{
     AttemptStore, AttemptStoreError, LocalAttemptPhase, LocalAttemptRecord, SqliteAttemptStore,
     StoreAdmissionOutcome, StoredArtifact, StoredAssignment, StoredEnvironment, StoredExecution,
-    StoredLimits,
+    StoredLimits, WorkerOutboxMessage, WorkerOutboxPayload,
 };
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -26,6 +26,7 @@ use tonic::Request;
 use tonic::transport::Endpoint;
 
 const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const OUTBOX_DELIVERY_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 pub use journal::StoredFinished;
 
@@ -189,13 +190,12 @@ impl WorkerState {
             ));
         }
         let stored = assignment_to_stored(assignment);
-        self.store
-            .admit(&stored, now_unix_ms())
-            .map(|outcome| match outcome {
-                StoreAdmissionOutcome::Inserted => AdmissionOutcome::New,
-                StoreAdmissionOutcome::Duplicate => AdmissionOutcome::Duplicate,
-            })
-            .map_err(WorkerError::from)
+        let outcome = self.store.admit(&stored, now_unix_ms())?;
+        let admission = match outcome {
+            StoreAdmissionOutcome::Inserted => AdmissionOutcome::New,
+            StoreAdmissionOutcome::Duplicate => AdmissionOutcome::Duplicate,
+        };
+        Ok(admission)
     }
 
     /// Checks durable local attempt knowledge.
@@ -234,6 +234,60 @@ impl WorkerState {
         self.store
             .mark_finished(attempt_id, finished, now_unix_ms())
             .map_err(WorkerError::from)
+    }
+
+    fn enqueue_lifecycle(&self, payload: WorkerOutboxPayload) -> Result<String, WorkerError> {
+        let (message_id, attempt_id) = lifecycle_identity(&payload);
+        self.store.enqueue_outbox(
+            &WorkerOutboxMessage {
+                message_id: message_id.clone(),
+                attempt_id,
+                payload,
+            },
+            now_unix_ms(),
+        )?;
+        Ok(message_id)
+    }
+
+    fn pending_outbox(&self) -> Result<Vec<WorkerOutboxMessage>, WorkerError> {
+        self.store.pending_outbox().map_err(WorkerError::from)
+    }
+
+    fn record_delivery(
+        &self,
+        connection_id: &str,
+        sequence: u64,
+        message_id: &str,
+    ) -> Result<(), WorkerError> {
+        self.store
+            .record_outbox_delivery(connection_id, sequence, message_id, now_unix_ms())
+            .map_err(WorkerError::from)
+    }
+
+    fn acknowledge_outbox(
+        &self,
+        connection_id: &str,
+        acknowledged_through: u64,
+    ) -> Result<usize, WorkerError> {
+        self.store
+            .acknowledge_outbox(connection_id, acknowledged_through)
+            .map_err(WorkerError::from)
+    }
+
+    fn prune_old_deliveries(&self) -> Result<usize, WorkerError> {
+        let retention_ms = u64::try_from(OUTBOX_DELIVERY_RETENTION.as_millis()).unwrap_or(u64::MAX);
+        self.store
+            .prune_outbox_deliveries(now_unix_ms().saturating_sub(retention_ms))
+            .map_err(WorkerError::from)
+    }
+
+    /// Returns the number of durable lifecycle messages awaiting acknowledgement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the journal cannot be read.
+    pub fn outbox_len(&self) -> Result<usize, WorkerError> {
+        self.store.outbox_len().map_err(WorkerError::from)
     }
 
     fn attempt(&self, attempt_id: &str) -> Result<Option<LocalAttemptRecord>, WorkerError> {
@@ -343,6 +397,7 @@ impl OutboundWorker {
             .send(WorkerToServer {
                 sequence: 1,
                 acknowledges_server_through: 0,
+                message_id: String::new(),
                 message: Some(worker_to_server::Message::Hello(hello)),
             })
             .await
@@ -352,12 +407,28 @@ impl OutboundWorker {
             .open_control_stream(Request::new(ReceiverStream::new(receiver)))
             .await?;
         let mut inbound = response.into_inner();
+        let welcome_frame = inbound.message().await?.ok_or(WorkerError::StreamClosed)?;
+        Self::validate_server_frame(&welcome_frame, 0, 0, 1, false)?;
+        let (connection_id, negotiated_protocol_minor) = self.welcome_identity(&welcome_frame)?;
         let mut heartbeat = tokio::time::interval(DEFAULT_HEARTBEAT_INTERVAL);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         heartbeat.tick().await;
         let mut next_worker_sequence = 2;
-        let mut last_server_sequence = 0;
-        let mut last_worker_sequence_acknowledged = 0;
+        let mut last_server_sequence = welcome_frame.sequence;
+        let mut last_worker_sequence_acknowledged = welcome_frame.acknowledges_worker_through;
+        let require_message_ids = negotiated_protocol_minor >= 2;
+        {
+            let state = self.state.lock().await;
+            state.acknowledge_outbox(&connection_id, last_worker_sequence_acknowledged)?;
+            state.prune_old_deliveries()?;
+        }
+        self.send_pending_outbox(
+            &connection_id,
+            &outbound,
+            &mut next_worker_sequence,
+            last_server_sequence,
+        )
+        .await?;
 
         loop {
             tokio::select! {
@@ -368,21 +439,29 @@ impl OutboundWorker {
                         last_server_sequence,
                         last_worker_sequence_acknowledged,
                         next_worker_sequence - 1,
+                        require_message_ids,
                     )?;
-                    last_server_sequence = message.sequence;
-                    last_worker_sequence_acknowledged = message.acknowledges_worker_through;
+                    let server_sequence = message.sequence;
+                    let acknowledges_worker_through = message.acknowledges_worker_through;
                     if self.handle_server_message(
                         message,
+                        &connection_id,
                         &outbound,
                         &mut next_worker_sequence,
-                        last_server_sequence,
+                        server_sequence,
                     ).await? {
                         return Ok(());
                     }
+                    self.state.lock().await.acknowledge_outbox(
+                        &connection_id,
+                        acknowledges_worker_through,
+                    )?;
+                    last_server_sequence = server_sequence;
+                    last_worker_sequence_acknowledged = acknowledges_worker_through;
                 }
                 _ = heartbeat.tick() => {
                     let active_attempts = self.state.lock().await.active_attempts()?;
-                    Self::send(
+                    Self::send_ephemeral(
                         &outbound,
                         &mut next_worker_sequence,
                         last_server_sequence,
@@ -397,11 +476,27 @@ impl OutboundWorker {
         }
     }
 
+    fn welcome_identity(&self, frame: &ServerToWorker) -> Result<(String, u32), WorkerError> {
+        let Some(server_to_worker::Message::Welcome(welcome)) = frame.message.as_ref() else {
+            return Err(WorkerError::Protocol(
+                "first server frame must be welcome".to_owned(),
+            ));
+        };
+        if welcome.protocol_major != self.hello.protocol_major {
+            return Err(WorkerError::Protocol(format!(
+                "server selected unsupported protocol major {}",
+                welcome.protocol_major
+            )));
+        }
+        Ok((welcome.connection_id.clone(), welcome.protocol_minor))
+    }
+
     fn validate_server_frame(
         message: &ServerToWorker,
         last_server_sequence: u64,
         last_worker_sequence_acknowledged: u64,
         sent_worker_through: u64,
+        require_message_ids: bool,
     ) -> Result<(), WorkerError> {
         if message.sequence != last_server_sequence + 1 {
             return Err(WorkerError::Protocol(format!(
@@ -422,12 +517,27 @@ impl OutboundWorker {
                 message.acknowledges_worker_through
             )));
         }
+        if require_message_ids {
+            let expected_message_id = expected_server_message_id(message.message.as_ref());
+            if let Some(expected) = expected_message_id {
+                if message.message_id != expected {
+                    return Err(WorkerError::Protocol(format!(
+                        "server message ID must be {expected}"
+                    )));
+                }
+            } else if !message.message_id.is_empty() {
+                return Err(WorkerError::Protocol(
+                    "ephemeral server frame cannot carry a message ID".to_owned(),
+                ));
+            }
+        }
         Ok(())
     }
 
     async fn handle_server_message(
         &self,
         frame: ServerToWorker,
+        connection_id: &str,
         outbound: &mpsc::Sender<WorkerToServer>,
         next_worker_sequence: &mut u64,
         acknowledged: u64,
@@ -443,16 +553,29 @@ impl OutboundWorker {
                 Ok(false)
             }
             Some(server_to_worker::Message::Assignment(assignment)) => {
-                self.handle_assignment(assignment, outbound, next_worker_sequence, acknowledged)
-                    .await?;
+                self.handle_assignment(
+                    assignment,
+                    connection_id,
+                    outbound,
+                    next_worker_sequence,
+                    acknowledged,
+                )
+                .await?;
                 Ok(false)
             }
             Some(server_to_worker::Message::Drain(_)) => Ok(true),
             Some(server_to_worker::Message::Cancel(cancel)) => {
-                self.handle_cancel(cancel, outbound, next_worker_sequence, acknowledged)
-                    .await?;
+                self.handle_cancel(
+                    cancel,
+                    connection_id,
+                    outbound,
+                    next_worker_sequence,
+                    acknowledged,
+                )
+                .await?;
                 Ok(false)
             }
+            Some(server_to_worker::Message::Acknowledgement(_)) => Ok(false),
             None => Err(WorkerError::Protocol(
                 "server message payload is missing".to_owned(),
             )),
@@ -462,82 +585,81 @@ impl OutboundWorker {
     async fn handle_assignment(
         &self,
         assignment: Assignment,
+        connection_id: &str,
         outbound: &mpsc::Sender<WorkerToServer>,
         next_worker_sequence: &mut u64,
         acknowledged: u64,
     ) -> Result<(), WorkerError> {
         let assignment_id = assignment.assignment_id.clone();
         let attempt_id = assignment.attempt_id.clone();
-        let (response, admitted) = match self.state.lock().await.admit(&assignment) {
-            Ok(outcome) => (
-                worker_to_server::Message::AssignmentAccepted(AssignmentAccepted {
-                    assignment_id: assignment_id.clone(),
-                    attempt_id: attempt_id.clone(),
-                    already_known: outcome == AdmissionOutcome::Duplicate,
-                }),
-                true,
-            ),
-            Err(WorkerError::InvalidAssignment(error)) => (
-                worker_to_server::Message::AssignmentRejected(AssignmentRejected {
-                    assignment_id: assignment_id.clone(),
-                    attempt_id: attempt_id.clone(),
-                    reason: RejectionReason::Invalid.into(),
-                    detail: error.to_string(),
-                }),
-                false,
-            ),
-            Err(WorkerError::ConflictingAttempt(_)) => (
-                worker_to_server::Message::AssignmentRejected(AssignmentRejected {
-                    assignment_id: assignment_id.clone(),
-                    attempt_id: attempt_id.clone(),
-                    reason: RejectionReason::Conflict.into(),
-                    detail: "attempt ID conflicts with locally admitted content".to_owned(),
-                }),
-                false,
-            ),
-            Err(WorkerError::PolicyViolation(detail)) => (
-                worker_to_server::Message::AssignmentRejected(AssignmentRejected {
-                    assignment_id: assignment_id.clone(),
-                    attempt_id: attempt_id.clone(),
-                    reason: RejectionReason::Policy.into(),
-                    detail,
-                }),
-                false,
-            ),
+        let admitted = match self.state.lock().await.admit(&assignment) {
+            Ok(_) => true,
+            Err(WorkerError::InvalidAssignment(error)) => {
+                self.state.lock().await.enqueue_lifecycle(
+                    WorkerOutboxPayload::AssignmentRejected {
+                        assignment_id: assignment_id.clone(),
+                        attempt_id: attempt_id.clone(),
+                        reason: RejectionReason::Invalid.into(),
+                        detail: error.to_string(),
+                    },
+                )?;
+                false
+            }
+            Err(WorkerError::ConflictingAttempt(_)) => {
+                self.state.lock().await.enqueue_lifecycle(
+                    WorkerOutboxPayload::AssignmentRejected {
+                        assignment_id: assignment_id.clone(),
+                        attempt_id: attempt_id.clone(),
+                        reason: RejectionReason::Conflict.into(),
+                        detail: "attempt ID conflicts with locally admitted content".to_owned(),
+                    },
+                )?;
+                false
+            }
+            Err(WorkerError::PolicyViolation(detail)) => {
+                self.state.lock().await.enqueue_lifecycle(
+                    WorkerOutboxPayload::AssignmentRejected {
+                        assignment_id: assignment_id.clone(),
+                        attempt_id: attempt_id.clone(),
+                        reason: RejectionReason::Policy.into(),
+                        detail,
+                    },
+                )?;
+                false
+            }
             Err(error) => return Err(error),
         };
-        Self::send(outbound, next_worker_sequence, acknowledged, response).await?;
-        if admitted
-            && let Some(finished) = self
-                .state
-                .lock()
-                .await
-                .attempt(&attempt_id)?
-                .and_then(|attempt| attempt.finished)
-        {
-            Self::send(
-                outbound,
-                next_worker_sequence,
-                acknowledged,
-                worker_to_server::Message::ExecutionFinished(stored_to_finished(
-                    &assignment_id,
-                    &attempt_id,
-                    &finished,
-                )),
-            )
-            .await?;
+        if admitted {
+            let state = self.state.lock().await;
+            let attempt = state.attempt(&attempt_id)?.ok_or_else(|| {
+                WorkerError::Protocol(format!("admitted attempt {attempt_id} is missing"))
+            })?;
+            match (attempt.phase, attempt.finished) {
+                (LocalAttemptPhase::Running, _) => state.mark_running(&attempt_id)?,
+                (LocalAttemptPhase::Finished, Some(finished)) => {
+                    state.mark_finished(&attempt_id, &finished)?;
+                }
+                (LocalAttemptPhase::Finished, None) => {
+                    return Err(WorkerError::Protocol(format!(
+                        "finished attempt {attempt_id} lacks terminal journal data"
+                    )));
+                }
+                (LocalAttemptPhase::Accepted, _) => {}
+            }
         }
-        Ok(())
+        self.send_pending_outbox(connection_id, outbound, next_worker_sequence, acknowledged)
+            .await
     }
 
     async fn handle_cancel(
         &self,
         cancel: alloyport_proto::v1::CancelAttempt,
+        connection_id: &str,
         outbound: &mpsc::Sender<WorkerToServer>,
         next_worker_sequence: &mut u64,
         acknowledged: u64,
     ) -> Result<(), WorkerError> {
-        let (assignment_id, already_terminal, finished) = {
+        {
             let state = self.state.lock().await;
             let attempt = state.attempt(&cancel.attempt_id)?.ok_or_else(|| {
                 WorkerError::Protocol(format!(
@@ -546,6 +668,12 @@ impl OutboundWorker {
                 ))
             })?;
             let already_terminal = attempt.phase == LocalAttemptPhase::Finished;
+            let assignment_id = attempt.assignment.assignment_id;
+            state.enqueue_lifecycle(WorkerOutboxPayload::CancellationAcknowledged {
+                assignment_id: assignment_id.clone(),
+                attempt_id: cancel.attempt_id.clone(),
+                already_terminal,
+            })?;
             if !already_terminal {
                 state.mark_finished(
                     &cancel.attempt_id,
@@ -560,7 +688,7 @@ impl OutboundWorker {
                     },
                 )?;
             }
-            let finished = state
+            state
                 .attempt(&cancel.attempt_id)?
                 .and_then(|record| record.finished)
                 .ok_or_else(|| {
@@ -568,34 +696,12 @@ impl OutboundWorker {
                         "cancelled attempt lacks terminal journal data".to_owned(),
                     )
                 })?;
-            (attempt.assignment.assignment_id, already_terminal, finished)
-        };
-        Self::send(
-            outbound,
-            next_worker_sequence,
-            acknowledged,
-            worker_to_server::Message::CancellationAcknowledged(CancellationAcknowledged {
-                assignment_id: assignment_id.clone(),
-                attempt_id: cancel.attempt_id.clone(),
-                already_terminal,
-            }),
-        )
-        .await?;
-        Self::send(
-            outbound,
-            next_worker_sequence,
-            acknowledged,
-            worker_to_server::Message::ExecutionFinished(stored_to_finished(
-                &assignment_id,
-                &cancel.attempt_id,
-                &finished,
-            )),
-        )
-        .await?;
-        Ok(())
+        }
+        self.send_pending_outbox(connection_id, outbound, next_worker_sequence, acknowledged)
+            .await
     }
 
-    async fn send(
+    async fn send_ephemeral(
         outbound: &mpsc::Sender<WorkerToServer>,
         next_worker_sequence: &mut u64,
         acknowledges_server_through: u64,
@@ -607,10 +713,39 @@ impl OutboundWorker {
             .send(WorkerToServer {
                 sequence,
                 acknowledges_server_through,
+                message_id: String::new(),
                 message: Some(message),
             })
             .await
             .map_err(|_| WorkerError::StreamClosed)
+    }
+
+    async fn send_pending_outbox(
+        &self,
+        connection_id: &str,
+        outbound: &mpsc::Sender<WorkerToServer>,
+        next_worker_sequence: &mut u64,
+        acknowledges_server_through: u64,
+    ) -> Result<(), WorkerError> {
+        let pending = self.state.lock().await.pending_outbox()?;
+        for entry in pending {
+            let sequence = *next_worker_sequence;
+            self.state
+                .lock()
+                .await
+                .record_delivery(connection_id, sequence, &entry.message_id)?;
+            *next_worker_sequence += 1;
+            outbound
+                .send(WorkerToServer {
+                    sequence,
+                    acknowledges_server_through,
+                    message_id: entry.message_id,
+                    message: Some(outbox_to_wire(entry.payload)),
+                })
+                .await
+                .map_err(|_| WorkerError::StreamClosed)?;
+        }
+        Ok(())
     }
 
     async fn available_slots(&self) -> Result<u32, WorkerError> {
@@ -703,6 +838,89 @@ fn stored_to_finished(
         stdout: finished.stdout.as_ref().map(stored_to_artifact),
         stderr: finished.stderr.as_ref().map(stored_to_artifact),
         detail: finished.detail.clone(),
+    }
+}
+
+fn lifecycle_identity(payload: &WorkerOutboxPayload) -> (String, String) {
+    let (kind, attempt_id) = match payload {
+        WorkerOutboxPayload::AssignmentAccepted { attempt_id, .. } => {
+            ("assignment-accepted", attempt_id)
+        }
+        WorkerOutboxPayload::AssignmentRejected { attempt_id, .. } => {
+            ("assignment-rejected", attempt_id)
+        }
+        WorkerOutboxPayload::ExecutionStarted { attempt_id, .. } => {
+            ("execution-started", attempt_id)
+        }
+        WorkerOutboxPayload::ExecutionFinished { attempt_id, .. } => {
+            ("execution-finished", attempt_id)
+        }
+        WorkerOutboxPayload::CancellationAcknowledged { attempt_id, .. } => {
+            ("cancellation-acknowledged", attempt_id)
+        }
+    };
+    (format!("{kind}:{attempt_id}"), attempt_id.clone())
+}
+
+fn expected_server_message_id(message: Option<&server_to_worker::Message>) -> Option<String> {
+    match message? {
+        server_to_worker::Message::Assignment(assignment) => {
+            Some(format!("assignment:{}", assignment.attempt_id))
+        }
+        server_to_worker::Message::Cancel(cancel) => Some(format!("cancel:{}", cancel.attempt_id)),
+        server_to_worker::Message::Welcome(_)
+        | server_to_worker::Message::Drain(_)
+        | server_to_worker::Message::Acknowledgement(_) => None,
+    }
+}
+
+fn outbox_to_wire(payload: WorkerOutboxPayload) -> worker_to_server::Message {
+    match payload {
+        WorkerOutboxPayload::AssignmentAccepted {
+            assignment_id,
+            attempt_id,
+            already_known,
+        } => worker_to_server::Message::AssignmentAccepted(AssignmentAccepted {
+            assignment_id,
+            attempt_id,
+            already_known,
+        }),
+        WorkerOutboxPayload::AssignmentRejected {
+            assignment_id,
+            attempt_id,
+            reason,
+            detail,
+        } => worker_to_server::Message::AssignmentRejected(AssignmentRejected {
+            assignment_id,
+            attempt_id,
+            reason,
+            detail,
+        }),
+        WorkerOutboxPayload::ExecutionStarted {
+            assignment_id,
+            attempt_id,
+        } => worker_to_server::Message::ExecutionStarted(alloyport_proto::v1::ExecutionStarted {
+            assignment_id,
+            attempt_id,
+        }),
+        WorkerOutboxPayload::ExecutionFinished {
+            assignment_id,
+            attempt_id,
+            finished,
+        } => worker_to_server::Message::ExecutionFinished(stored_to_finished(
+            &assignment_id,
+            &attempt_id,
+            &finished,
+        )),
+        WorkerOutboxPayload::CancellationAcknowledged {
+            assignment_id,
+            attempt_id,
+            already_terminal,
+        } => worker_to_server::Message::CancellationAcknowledged(CancellationAcknowledged {
+            assignment_id,
+            attempt_id,
+            already_terminal,
+        }),
     }
 }
 
@@ -834,16 +1052,17 @@ mod tests {
         let valid = ServerToWorker {
             sequence: 2,
             acknowledges_worker_through: 3,
+            message_id: String::new(),
             message: None,
         };
-        assert!(OutboundWorker::validate_server_frame(&valid, 1, 2, 3).is_ok());
+        assert!(OutboundWorker::validate_server_frame(&valid, 1, 2, 3, true).is_ok());
 
         let regressed = ServerToWorker {
             acknowledges_worker_through: 1,
             ..valid.clone()
         };
         assert!(matches!(
-            OutboundWorker::validate_server_frame(&regressed, 1, 2, 3),
+            OutboundWorker::validate_server_frame(&regressed, 1, 2, 3, true),
             Err(WorkerError::Protocol(detail)) if detail.contains("regressed")
         ));
 
@@ -852,7 +1071,7 @@ mod tests {
             ..valid
         };
         assert!(matches!(
-            OutboundWorker::validate_server_frame(&future, 1, 2, 3),
+            OutboundWorker::validate_server_frame(&future, 1, 2, 3, true),
             Err(WorkerError::Protocol(detail)) if detail.contains("beyond sent")
         ));
     }
