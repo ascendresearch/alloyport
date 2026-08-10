@@ -110,8 +110,9 @@ The contract, durable repository, and assignment-level reconciliation slices wer
   retention window while replay remains driven by durable assignment/cancellation records;
 - an explicit transactional operation reassigns only lease-expired work into a fresh attempt ID,
   increments the attempt number, and preserves the old record and late-result classification;
-- runnable server and worker binaries support mTLS from environment-provided certificates and permit
-  plaintext only on loopback for development;
+- runnable server and worker binaries support mTLS from environment-provided certificates, durable
+  certificate-to-worker enrollment, rotation and revocation, and permit plaintext only on loopback
+  for development;
 - loopback and repository tests cover handshake, assignment delivery, worker acceptance,
   store-before-send lease creation, duplicate/conflicting enqueue handling, disconnected replay,
   SQLite reopen/restart recovery on both sides, heartbeat renewal, lease expiry, late-result and
@@ -121,10 +122,10 @@ The contract, durable repository, and assignment-level reconciliation slices wer
 This is not the complete control plane. Replacement-worker selection and automatic invocation of
 reassignment are not implemented, ephemeral heartbeat/output-preview traffic is intentionally not
 durable, and execution and running-process signal delivery are not wired to a container. A separate
-Artifact gRPC service now provides resumable upload, immutable download, and mTLS certificate-
-fingerprint isolation, but still lacks quotas, general reference metadata, garbage collection, and
-certificate rotation mapping. Those omissions keep the implementation at Stage 1 rather than
-claiming production readiness.
+Artifact gRPC service now provides resumable upload, immutable download, stable enrolled ownership,
+and transactional global/per-owner quota accounting, but still lacks general reference metadata and
+garbage collection. Those omissions keep the implementation at Stage 1 rather than claiming
+production readiness.
 
 ## Product topology
 
@@ -340,9 +341,8 @@ separately authorized operations path if deployment policy requires it.
 
 ### Stage 5: pool and resilience
 
-Add multi-worker scheduling, draining, certificate rotation, durable server restart recovery, artifact
-garbage collection, quotas, and rolling protocol upgrades. Scale the server only after single-instance
-reconciliation invariants are proven.
+Add multi-worker scheduling, draining, artifact garbage collection, and rolling protocol upgrades.
+Scale the server only after single-instance reconciliation invariants are proven.
 
 ## Invariants
 

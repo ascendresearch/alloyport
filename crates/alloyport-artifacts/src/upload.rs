@@ -28,10 +28,22 @@ CREATE TABLE IF NOT EXISTS upload_sessions (
     updated_at_ms INTEGER NOT NULL,
     expires_at_ms INTEGER NOT NULL,
     artifact_digest TEXT,
+    quota_reserved_bytes INTEGER NOT NULL DEFAULT 0,
     UNIQUE(owner_id, upload_key)
 );
 CREATE INDEX IF NOT EXISTS upload_sessions_expiry
     ON upload_sessions(state, expires_at_ms);
+CREATE TABLE IF NOT EXISTS artifact_objects (
+    digest TEXT PRIMARY KEY,
+    size_bytes INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS artifact_owner_references (
+    owner_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    PRIMARY KEY(owner_id, digest),
+    FOREIGN KEY(digest) REFERENCES artifact_objects(digest)
+);
 COMMIT;
 ";
 
@@ -53,6 +65,28 @@ pub enum UploadState {
     Finalizing = 2,
     Completed = 3,
     Failed = 4,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UploadQuotas {
+    pub total_bytes: u64,
+    pub per_owner_bytes: u64,
+}
+
+impl UploadQuotas {
+    #[must_use]
+    pub const fn unbounded() -> Self {
+        Self {
+            total_bytes: i64::MAX as u64,
+            per_owner_bytes: i64::MAX as u64,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QuotaScope {
+    Total,
+    Owner,
 }
 
 impl UploadState {
@@ -107,6 +141,12 @@ pub enum UploadError {
         limit: u64,
         attempted: u64,
     },
+    QuotaExceeded {
+        scope: QuotaScope,
+        limit: u64,
+        used: u64,
+        requested: u64,
+    },
     InvalidState(UploadState),
     Expired,
     Incomplete {
@@ -144,6 +184,16 @@ impl Display for UploadError {
                     "upload would reach {attempted} bytes, limit is {limit}"
                 )
             }
+            Self::QuotaExceeded {
+                scope,
+                limit,
+                used,
+                requested,
+            } => write!(
+                formatter,
+                "{scope:?} artifact quota exceeded: {used} bytes used or reserved, \
+                 {requested} requested, limit is {limit}"
+            ),
             Self::InvalidState(state) => write!(formatter, "upload is in {state:?} state"),
             Self::Expired => write!(formatter, "upload session has expired"),
             Self::Incomplete {
@@ -187,6 +237,7 @@ pub struct SqliteUploadStore {
     upload_root: PathBuf,
     max_upload_bytes: u64,
     max_chunk_bytes: usize,
+    quotas: UploadQuotas,
     counter: AtomicU64,
 }
 
@@ -197,6 +248,7 @@ impl Debug for SqliteUploadStore {
             .field("upload_root", &self.upload_root)
             .field("max_upload_bytes", &self.max_upload_bytes)
             .field("max_chunk_bytes", &self.max_chunk_bytes)
+            .field("quotas", &self.quotas)
             .finish_non_exhaustive()
     }
 }
@@ -209,21 +261,40 @@ impl SqliteUploadStore {
         max_upload_bytes: u64,
         max_chunk_bytes: usize,
     ) -> Result<Self, UploadError> {
+        Self::open_with_quotas(
+            database,
+            upload_root,
+            max_upload_bytes,
+            max_chunk_bytes,
+            UploadQuotas::unbounded(),
+        )
+    }
+
+    pub fn open_with_quotas(
+        database: impl AsRef<Path>,
+        upload_root: impl AsRef<Path>,
+        max_upload_bytes: u64,
+        max_chunk_bytes: usize,
+        quotas: UploadQuotas,
+    ) -> Result<Self, UploadError> {
         if max_chunk_bytes == 0 {
             return Err(UploadError::InvalidRequest("chunk limit must be positive"));
         }
+        validate_quotas(quotas)?;
         fs::create_dir_all(upload_root.as_ref()).map_err(|source| UploadError::Io {
             operation: "create upload data directory",
             source,
         })?;
-        let connection = Connection::open(database)?;
+        let mut connection = Connection::open(database)?;
         connection.execute_batch(SCHEMA)?;
+        migrate_quota_schema(&mut connection)?;
         let store = Self {
             connection: Mutex::new(connection),
             finalize_lock: Mutex::new(()),
             upload_root: upload_root.as_ref().to_path_buf(),
             max_upload_bytes,
             max_chunk_bytes,
+            quotas,
             counter: AtomicU64::new(unique_seed()),
         };
         store.cleanup_completed_data()?;
@@ -246,12 +317,13 @@ impl SqliteUploadStore {
             transaction.commit()?;
             return Ok(existing);
         }
+        reserve_quota(&transaction, request, self.quotas)?;
         let upload_id = self.next_upload_id(&transaction)?;
         transaction.execute(
             "INSERT INTO upload_sessions(upload_id, owner_id, upload_key, expected_digest,
                  expected_size_bytes, media_type, committed_offset, state, created_at_ms,
-                 updated_at_ms, expires_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?8, ?9)",
+                 updated_at_ms, expires_at_ms, quota_reserved_bytes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?8, ?9, ?5)",
             params![
                 upload_id,
                 request.owner_id,
@@ -286,10 +358,10 @@ impl SqliteUploadStore {
         let database = self.connection()?;
         let found = database.query_row(
             "SELECT EXISTS(
-                SELECT 1 FROM upload_sessions
-                WHERE owner_id = ?1 AND artifact_digest = ?2 AND state = ?3
+                SELECT 1 FROM artifact_owner_references
+                WHERE owner_id = ?1 AND digest = ?2
             )",
-            params![owner_id, digest.to_string(), UploadState::Completed as i64],
+            params![owner_id, digest.to_string()],
             |row| row.get(0),
         )?;
         Ok(found)
@@ -400,9 +472,12 @@ impl SqliteUploadStore {
                 return Err(error.into());
             }
         };
-        let database = self.connection()?;
-        database.execute(
-            "UPDATE upload_sessions SET state = ?2, artifact_digest = ?3, updated_at_ms = ?4
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        record_completed_artifact(&transaction, &session.owner_id, artifact)?;
+        transaction.execute(
+            "UPDATE upload_sessions
+             SET state = ?2, artifact_digest = ?3, updated_at_ms = ?4, quota_reserved_bytes = 0
              WHERE upload_id = ?1",
             params![
                 upload_id,
@@ -411,7 +486,7 @@ impl SqliteUploadStore {
                 to_i64(now_ms)?
             ],
         )?;
-        drop(database);
+        transaction.commit()?;
         remove_if_present(&path)?;
         Ok(artifact)
     }
@@ -474,7 +549,9 @@ impl SqliteUploadStore {
 
     fn mark_failed(&self, upload_id: &str, now_ms: u64) -> Result<(), UploadError> {
         self.connection()?.execute(
-            "UPDATE upload_sessions SET state = ?2, updated_at_ms = ?3 WHERE upload_id = ?1",
+            "UPDATE upload_sessions
+             SET state = ?2, updated_at_ms = ?3, quota_reserved_bytes = 0
+             WHERE upload_id = ?1",
             params![upload_id, UploadState::Failed as i64, to_i64(now_ms)?],
         )?;
         Ok(())
@@ -496,6 +573,213 @@ impl SqliteUploadStore {
         }
         Ok(())
     }
+}
+
+fn migrate_quota_schema(connection: &mut Connection) -> Result<(), UploadError> {
+    let has_reservation_column = {
+        let mut statement = connection.prepare("PRAGMA table_info(upload_sessions)")?;
+        statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "quota_reserved_bytes")
+    };
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if !has_reservation_column {
+        transaction.execute(
+            "ALTER TABLE upload_sessions
+             ADD COLUMN quota_reserved_bytes INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        transaction.execute(
+            "UPDATE upload_sessions
+             SET quota_reserved_bytes = expected_size_bytes
+             WHERE state IN (?1, ?2)",
+            params![UploadState::Open as i64, UploadState::Finalizing as i64],
+        )?;
+    }
+    transaction.execute(
+        "INSERT OR IGNORE INTO artifact_objects(digest, size_bytes)
+         SELECT artifact_digest, expected_size_bytes FROM upload_sessions
+         WHERE state = ?1 AND artifact_digest IS NOT NULL",
+        [UploadState::Completed as i64],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO artifact_owner_references(owner_id, digest, size_bytes)
+         SELECT owner_id, artifact_digest, expected_size_bytes FROM upload_sessions
+         WHERE state = ?1 AND artifact_digest IS NOT NULL",
+        [UploadState::Completed as i64],
+    )?;
+    let conflicting_object = transaction
+        .query_row(
+            "SELECT upload_id FROM upload_sessions AS session
+             JOIN artifact_objects AS object ON object.digest = session.artifact_digest
+             WHERE session.state = ?1 AND object.size_bytes != session.expected_size_bytes
+             LIMIT 1",
+            [UploadState::Completed as i64],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if let Some(upload_id) = conflicting_object {
+        return Err(UploadError::Corrupt(format!(
+            "completed upload {upload_id} conflicts with artifact object size"
+        )));
+    }
+    let conflicting_reference = transaction
+        .query_row(
+            "SELECT reference.owner_id, reference.digest
+             FROM artifact_owner_references AS reference
+             JOIN artifact_objects AS object ON object.digest = reference.digest
+             WHERE reference.size_bytes != object.size_bytes
+             LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    if let Some((owner_id, digest)) = conflicting_reference {
+        return Err(UploadError::Corrupt(format!(
+            "owner {owner_id} reference conflicts with artifact {digest} size"
+        )));
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+fn validate_quotas(quotas: UploadQuotas) -> Result<(), UploadError> {
+    if quotas.total_bytes == 0 || quotas.per_owner_bytes == 0 {
+        return Err(UploadError::InvalidRequest(
+            "artifact quota limits must be positive",
+        ));
+    }
+    if quotas.total_bytes > i64::MAX as u64 || quotas.per_owner_bytes > i64::MAX as u64 {
+        return Err(UploadError::InvalidRequest(
+            "artifact quota limits exceed SQLite range",
+        ));
+    }
+    if quotas.per_owner_bytes > quotas.total_bytes {
+        return Err(UploadError::InvalidRequest(
+            "per-owner artifact quota exceeds total quota",
+        ));
+    }
+    Ok(())
+}
+
+fn reserve_quota(
+    transaction: &rusqlite::Transaction<'_>,
+    request: &BeginUpload,
+    quotas: UploadQuotas,
+) -> Result<(), UploadError> {
+    let total_stored = query_bytes(
+        transaction,
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM artifact_objects",
+        [],
+    )?;
+    let total_reserved = query_bytes(
+        transaction,
+        "SELECT COALESCE(SUM(quota_reserved_bytes), 0) FROM upload_sessions
+         WHERE state IN (?1, ?2) AND expires_at_ms > ?3",
+        params![
+            UploadState::Open as i64,
+            UploadState::Finalizing as i64,
+            to_i64(request.now_ms)?
+        ],
+    )?;
+    enforce_quota(
+        QuotaScope::Total,
+        quotas.total_bytes,
+        total_stored.saturating_add(total_reserved),
+        request.expected_size_bytes,
+    )?;
+
+    let owner_stored = query_bytes(
+        transaction,
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM artifact_owner_references
+         WHERE owner_id = ?1",
+        [&request.owner_id],
+    )?;
+    let owner_reserved = query_bytes(
+        transaction,
+        "SELECT COALESCE(SUM(quota_reserved_bytes), 0) FROM upload_sessions
+         WHERE owner_id = ?1 AND state IN (?2, ?3) AND expires_at_ms > ?4",
+        params![
+            request.owner_id,
+            UploadState::Open as i64,
+            UploadState::Finalizing as i64,
+            to_i64(request.now_ms)?
+        ],
+    )?;
+    enforce_quota(
+        QuotaScope::Owner,
+        quotas.per_owner_bytes,
+        owner_stored.saturating_add(owner_reserved),
+        request.expected_size_bytes,
+    )
+}
+
+fn query_bytes(
+    connection: &Connection,
+    sql: &str,
+    parameters: impl rusqlite::Params,
+) -> Result<u64, UploadError> {
+    let value = connection.query_row(sql, parameters, |row| row.get::<_, i64>(0))?;
+    from_i64(value)
+}
+
+fn enforce_quota(
+    scope: QuotaScope,
+    limit: u64,
+    used: u64,
+    requested: u64,
+) -> Result<(), UploadError> {
+    if used.saturating_add(requested) > limit {
+        Err(UploadError::QuotaExceeded {
+            scope,
+            limit,
+            used,
+            requested,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn record_completed_artifact(
+    transaction: &rusqlite::Transaction<'_>,
+    owner_id: &str,
+    artifact: ArtifactIdentity,
+) -> Result<(), UploadError> {
+    let digest = artifact.digest.to_string();
+    let size = to_i64(artifact.size_bytes)?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO artifact_objects(digest, size_bytes) VALUES (?1, ?2)",
+        params![digest, size],
+    )?;
+    let stored_size = transaction.query_row(
+        "SELECT size_bytes FROM artifact_objects WHERE digest = ?1",
+        [&digest],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if stored_size != size {
+        return Err(UploadError::Corrupt(format!(
+            "artifact {digest} has conflicting recorded sizes"
+        )));
+    }
+    transaction.execute(
+        "INSERT OR IGNORE INTO artifact_owner_references(owner_id, digest, size_bytes)
+         VALUES (?1, ?2, ?3)",
+        params![owner_id, digest, size],
+    )?;
+    let owner_size = transaction.query_row(
+        "SELECT size_bytes FROM artifact_owner_references WHERE owner_id = ?1 AND digest = ?2",
+        params![owner_id, digest],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if owner_size != size {
+        return Err(UploadError::Corrupt(format!(
+            "owner {owner_id} has a conflicting size for artifact {digest}"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_begin(request: &BeginUpload, max: u64) -> Result<(), UploadError> {
@@ -702,6 +986,8 @@ mod tests {
     use ring::digest::{Context, SHA256};
     use std::io::Read;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     #[test]
     fn upload_resumes_after_reopen_and_finalizes_into_the_cas() -> Result<(), Box<dyn Error>> {
@@ -878,6 +1164,229 @@ mod tests {
             request.expected_digest
         );
         Ok(())
+    }
+
+    #[test]
+    fn quota_reservation_is_idempotent_and_survives_restart() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("uploads.sqlite3");
+        let upload_root = directory.path().join("uploads");
+        let limits = UploadQuotas {
+            total_bytes: 5,
+            per_owner_bytes: 5,
+        };
+        let first = quota_request("worker-1", "first", b"12345", 1, 100);
+        let upload_id = {
+            let uploads =
+                SqliteUploadStore::open_with_quotas(&database, &upload_root, 100, 100, limits)?;
+            let session = uploads.begin(&first)?;
+            assert_eq!(uploads.begin(&first)?, session);
+            session.upload_id
+        };
+        let uploads =
+            SqliteUploadStore::open_with_quotas(&database, &upload_root, 100, 100, limits)?;
+        assert_eq!(uploads.begin(&first)?.upload_id, upload_id);
+        assert!(matches!(
+            uploads.begin(&quota_request("worker-2", "second", b"x", 2, 100)),
+            Err(UploadError::QuotaExceeded {
+                scope: QuotaScope::Total,
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn per_owner_quota_does_not_block_another_owner() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let uploads = quota_store(directory.path(), 12, 6)?;
+        uploads.begin(&quota_request("worker-1", "first", b"123456", 1, 100))?;
+        assert!(matches!(
+            uploads.begin(&quota_request("worker-1", "second", b"x", 1, 100)),
+            Err(UploadError::QuotaExceeded {
+                scope: QuotaScope::Owner,
+                ..
+            })
+        ));
+        uploads.begin(&quota_request("worker-2", "first", b"abcdef", 1, 100))?;
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_begin_cannot_overcommit_total_quota() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let uploads = Arc::new(quota_store(directory.path(), 6, 6)?);
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for (owner, bytes) in [
+            ("worker-1", b"aaaa".as_slice()),
+            ("worker-2", b"bbbb".as_slice()),
+        ] {
+            let uploads = Arc::clone(&uploads);
+            let barrier = Arc::clone(&barrier);
+            let request = quota_request(owner, "first", bytes, 1, 100);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                uploads.begin(&request)
+            }));
+        }
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("quota thread must not panic"))
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(
+                    result,
+                    Err(UploadError::QuotaExceeded {
+                        scope: QuotaScope::Total,
+                        ..
+                    })
+                ))
+                .count(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_failure_and_expiry_release_reservations() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let uploads = quota_store(directory.path(), 5, 5)?;
+        let cas = FilesystemArtifactStore::open(directory.path().join("cas"), 100)?;
+        let mut invalid = quota_request("worker-1", "invalid", b"right", 1, 100);
+        invalid.expected_digest = digest(b"wrong");
+        let session = uploads.begin(&invalid)?;
+        uploads.append("worker-1", &session.upload_id, 0, b"right", 2)?;
+        assert!(matches!(
+            uploads.finalize("worker-1", &session.upload_id, &cas, 3),
+            Err(UploadError::Artifact(
+                ArtifactStoreError::DigestMismatch { .. }
+            ))
+        ));
+        uploads.begin(&quota_request("worker-2", "after-failure", b"12345", 4, 10))?;
+
+        let expiry_directory = tempfile::tempdir()?;
+        let expiring = quota_store(expiry_directory.path(), 5, 5)?;
+        expiring.begin(&quota_request("worker-1", "expired", b"12345", 1, 10))?;
+        expiring.begin(&quota_request(
+            "worker-2",
+            "after-expiry",
+            b"abcde",
+            10,
+            100,
+        ))?;
+        assert_eq!(expiring.prune_expired(10)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn completed_duplicate_digest_is_not_counted_twice() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let uploads = quota_store(directory.path(), 10, 10)?;
+        let cas = FilesystemArtifactStore::open(directory.path().join("cas"), 100)?;
+        for key in ["first", "duplicate"] {
+            let request = quota_request("worker-1", key, b"12345", 1, 100);
+            let session = uploads.begin(&request)?;
+            uploads.append("worker-1", &session.upload_id, 0, b"12345", 2)?;
+            uploads.finalize("worker-1", &session.upload_id, &cas, 3)?;
+        }
+        uploads.begin(&quota_request("worker-1", "remaining", b"abcde", 4, 100))?;
+        Ok(())
+    }
+
+    #[test]
+    fn pre_quota_schema_is_migrated_and_backfilled() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let database_path = directory.path().join("uploads.sqlite3");
+        let database = Connection::open(&database_path)?;
+        database.execute_batch(
+            "CREATE TABLE upload_sessions (
+                upload_id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                upload_key TEXT NOT NULL,
+                expected_digest TEXT NOT NULL,
+                expected_size_bytes INTEGER NOT NULL,
+                media_type TEXT NOT NULL,
+                committed_offset INTEGER NOT NULL,
+                state INTEGER NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                expires_at_ms INTEGER NOT NULL,
+                artifact_digest TEXT,
+                UNIQUE(owner_id, upload_key)
+            );",
+        )?;
+        let completed_digest = digest(b"abc").to_string();
+        let open_digest = digest(b"de").to_string();
+        database.execute(
+            "INSERT INTO upload_sessions VALUES
+             ('completed', 'worker-1', 'completed', ?1, 3, 'text/plain', 3, 3, 1, 1, 100, ?1)",
+            [&completed_digest],
+        )?;
+        database.execute(
+            "INSERT INTO upload_sessions VALUES
+             ('open', 'worker-2', 'open', ?1, 2, 'text/plain', 0, 1, 1, 1, 100, NULL)",
+            [&open_digest],
+        )?;
+        drop(database);
+
+        let uploads = SqliteUploadStore::open_with_quotas(
+            &database_path,
+            directory.path().join("uploads"),
+            100,
+            100,
+            UploadQuotas {
+                total_bytes: 5,
+                per_owner_bytes: 5,
+            },
+        )?;
+        assert!(uploads.owns_completed_artifact("worker-1", digest(b"abc"))?);
+        assert!(matches!(
+            uploads.begin(&quota_request("worker-3", "blocked", b"x", 2, 100)),
+            Err(UploadError::QuotaExceeded {
+                scope: QuotaScope::Total,
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    fn quota_store(
+        directory: &Path,
+        total_bytes: u64,
+        per_owner_bytes: u64,
+    ) -> Result<SqliteUploadStore, UploadError> {
+        SqliteUploadStore::open_with_quotas(
+            directory.join("uploads.sqlite3"),
+            directory.join("uploads"),
+            100,
+            100,
+            UploadQuotas {
+                total_bytes,
+                per_owner_bytes,
+            },
+        )
+    }
+
+    fn quota_request(
+        owner_id: &str,
+        upload_key: &str,
+        bytes: &[u8],
+        now_ms: u64,
+        expires_at_ms: u64,
+    ) -> BeginUpload {
+        BeginUpload {
+            owner_id: owner_id.to_owned(),
+            upload_key: upload_key.to_owned(),
+            expected_digest: digest(bytes),
+            expected_size_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            media_type: "application/octet-stream".to_owned(),
+            now_ms,
+            expires_at_ms,
+        }
     }
 
     fn request(bytes: &[u8]) -> BeginUpload {

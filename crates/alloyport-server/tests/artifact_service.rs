@@ -1,4 +1,4 @@
-use alloyport_artifacts::upload::SqliteUploadStore;
+use alloyport_artifacts::upload::{SqliteUploadStore, UploadQuotas};
 use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest};
 use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient;
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
@@ -16,17 +16,21 @@ use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::metadata::{MetadataMap, MetadataValue};
-use tonic::transport::{Endpoint, Server};
-use tonic::{Extensions, Request, Status};
+use tonic::transport::{Channel, Endpoint, Server};
+use tonic::{Code, Extensions, Request, Status};
 
 #[tokio::test]
 async fn upload_resumes_across_streams_then_downloads_in_chunks() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
-    let uploads = Arc::new(SqliteUploadStore::open(
+    let uploads = Arc::new(SqliteUploadStore::open_with_quotas(
         directory.path().join("uploads.sqlite3"),
         directory.path().join("uploads"),
         1_024,
         8,
+        UploadQuotas {
+            total_bytes: 11,
+            per_owner_bytes: 11,
+        },
     )?);
     let artifacts = Arc::new(FilesystemArtifactStore::open(
         directory.path().join("cas"),
@@ -114,8 +118,30 @@ async fn upload_resumes_across_streams_then_downloads_in_chunks() -> Result<(), 
     }
     assert_eq!(downloaded, b"world");
 
+    assert_quota_exhausted(&mut client).await?;
+
     let _ = shutdown_send.send(());
     server_task.await??;
+    Ok(())
+}
+
+async fn assert_quota_exhausted(
+    client: &mut ArtifactServiceClient<Channel>,
+) -> Result<(), Box<dyn Error>> {
+    let quota_error =
+        client
+            .begin_upload(authorized(BeginUploadRequest {
+                upload_key: "attempt-2:stdout".to_owned(),
+                expected_digest:
+                    "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+                        .to_owned(),
+                expected_size_bytes: 1,
+                media_type: "text/plain".to_owned(),
+                ttl_ms: 60_000,
+            }))
+            .await
+            .expect_err("completed artifact usage must enforce the owner quota");
+    assert_eq!(quota_error.code(), Code::ResourceExhausted);
     Ok(())
 }
 

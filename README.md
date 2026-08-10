@@ -91,11 +91,24 @@ The server database is selected with `ALLOYPORT_DATABASE` and defaults to
 `alloyport-control.sqlite3`; the worker journal uses `ALLOYPORT_WORKER_DATABASE` and defaults to
 `alloyport-worker.sqlite3`. Artifact state is rooted at `ALLOYPORT_ARTIFACT_ROOT` (default
 `alloyport-artifacts`); `ALLOYPORT_ARTIFACT_MAX_BYTES` and
-`ALLOYPORT_ARTIFACT_MAX_CHUNK_BYTES` set positive byte limits. Artifact RPCs require mTLS even when
-worker control uses permitted loopback plaintext. The current slice proves registration, heartbeat,
+`ALLOYPORT_ARTIFACT_MAX_CHUNK_BYTES` set positive byte limits;
+`ALLOYPORT_ARTIFACT_TOTAL_QUOTA_BYTES` and `ALLOYPORT_ARTIFACT_OWNER_QUOTA_BYTES` configure
+transactional stored-plus-reserved quotas. Certificate enrollment state uses
+`ALLOYPORT_IDENTITY_DATABASE` or defaults to `alloyport-artifacts/identities.sqlite3`. Enroll and
+manage identities before starting a remote server:
+
+```bash
+cargo run -p alloyport-server -- identity enroll WORKER_ID client.pem
+cargo run -p alloyport-server -- identity rotate WORKER_ID old.pem new.pem
+cargo run -p alloyport-server -- identity revoke client.pem
+```
+
+Artifact RPCs require mTLS even when worker control uses permitted loopback plaintext. Remote worker
+control binds the verified certificate to `WorkerHello.worker_id`; rotation preserves the stable
+Artifact owner and revocation fails closed. The current slice proves registration, heartbeat,
 durable assignment admission, server/worker restart reconciliation, finished-result replay,
-cancellation ordering, server-side lease expiry, and certificate-isolated artifact transfer. It does
-not yet expose an external scheduling API or execute assignments on devices.
+cancellation ordering, server-side lease expiry, and enrolled artifact transfer. It does not yet
+expose an external scheduling API or execute assignments on devices.
 
 No license has been selected yet. Do not publish packages or redistribute the code until that
 decision is recorded.

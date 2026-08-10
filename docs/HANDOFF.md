@@ -28,6 +28,8 @@ Read these documents before changing architecture or implementation:
    before implementing real execution or artifact persistence.
 7. [`design/0012-filesystem-artifact-cas.md`](design/0012-filesystem-artifact-cas.md) for the first
    immutable artifact storage boundary and its remaining service-layer gaps.
+8. [`design/0013-durable-certificate-enrollment.md`](design/0013-durable-certificate-enrollment.md)
+   for stable mTLS owner mapping, rotation, revocation, and worker-control identity binding.
 
 Design documents state intended behavior. Tests and code state what this revision actually implements.
 
@@ -111,10 +113,17 @@ The crate also implements a SQLite-backed resumable upload session layer:
   terminal while transient CAS I/O failures remain retryable in `Finalizing` state;
 - completed data files and expired partial sessions are cleaned without deleting published CAS
   objects.
+- begin atomically reserves declared bytes against global and per-owner stored-plus-reserved quotas;
+  finalization converts that reservation into digest-deduplicated global usage and owner/digest usage;
+- idempotent begin and duplicate completed digests do not double-count, concurrent begin cannot
+  overcommit, retryable finalization retains its reservation, and terminal failure or expiry releases
+  capacity;
+- opening a pre-quota database migrates and backfills active reservations plus completed artifact
+  usage.
 
 This is the storage and resumable-session core used by the Artifact RPC adapter. Completed upload
-records also provide the first durable owner-to-digest read authorization. There is no total-store
-quota, general reference tracking, or garbage collection.
+records also provide the first durable owner-to-digest read authorization. There is no general
+controller-granted reference tracking or garbage collection.
 
 ### `alloyport-core`
 
@@ -212,11 +221,17 @@ The server library also implements a separate `ArtifactServiceImpl` adapter:
   the session owner, and authorizes digest reads, so no request-body owner or client filesystem path
   is trusted; the extensions expose tonic's verified TLS peer-certificate information.
 
-The server binary registers this service alongside worker control. `MtlsArtifactAccessPolicy`
-requires tonic's verified TLS connection information, derives owner identity from the SHA-256
-fingerprint of the client leaf certificate, ignores client-supplied owner metadata, and permits a
-download only when that certificate owner has a completed upload record for the digest. Consequently,
-Artifact RPCs return `Unauthenticated` on the permitted plaintext loopback development server.
+The server binary registers this service alongside worker control. `EnrolledArtifactAccessPolicy`
+requires tonic's verified TLS connection information, maps the client leaf-certificate fingerprint
+through the durable identity registry, ignores client-supplied owner metadata, and permits a download
+only when that stable owner has a completed upload record for the digest. Rotation preserves those
+references; replacement and revocation fail closed. Consequently, Artifact RPCs return
+`Unauthenticated` on the permitted plaintext loopback development server.
+
+Remote `WorkerControlService` uses the same registry. The verified certificate must resolve to the
+`WorkerHello.worker_id`, and every later frame revalidates the original fingerprint so a rotated or
+revoked connection is terminated on its next heartbeat or lifecycle message. Plaintext loopback
+worker control remains an explicit development bypass.
 
 `WorkerControlService::new()` remains an in-memory SQLite convenience for tests. The server binary
 uses `ALLOYPORT_DATABASE` or defaults to `alloyport-control.sqlite3`, so normal server state survives
@@ -235,11 +250,24 @@ Artifact storage configuration is:
 - `ALLOYPORT_ARTIFACT_ROOT` (default `alloyport-artifacts`), containing `cas/`, `upload-data/`, and
   `uploads.sqlite3`;
 - `ALLOYPORT_ARTIFACT_MAX_BYTES` (default 8 GiB) for both expected uploads and CAS objects;
-- `ALLOYPORT_ARTIFACT_MAX_CHUNK_BYTES` (default 1 MiB) for each streamed upload message.
+- `ALLOYPORT_ARTIFACT_MAX_CHUNK_BYTES` (default 1 MiB) for each streamed upload message;
+- `ALLOYPORT_ARTIFACT_TOTAL_QUOTA_BYTES` (default 64 GiB) for managed stored objects plus active
+  reservations;
+- `ALLOYPORT_ARTIFACT_OWNER_QUOTA_BYTES` (default 16 GiB) for each stable owner;
+- `ALLOYPORT_IDENTITY_DATABASE` (default `<ALLOYPORT_ARTIFACT_ROOT>/identities.sqlite3`) for durable
+  certificate enrollment.
 
-The TLS configuration requests a client certificate. Artifact authorization uses its verified leaf
-certificate fingerprint. Certificate enrollment, revocation, and a rotatable certificate-to-stable-
-worker mapping are not implemented; rotating a certificate currently creates a new Artifact owner.
+The TLS configuration requests a client certificate. Before remote use, an operator manages its
+stable owner mapping offline:
+
+```bash
+cargo run -p alloyport-server -- identity enroll WORKER_ID client.pem
+cargo run -p alloyport-server -- identity rotate WORKER_ID old.pem new.pem
+cargo run -p alloyport-server -- identity revoke client.pem
+```
+
+This is application-level authorization above CA verification; certificate issuance, online
+enrollment, CA revocation, and replicated identity storage are not implemented.
 
 ### `alloyport-worker`
 
@@ -319,7 +347,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 53 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
+There are 62 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -351,9 +379,14 @@ versus retryable finalization failures. A real loopback Artifact gRPC test begin
 it through two independent client streams, finalizes it, reads completed status, and downloads a
 bounded range from a nonzero offset.
 
-An end-to-end mutual-TLS test creates one CA, a server identity, and two client identities. It proves
-that the first certificate can upload and download its artifact while the second certificate cannot
-claim its upload session or read its digest even when it sends forged owner metadata.
+An end-to-end mutual-TLS test creates one CA, a server identity, and three client identities. It
+proves forged worker hello rejection, cross-owner upload/download isolation, termination of an old
+live stream after rotation, preservation of existing-artifact access through the replacement
+certificate, and denial after revocation. Identity unit and command integration tests cover durable
+reopen, idempotency, conflicts, replacement state, and offline enrollment administration.
+Quota coverage includes reservation recovery after restart, idempotent and concurrent begin,
+per-owner isolation, terminal-failure and expiry release, duplicate digest accounting, pre-quota
+schema migration/backfill, and gRPC `ResourceExhausted` mapping.
 
 CI runs stable fmt/clippy/tests and a separate Rust 1.88.0 locked-dependency test job.
 
@@ -381,30 +414,31 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
   status, output previews, welcomes, and ACK-only frames deliberately remain ephemeral; there is no
   generalized durable message bus or server replication.
 - The filesystem content-addressed store, durable resumable-upload sessions, registered Artifact
-  gRPC service, mTLS certificate-fingerprint owner binding, and completed-upload read authorization
-  are implemented. There is no certificate enrollment/rotation mapping to stable logical owners,
-  controller-granted reference metadata, object-store adapter, total quota accounting, or GC.
+  gRPC service, stable certificate-enrolled owner binding, completed-upload read authorization, and
+  transactional quotas are implemented. There is no controller-granted reference metadata,
+  object-store adapter, filesystem-capacity monitor, or GC.
 - No container/process executor, output streaming, resource enforcement, running-process signal
   delivery, or device reset. Cancellation currently terminates admitted no-executor attempts only.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
 - No translation from worker messages into `alloyport-events` command events.
 - No external scheduling API, task controller integration, or terminal UI worker view.
-- mTLS is configured in binaries and covered end to end for Artifact identity isolation, but lacks
-  certificate enrollment, rotation, revocation, and worker-control certificate-to-hello binding.
+- mTLS enrollment, rotation, revocation, Artifact authorization, and worker hello binding are covered
+  end to end. Certificate issuance, online enrollment, CA revocation/expiry monitoring, pool/role
+  authorization, and replicated identity storage are not implemented.
 - No persisted RunReceipt, signature, oracle integration, or audit transition.
-- No server replication, shared registry, load balancer/session ownership, quotas, or artifact GC.
+- No server replication, shared registry, load balancer/session ownership, or artifact GC.
 - The Python harness in `/data/projects/ascend-factory/harness/worker.py` and `box.py` still uses
   SSH/SCP. No cutover has happened.
 
 ## Recommended next implementation order
 
-### 1. Add durable Artifact quota and stable identity policy
+### 1. Add general Artifact reference reachability and garbage collection
 
 The filesystem CAS, durable upload-session state machine, streaming RPC, binary registration, and
-mTLS fingerprint isolation are implemented. Next add atomic total-store and per-owner quota
-reservation/accounting before uploads. Add a durable certificate enrollment mapping so rotation can
-preserve a stable logical owner, then general controller-granted reference reachability and garbage
-collection. Do not put bundles or full logs on the control stream.
+stable certificate enrollment are implemented, including rotation/revocation and atomic global/per-
+owner quota reservation with deduplicated completed usage. Next add controller-granted references
+for assignment inputs, outputs, receipts, and retention roots, then define safe reachability-based
+garbage collection. Do not put bundles or full logs on the control stream.
 
 ### 2. Executor abstraction and fake executor
 
@@ -439,11 +473,12 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Add transactional Artifact quota enforcement without weakening its authorization boundary:
+Add durable Artifact reference grants and safe garbage collection without weakening authorization:
 
-> Read `docs/HANDOFF.md`, Design 0007, Design 0011, and Design 0012. Add transactional total-store and
-> per-owner quota reservation to `SqliteUploadStore`: reserve expected bytes idempotently at begin,
-> prevent concurrent sessions from overcommitting limits, release reservations on terminal failure
-> or expiry, and convert completed reservations into durable usage without double-counting duplicate
-> digests. Cover restart, concurrent begin, retry/finalize, expiry, and two-owner boundaries. Keep all
-> bulk bytes off `OpenControlStream` and preserve certificate-based authorization.
+> Read `docs/HANDOFF.md`, Design 0007, Design 0011, Design 0012, and Design 0013. Replace the
+> completed-upload-only read rule with durable controller-granted owner/digest references carrying
+> purpose and retention metadata. Preserve upload-owner access, make grants and revocations
+> idempotent and transactional, and define a conservative GC pass that deletes only CAS objects with
+> no live upload session, owner reference, assignment/receipt reference, or retention root. Account
+> quota release without racing upload finalization or download, and add restart/concurrency tests for
+> cross-owner denial, grant/revoke, deduplicated references, and unreachable-object collection.

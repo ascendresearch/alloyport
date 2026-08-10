@@ -1,6 +1,7 @@
 //! Server-side worker sessions backed by a crash-durable control repository.
 
 pub mod artifact;
+pub mod identity;
 pub mod storage;
 
 use alloyport_proto::v1::worker_control_server::WorkerControl;
@@ -11,6 +12,7 @@ use alloyport_proto::v1::{
     WorkerHello, WorkerStatus, WorkerToServer, server_to_worker, worker_to_server,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR, ValidationError, validate_assignment};
+use identity::{ConnectionIdentityResolver, ResolvedConnectionIdentity};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -133,6 +135,7 @@ pub struct WorkerControlService {
     state: Arc<Mutex<ControlState>>,
     repository: Arc<dyn ControlRepository>,
     clock: Arc<dyn Clock>,
+    identity_resolver: Option<Arc<dyn ConnectionIdentityResolver>>,
     connection_counter: Arc<AtomicU64>,
     lease_counter: Arc<AtomicU64>,
 }
@@ -175,9 +178,20 @@ impl WorkerControlService {
             state: Arc::new(Mutex::new(ControlState::default())),
             repository,
             clock,
+            identity_resolver: None,
             connection_counter: Arc::new(AtomicU64::new(unique_seed())),
             lease_counter: Arc::new(AtomicU64::new(unique_seed())),
         }
+    }
+
+    /// Requires every worker stream to match a verified, enrolled connection identity.
+    #[must_use]
+    pub fn require_identity_resolver(
+        mut self,
+        identity_resolver: Arc<dyn ConnectionIdentityResolver>,
+    ) -> Self {
+        self.identity_resolver = Some(identity_resolver);
+        self
     }
 
     /// Returns the latest in-process registry record for a logical worker.
@@ -832,32 +846,42 @@ impl WorkerControlService {
         self,
         worker_id: String,
         connection_id: String,
+        authenticated_identity: Option<ResolvedConnectionIdentity>,
         mut inbound: Streaming<WorkerToServer>,
         outbound: mpsc::Sender<Result<ServerToWorker, Status>>,
     ) {
         loop {
             match inbound.next().await {
-                Some(Ok(frame)) => match self.ingest(&worker_id, &connection_id, frame).await {
-                    Ok(true) => {
-                        match self.prepare_transport_ack(&worker_id, &connection_id).await {
-                            Ok(Some((sender, message))) => {
-                                if sender.send(Ok(message)).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(error) => {
-                                let _ = outbound.send(Err(repository_status(error))).await;
-                                break;
-                            }
-                        }
-                    }
-                    Ok(false) => {}
-                    Err(status) => {
+                Some(Ok(frame)) => {
+                    if let Some(identity) = authenticated_identity.as_ref()
+                        && let Some(resolver) = self.identity_resolver.as_ref()
+                        && let Err(status) = resolver.revalidate(identity)
+                    {
                         let _ = outbound.send(Err(status)).await;
                         break;
                     }
-                },
+                    match self.ingest(&worker_id, &connection_id, frame).await {
+                        Ok(true) => {
+                            match self.prepare_transport_ack(&worker_id, &connection_id).await {
+                                Ok(Some((sender, message))) => {
+                                    if sender.send(Ok(message)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(None) => break,
+                                Err(error) => {
+                                    let _ = outbound.send(Err(repository_status(error))).await;
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(status) => {
+                            let _ = outbound.send(Err(status)).await;
+                            break;
+                        }
+                    }
+                }
                 Some(Err(status)) => {
                     let _ = outbound.send(Err(status)).await;
                     break;
@@ -878,6 +902,11 @@ impl WorkerControl for WorkerControlService {
         &self,
         request: Request<Streaming<WorkerToServer>>,
     ) -> Result<Response<Self::OpenControlStreamStream>, Status> {
+        let authenticated_identity = self
+            .identity_resolver
+            .as_ref()
+            .map(|resolver| resolver.resolve_identity(request.extensions()))
+            .transpose()?;
         let mut inbound = request.into_inner();
         let first = inbound
             .message()
@@ -901,6 +930,19 @@ impl WorkerControl for WorkerControlService {
         };
         alloyport_proto::validate_worker_hello(&hello)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        if authenticated_identity
+            .as_ref()
+            .is_some_and(|identity| identity.owner_id != hello.worker_id)
+        {
+            return Err(Status::permission_denied(
+                "worker hello identity does not match the enrolled client certificate",
+            ));
+        }
+        if let Some(identity) = authenticated_identity.as_ref()
+            && let Some(resolver) = self.identity_resolver.as_ref()
+        {
+            resolver.revalidate(identity)?;
+        }
 
         let worker_id = hello.worker_id.clone();
         let (outbound, receiver) = mpsc::channel(64);
@@ -915,10 +957,13 @@ impl WorkerControl for WorkerControlService {
                 .map_err(|_| Status::unavailable("worker response stream closed"))?;
         }
 
-        tokio::spawn(
-            self.clone()
-                .consume_stream(worker_id, connection_id, inbound, outbound),
-        );
+        tokio::spawn(self.clone().consume_stream(
+            worker_id,
+            connection_id,
+            authenticated_identity,
+            inbound,
+            outbound,
+        ));
         Ok(Response::new(Box::pin(ReceiverStream::new(receiver))))
     }
 }

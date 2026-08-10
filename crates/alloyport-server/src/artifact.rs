@@ -1,5 +1,6 @@
 //! Artifact gRPC edge over durable upload sessions and the filesystem CAS.
 
+use crate::identity::ConnectionIdentityResolver;
 use crate::storage::Clock;
 use alloyport_artifacts::upload::{BeginUpload, SqliteUploadStore, UploadError, UploadSession};
 use alloyport_artifacts::{ArtifactIdentity, ArtifactStore, FilesystemArtifactStore, Sha256Digest};
@@ -78,13 +79,55 @@ impl ArtifactAccessPolicy for MtlsArtifactAccessPolicy {
     }
 
     fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
-        match self.uploads.owns_completed_artifact(owner_id, digest) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(Status::permission_denied(
-                "artifact is not referenced by this certificate identity",
-            )),
-            Err(error) => Err(upload_status(error)),
+        authorize_completed_artifact(&self.uploads, owner_id, digest)
+    }
+}
+
+/// Stable-owner policy backed by the durable certificate enrollment registry.
+#[derive(Clone, Debug)]
+pub struct EnrolledArtifactAccessPolicy {
+    uploads: Arc<SqliteUploadStore>,
+    identities: Arc<dyn ConnectionIdentityResolver>,
+}
+
+impl EnrolledArtifactAccessPolicy {
+    #[must_use]
+    pub fn new(
+        uploads: Arc<SqliteUploadStore>,
+        identities: Arc<dyn ConnectionIdentityResolver>,
+    ) -> Self {
+        Self {
+            uploads,
+            identities,
         }
+    }
+}
+
+impl ArtifactAccessPolicy for EnrolledArtifactAccessPolicy {
+    fn resolve_owner(
+        &self,
+        _metadata: &MetadataMap,
+        extensions: &Extensions,
+    ) -> Result<String, Status> {
+        self.identities.resolve_owner(extensions)
+    }
+
+    fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
+        authorize_completed_artifact(&self.uploads, owner_id, digest)
+    }
+}
+
+fn authorize_completed_artifact(
+    uploads: &SqliteUploadStore,
+    owner_id: &str,
+    digest: Sha256Digest,
+) -> Result<(), Status> {
+    match uploads.owns_completed_artifact(owner_id, digest) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(Status::permission_denied(
+            "artifact is not referenced by this logical owner",
+        )),
+        Err(error) => Err(upload_status(error)),
     }
 }
 
@@ -353,9 +396,9 @@ fn upload_status(error: UploadError) -> Status {
         UploadError::NotFound(_) => Status::not_found(error.to_string()),
         UploadError::OwnerMismatch => Status::permission_denied(error.to_string()),
         UploadError::OffsetConflict { .. } => Status::aborted(error.to_string()),
-        UploadError::ChunkTooLarge { .. } | UploadError::SizeLimitExceeded { .. } => {
-            Status::resource_exhausted(error.to_string())
-        }
+        UploadError::ChunkTooLarge { .. }
+        | UploadError::SizeLimitExceeded { .. }
+        | UploadError::QuotaExceeded { .. } => Status::resource_exhausted(error.to_string()),
         UploadError::InvalidRequest(_) | UploadError::ConflictingUploadKey => {
             Status::invalid_argument(error.to_string())
         }
