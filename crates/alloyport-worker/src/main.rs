@@ -15,7 +15,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let worker_id = env::var("ALLOYPORT_WORKER_ID")?;
     let backend = parse_backend(&env::var("ALLOYPORT_BACKEND")?)?;
     let instance_id = instance_id(&worker_id)?;
-    let worker = OutboundWorker::new(
+    let journal = env::var_os("ALLOYPORT_WORKER_DATABASE")
+        .unwrap_or_else(|| "alloyport-worker.sqlite3".into());
+    let worker = OutboundWorker::open_sqlite(
         endpoint,
         WorkerHello {
             protocol_major: PROTOCOL_MAJOR,
@@ -36,6 +38,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }),
             active_attempts: Vec::new(),
         },
+        journal,
     )?;
 
     let mut backoff = Duration::from_secs(1);

@@ -16,16 +16,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Err("plaintext worker control is restricted to loopback".into());
     }
 
-    let service = WorkerControlService::new();
+    let database =
+        env::var_os("ALLOYPORT_DATABASE").unwrap_or_else(|| "alloyport-control.sqlite3".into());
+    let service = WorkerControlService::open_sqlite(database)?;
     let mut server = Server::builder();
     if let Some(tls) = tls {
         server = server.tls_config(tls)?;
     }
     println!("AlloyPort worker control listening on {address}");
-    server
+    let reaper_service = service.clone();
+    let mut lease_reaper = tokio::spawn(async move { reaper_service.run_lease_reaper().await });
+    let serve = server
         .add_service(WorkerControlServer::new(service))
-        .serve(address)
-        .await?;
+        .serve(address);
+    tokio::select! {
+        serve_result = serve => {
+            lease_reaper.abort();
+            serve_result?;
+        }
+        reaper_result = &mut lease_reaper => {
+            reaper_result??;
+            return Err("lease reaper stopped unexpectedly".into());
+        }
+    }
     Ok(())
 }
 

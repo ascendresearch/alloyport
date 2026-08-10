@@ -115,7 +115,7 @@ The schema currently includes:
 - static worker/backend capabilities and dynamic heartbeat state;
 - typed assignment and execution specifications;
 - accepted/rejected, started, output, and finished lifecycle messages;
-- cancel and drain messages;
+- cancel, cancellation-acknowledged, and drain messages;
 - content-addressed artifact references and resource limits.
 
 Validation currently enforces supported protocol major version, worker identity/capacity, typed
@@ -127,24 +127,37 @@ generated `v1` module; do not weaken workspace lints for hand-written code.
 
 ### `alloyport-server`
 
-Implements the gRPC service, worker registry, assignment repository state model, non-terminal replay,
-and worker lifecycle classification.
+Implements the gRPC service, in-process connection registry, crash-durable SQLite control repository,
+non-terminal replay, attempt leases, and worker lifecycle classification. Generated Protobuf types
+are translated at the RPC edge into separate storage-domain records.
 
 Current behavior:
 
 - requires the first worker frame to be a valid hello with sequence 1;
 - registers logical worker ID separately from process instance and connection ID;
 - sends welcome followed by queued/non-terminal assignments;
-- persists assignments in the server object's in-memory state before sending;
+- applies an explicit SQLite migration for worker registrations, connection observations, immutable
+  assignments, lifecycle observations, and leases;
+- commits assignments before sending and commits the `Sent` state plus bounded lease before placing
+  an assignment frame on the network channel;
 - suppresses an identical attempt submitted twice;
 - rejects reuse of an attempt ID with different content or worker identity;
 - checks monotonically increasing worker sequence numbers;
-- records accepted, rejected, running, and finished states;
+- rejects cumulative acknowledgements that regress or name a server sequence not yet sent;
+- records accepted, rejected, running, and finished states without regressing accepted/running state
+  during replay;
+- renews active leases from heartbeats, expires them with a periodic reaper, and retains a late
+  finished observation as stale rather than replacing the expired attempt state;
+- recovers queued and non-terminal assignments after a server process restart when the worker
+  reconnects;
+- persists cancellation requests, replays them after reconnect, records the worker acknowledgement
+  separately from terminal completion, and prevents cancellation from reviving expired work;
 - marks a worker disconnected only if the closing stream still owns its connection ID, so an old
   superseded stream cannot disconnect a newer session.
 
-The repository is in-memory only. The word "persists" above means survives a stream reconnect while
-the server process remains alive, not survives process restart.
+`WorkerControlService::new()` remains an in-memory SQLite convenience for tests. The server binary
+uses `ALLOYPORT_DATABASE` or defaults to `alloyport-control.sqlite3`, so normal server state survives
+process restart.
 
 The `alloyport-server` binary listens on `127.0.0.1:50051` by default. Plaintext is rejected on a
 non-loopback bind address. Remote mode requires:
@@ -160,21 +173,27 @@ Certificate enrollment, rotation, revocation, and authorization storage are not 
 ### `alloyport-worker`
 
 Implements an outbound client session, hello/welcome negotiation, heartbeat, cumulative server
-acknowledgement, in-process attempt knowledge, local admission, and reconnectable session state.
+acknowledgement, disk-backed attempt knowledge, local admission, and reconnectable session state.
 
 Current behavior:
 
 - validates its hello before connecting;
-- includes locally known attempts in hello/heartbeat messages;
-- checks monotonically increasing server sequence numbers;
-- validates every assignment locally before acknowledging it;
+- includes locally accepted, running, and finished attempts from its SQLite journal in hello/heartbeat
+  messages;
+- checks monotonically increasing server sequence numbers and rejects regressing/future cumulative
+  acknowledgements;
+- validates every assignment locally and commits immutable admission before acknowledging it;
 - returns `already_known` for an identical attempt replay;
 - rejects reuse of an attempt ID with changed content;
+- persists accepted/running/finished lifecycle and terminal result fields across worker process
+  restart, and replays a durable finished result after an idempotent assignment replay;
 - denies the shell executor by default; only an explicit local `AdmissionPolicy` can allow it;
-- exits a session on drain and leaves cancel as a no-op because no executor exists yet.
+- exits a session on drain; cancellation is durably acknowledged and becomes terminal immediately
+  while no executor process exists.
 
-The worker state is in memory and is not durable across process restart. Do not enable real candidate
-execution until admitted attempt identity and output spooling are disk backed.
+The worker binary uses `ALLOYPORT_WORKER_DATABASE` or defaults to `alloyport-worker.sqlite3`.
+Admission identity is now disk backed, but do not enable real candidate execution until output
+spooling, executor process identity, and crash recovery are durable too.
 
 The `alloyport-worker` binary reconnects with capped exponential backoff. Required identity variables:
 
@@ -215,7 +234,7 @@ Remote plaintext endpoints are rejected. Loopback HTTP is permitted for tests an
 
 ## Verification baseline
 
-The following commands passed at handoff:
+The following commands passed at the latest handoff verification:
 
 ```bash
 cargo fmt --all -- --check
@@ -224,12 +243,22 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 15 Rust tests. Control-plane coverage includes a real loopback gRPC stream for:
+There are 29 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
+repository tests for:
 
 - hello/welcome and worker registration;
 - assignment delivery and worker acceptance;
 - duplicate enqueue suppression;
 - queuing while disconnected and replay after reconnect;
+- queued and already-accepted assignment recovery after closing and reopening the server database,
+  without lifecycle regression;
+- durable lease creation before send, heartbeat renewal, expiry with a controllable clock, and stale
+  late-result classification;
+- worker-journal reopen with accepted/running/finished recovery, conflicting replay rejection, and
+  finished-result replay after constructing a new worker process object;
+- monotonic cumulative acknowledgement validation in both directions;
+- cancellation request/acknowledgement/terminal ordering, cancellation-before-admission races,
+  duplicate cancellation, and lease-expiry/cancellation races;
 - worker-local idempotency and changed-content conflict;
 - default shell-executor denial and explicit local opt-in;
 - protocol validation for sandbox paths and artifact digests.
@@ -252,12 +281,13 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 
 ## Known gaps: do not claim these are implemented
 
-- No crash-durable server database, lease timer, reassignment engine, or startup reconciliation.
+- No reassignment engine or proactive startup reconciliation before a worker reconnects.
 - No disk-backed worker journal or artifact/output spool.
-- Sequence acknowledgement fields exist, but complete replay-from-cursor and acknowledgement
-  compaction are not implemented.
+- Cumulative acknowledgement bounds are validated, but durable transport-frame replay from a cursor
+  and acknowledgement compaction are not implemented.
 - No content-addressed Artifact service or object-store adapter.
-- No container/process executor, output streaming, resource enforcement, cancellation, or device reset.
+- No container/process executor, output streaming, resource enforcement, running-process signal
+  delivery, or device reset. Cancellation currently terminates admitted no-executor attempts only.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
 - No translation from worker messages into `alloyport-events` command events.
 - No external scheduling API, task controller integration, or terminal UI worker view.
@@ -270,16 +300,13 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 
 ## Recommended next implementation order
 
-### 1. Durable control repository and leases
+### 1. Complete transport replay and reassignment
 
-Define a storage trait around workers, assignments, attempts, connection observations, and leases.
-Implement SQLite first with explicit migrations and transactional "store before send" behavior. Keep
-generated Protobuf types out of storage tables; translate into domain/storage records. Add restart,
-lease-expiry, stale-result, and cancellation-race tests with a controllable clock.
-
-Add a worker-side append-only journal or small SQLite store before executing anything. On reconnect,
-reconcile server assignments with locally accepted/running/finished attempts. Implement cumulative
-acknowledgement validation and replay cursors without treating sequence numbers as attempt identity.
+Server and worker SQLite state, assignment-level restart reconciliation, cumulative acknowledgement
+validation, finished-result replay, and cancellation races are implemented. Next, persist outbound
+control frames until cumulatively acknowledged, replay them from a connection/session cursor without
+confusing sequence with attempt identity, compact acknowledged frames, and add an explicit
+lease-expiry reassignment engine that always creates a new attempt ID.
 
 ### 2. Content-addressed Artifact service
 
@@ -321,13 +348,12 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Implement step 1 as a tested vertical slice:
+Complete step 1 with the transport-outbox and reassignment slice:
 
-> Read `docs/HANDOFF.md`, Designs 0002, 0007, 0010, and 0011. Add a storage-domain crate or a clear
-> storage module with a repository trait and SQLite implementation for workers, immutable assignments,
-> attempt lifecycle, and leases. Use an injectable clock. Prove store-before-send, server restart
-> recovery, lease expiry, duplicate idempotency, and late-result classification. Preserve all existing
-> tests and strict Clippy. Do not add real command execution yet.
-
-Before coding, inspect `git status`, run the baseline tests, and update Design 0011's implementation
-progress without rewriting its accepted decisions.
+> Read `docs/HANDOFF.md` and Design 0011. Add durable per-direction transport outboxes and explicit
+> replay cursors without using sequence numbers as attempt identity. Persist frames required for
+> lifecycle closure before send, validate acknowledgements against the durable outbox, compact only
+> acknowledged frames, and prove reconnect replay cannot duplicate admission or terminal results.
+> Then implement lease-expiry reassignment as a new attempt over the same immutable assignment
+> contract and classify the old attempt's late result as stale. Preserve strict Clippy and do not add
+> real command execution yet.

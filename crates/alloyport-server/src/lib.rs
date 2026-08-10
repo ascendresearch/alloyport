@@ -1,40 +1,38 @@
-//! Server-side worker registry and the first durable-assignment state model.
+//! Server-side worker sessions backed by a crash-durable control repository.
+
+pub mod storage;
 
 use alloyport_proto::v1::worker_control_server::WorkerControl;
 use alloyport_proto::v1::{
-    Assignment, AssignmentRejected, ExecutionFinished, ExecutionStarted, Heartbeat, ServerToWorker,
-    ServerWelcome, WorkerHello, WorkerStatus, WorkerToServer, server_to_worker, worker_to_server,
+    ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, CancelAttempt,
+    CancellationAcknowledged, EnvironmentVariable, ExecutionFinished, ExecutionSpec,
+    ExecutionStarted, Heartbeat, ResourceLimits, ServerToWorker, ServerWelcome, WorkerHello,
+    WorkerStatus, WorkerToServer, server_to_worker, worker_to_server,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR, ValidationError, validate_assignment};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use storage::{
+    ArtifactIdentity, AssignmentContract, AttemptObservation, CancellationStoreOutcome, Clock,
+    ConnectionRegistration, ControlRepository, EnvironmentEntry, ExecutionContract,
+    FinishedObservation, ObservationDisposition, ObservedAttempt, RepositoryError,
+    ResourceContract, SqliteControlRepository, StoreAssignmentOutcome, SystemClock,
+    WorkerCapabilities, WorkerRegistration,
+};
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status, Streaming};
 
 const HEARTBEAT_INTERVAL_MS: u64 = 5_000;
 const ATTEMPT_LEASE_MS: u64 = 30_000;
+const LEASE_REAPER_INTERVAL_MS: u64 = 1_000;
 
-/// Server-side lifecycle observed for an attempt.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AssignmentState {
-    Queued,
-    Sent,
-    Accepted,
-    Running,
-    Finished,
-    Rejected,
-}
-
-impl AssignmentState {
-    const fn is_terminal(self) -> bool {
-        matches!(self, Self::Finished | Self::Rejected)
-    }
-}
+pub use storage::{AttemptState as AssignmentState, LeaseRecord, ManualClock};
 
 /// Read-only worker registry view for scheduling and diagnostics.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,11 +53,20 @@ pub enum EnqueueOutcome {
     Duplicate,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CancelOutcome {
+    Sent,
+    Pending,
+    CancelledBeforeSend,
+    AlreadyTerminal,
+}
+
 /// A server-side assignment cannot be admitted.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum EnqueueError {
     Invalid(ValidationError),
     ConflictingAttempt(String),
+    Repository(RepositoryError),
 }
 
 impl Display for EnqueueError {
@@ -72,15 +79,33 @@ impl Display for EnqueueError {
                     "attempt {attempt_id} was reused with different content"
                 )
             }
+            Self::Repository(error) => Display::fmt(error, formatter),
         }
     }
 }
 
-impl Error for EnqueueError {}
+impl Error for EnqueueError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Invalid(error) => Some(error),
+            Self::Repository(error) => Some(error),
+            Self::ConflictingAttempt(_) => None,
+        }
+    }
+}
 
 impl From<ValidationError> for EnqueueError {
     fn from(error: ValidationError) -> Self {
         Self::Invalid(error)
+    }
+}
+
+impl From<RepositoryError> for EnqueueError {
+    fn from(error: RepositoryError) -> Self {
+        match error {
+            RepositoryError::ConflictingAttempt(attempt_id) => Self::ConflictingAttempt(attempt_id),
+            other => Self::Repository(other),
+        }
     }
 }
 
@@ -90,28 +115,24 @@ struct WorkerRecord {
     connection_id: String,
     connected: bool,
     last_worker_sequence: u64,
+    last_server_sequence_acknowledged: u64,
     next_server_sequence: u64,
     sender: mpsc::Sender<Result<ServerToWorker, Status>>,
-}
-
-#[derive(Clone, Debug)]
-struct AssignmentRecord {
-    worker_id: String,
-    assignment: Assignment,
-    state: AssignmentState,
 }
 
 #[derive(Debug, Default)]
 struct ControlState {
     workers: BTreeMap<String, WorkerRecord>,
-    assignments: BTreeMap<String, AssignmentRecord>,
 }
 
 /// Cloneable implementation of the worker-facing gRPC service.
 #[derive(Clone, Debug)]
 pub struct WorkerControlService {
     state: Arc<Mutex<ControlState>>,
+    repository: Arc<dyn ControlRepository>,
+    clock: Arc<dyn Clock>,
     connection_counter: Arc<AtomicU64>,
+    lease_counter: Arc<AtomicU64>,
 }
 
 impl Default for WorkerControlService {
@@ -121,15 +142,43 @@ impl Default for WorkerControlService {
 }
 
 impl WorkerControlService {
+    /// Creates an ephemeral service. The server binary uses [`Self::open_sqlite`] instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the bundled `SQLite` library cannot create an in-memory database.
     #[must_use]
     pub fn new() -> Self {
+        let repository = SqliteControlRepository::in_memory()
+            .expect("an in-memory SQLite control repository must initialize");
+        Self::with_repository(Arc::new(repository), Arc::new(SystemClock))
+    }
+
+    /// Opens a service whose control state survives process restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns a repository error if `SQLite` cannot open or migrate the database.
+    pub fn open_sqlite(path: impl AsRef<Path>) -> Result<Self, RepositoryError> {
+        Ok(Self::with_repository(
+            Arc::new(SqliteControlRepository::open(path)?),
+            Arc::new(SystemClock),
+        ))
+    }
+
+    /// Builds a service around an injected repository and clock.
+    #[must_use]
+    pub fn with_repository(repository: Arc<dyn ControlRepository>, clock: Arc<dyn Clock>) -> Self {
         Self {
             state: Arc::new(Mutex::new(ControlState::default())),
-            connection_counter: Arc::new(AtomicU64::new(1)),
+            repository,
+            clock,
+            connection_counter: Arc::new(AtomicU64::new(unique_seed())),
+            lease_counter: Arc::new(AtomicU64::new(unique_seed())),
         }
     }
 
-    /// Returns the latest registry record for a logical worker.
+    /// Returns the latest in-process registry record for a logical worker.
     pub async fn worker_snapshot(&self, worker_id: &str) -> Option<WorkerSnapshot> {
         let state = self.state.lock().await;
         state.workers.get(worker_id).map(|worker| WorkerSnapshot {
@@ -146,22 +195,62 @@ impl WorkerControlService {
         })
     }
 
-    /// Returns the server's current lifecycle state for an attempt.
-    pub async fn assignment_state(&self, attempt_id: &str) -> Option<AssignmentState> {
-        self.state
-            .lock()
-            .await
-            .assignments
-            .get(attempt_id)
-            .map(|record| record.state)
+    /// Returns the durable lifecycle state for an attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns a repository error rather than treating a failed read as a missing attempt.
+    pub fn assignment_state(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<AssignmentState>, RepositoryError> {
+        self.repository
+            .assignment(attempt_id)
+            .map(|record| record.map(|record| record.state))
+    }
+
+    /// Returns the current durable lease for an attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns a repository error when the lease cannot be read.
+    pub fn lease(&self, attempt_id: &str) -> Result<Option<LeaseRecord>, RepositoryError> {
+        self.repository.lease(attempt_id)
+    }
+
+    /// Expires every due non-terminal lease according to the injected clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns a repository error if expiry cannot be committed atomically.
+    pub fn expire_leases(&self) -> Result<Vec<String>, RepositoryError> {
+        self.repository.expire_leases(self.clock.now_unix_ms())
+    }
+
+    /// Runs the periodic durable lease-expiry loop until its task is cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first repository error instead of silently stopping lease expiry.
+    pub async fn run_lease_reaper(&self) -> Result<(), RepositoryError> {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(LEASE_REAPER_INTERVAL_MS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            self.expire_leases()?;
+        }
     }
 
     /// Persists and, if connected, sends an assignment to a named worker.
     ///
+    /// The immutable contract is committed before a send is prepared. Preparing the send commits
+    /// its lease and `Sent` observation before the frame is placed on the network channel.
+    ///
     /// # Errors
     ///
-    /// Returns [`EnqueueError`] for an invalid assignment or an attempt identifier reused with
-    /// different content.
+    /// Returns [`EnqueueError`] for an invalid assignment, repository failure, or an attempt
+    /// identifier reused with different content.
     pub async fn enqueue_assignment(
         &self,
         worker_id: impl Into<String>,
@@ -169,95 +258,199 @@ impl WorkerControlService {
     ) -> Result<EnqueueOutcome, EnqueueError> {
         validate_assignment(&assignment)?;
         let worker_id = worker_id.into();
-        let attempt_id = assignment.attempt_id.clone();
+        let contract = assignment_to_contract(&assignment);
+        match self
+            .repository
+            .store_assignment(&worker_id, &contract, self.clock.now_unix_ms())?
+        {
+            StoreAssignmentOutcome::Duplicate => return Ok(EnqueueOutcome::Duplicate),
+            StoreAssignmentOutcome::Inserted => {}
+        }
 
-        let outbound = {
-            let mut state = self.state.lock().await;
-            if let Some(existing) = state.assignments.get(&attempt_id) {
-                if existing.worker_id == worker_id && existing.assignment == assignment {
-                    return Ok(EnqueueOutcome::Duplicate);
-                }
-                return Err(EnqueueError::ConflictingAttempt(attempt_id));
-            }
-
-            state.assignments.insert(
-                attempt_id.clone(),
-                AssignmentRecord {
-                    worker_id: worker_id.clone(),
-                    assignment: assignment.clone(),
-                    state: AssignmentState::Queued,
-                },
-            );
-            Self::prepare_assignment(&mut state, &worker_id, &attempt_id)
-        };
-
+        let outbound = self
+            .prepare_assignment(&worker_id, &contract.attempt_id)
+            .await?;
         let Some((sender, message)) = outbound else {
             return Ok(EnqueueOutcome::Pending);
         };
         if sender.send(Ok(message)).await.is_err() {
-            self.mark_send_failed(&worker_id, &attempt_id).await;
+            self.mark_send_failed(&worker_id).await;
             return Ok(EnqueueOutcome::Pending);
         }
         Ok(EnqueueOutcome::Sent)
     }
 
-    fn prepare_assignment(
-        state: &mut ControlState,
-        worker_id: &str,
+    /// Durably requests cancellation and sends it when the owning worker is connected.
+    ///
+    /// # Errors
+    ///
+    /// Returns a repository error when the attempt is unknown or the request cannot be committed.
+    pub async fn cancel_attempt(
+        &self,
         attempt_id: &str,
-    ) -> Option<(mpsc::Sender<Result<ServerToWorker, Status>>, ServerToWorker)> {
-        let worker = state.workers.get_mut(worker_id)?;
-        if !worker.connected {
-            return None;
+        reason: impl Into<String>,
+    ) -> Result<CancelOutcome, RepositoryError> {
+        let reason = reason.into();
+        let cancellation =
+            self.repository
+                .request_cancellation(attempt_id, &reason, self.clock.now_unix_ms())?;
+        match cancellation.outcome {
+            CancellationStoreOutcome::CancelledBeforeSend => {
+                return Ok(CancelOutcome::CancelledBeforeSend);
+            }
+            CancellationStoreOutcome::AlreadyTerminal => {
+                return Ok(CancelOutcome::AlreadyTerminal);
+            }
+            CancellationStoreOutcome::Requested | CancellationStoreOutcome::Duplicate => {}
         }
-        let sequence = worker.next_server_sequence;
-        worker.next_server_sequence += 1;
-        let sender = worker.sender.clone();
-        let acknowledged = worker.last_worker_sequence;
-        let assignment = state.assignments.get_mut(attempt_id)?;
-        assignment.state = AssignmentState::Sent;
-        Some((
-            sender,
-            ServerToWorker {
-                sequence,
-                acknowledges_worker_through: acknowledged,
-                message: Some(server_to_worker::Message::Assignment(
-                    assignment.assignment.clone(),
-                )),
-            },
-        ))
+        let outbound = self
+            .prepare_cancel(&cancellation.worker_id, attempt_id, &reason)
+            .await?;
+        let Some((sender, message)) = outbound else {
+            return Ok(CancelOutcome::Pending);
+        };
+        if sender.send(Ok(message)).await.is_err() {
+            self.mark_send_failed(&cancellation.worker_id).await;
+            return Ok(CancelOutcome::Pending);
+        }
+        Ok(CancelOutcome::Sent)
     }
 
-    async fn mark_send_failed(&self, worker_id: &str, attempt_id: &str) {
+    async fn prepare_assignment(
+        &self,
+        worker_id: &str,
+        attempt_id: &str,
+    ) -> Result<
+        Option<(mpsc::Sender<Result<ServerToWorker, Status>>, ServerToWorker)>,
+        RepositoryError,
+    > {
+        let mut state = self.state.lock().await;
+        let Some(worker) = state.workers.get_mut(worker_id) else {
+            return Ok(None);
+        };
+        if !worker.connected {
+            return Ok(None);
+        }
+        let assignment = self
+            .repository
+            .assignment(attempt_id)?
+            .ok_or_else(|| RepositoryError::NotFound(attempt_id.to_owned()))?;
+        if assignment.worker_id != worker_id {
+            return Err(RepositoryError::IdentityMismatch(attempt_id.to_owned()));
+        }
+
+        let sequence = worker.next_server_sequence;
+        let lease_number = self.lease_counter.fetch_add(1, Ordering::Relaxed);
+        let lease_id = format!("lease-{lease_number}");
+        let now_ms = self.clock.now_unix_ms();
+        self.repository.mark_sent_and_grant_lease(
+            attempt_id,
+            worker_id,
+            &lease_id,
+            now_ms,
+            ATTEMPT_LEASE_MS,
+        )?;
+        worker.next_server_sequence += 1;
+        self.repository.update_connection_sequences(
+            &worker.connection_id,
+            worker.last_worker_sequence,
+            sequence,
+            worker.last_server_sequence_acknowledged,
+            now_ms,
+        )?;
+        Ok(Some((
+            worker.sender.clone(),
+            ServerToWorker {
+                sequence,
+                acknowledges_worker_through: worker.last_worker_sequence,
+                message: Some(server_to_worker::Message::Assignment(
+                    contract_to_assignment(&assignment.contract),
+                )),
+            },
+        )))
+    }
+
+    async fn mark_send_failed(&self, worker_id: &str) {
         let mut state = self.state.lock().await;
         if let Some(worker) = state.workers.get_mut(worker_id) {
             worker.connected = false;
         }
-        if let Some(assignment) = state.assignments.get_mut(attempt_id) {
-            assignment.state = AssignmentState::Queued;
+    }
+
+    async fn prepare_cancel(
+        &self,
+        worker_id: &str,
+        attempt_id: &str,
+        reason: &str,
+    ) -> Result<
+        Option<(mpsc::Sender<Result<ServerToWorker, Status>>, ServerToWorker)>,
+        RepositoryError,
+    > {
+        let mut state = self.state.lock().await;
+        let Some(worker) = state.workers.get_mut(worker_id) else {
+            return Ok(None);
+        };
+        if !worker.connected {
+            return Ok(None);
         }
+        let sequence = worker.next_server_sequence;
+        worker.next_server_sequence += 1;
+        let now_ms = self.clock.now_unix_ms();
+        self.repository.update_connection_sequences(
+            &worker.connection_id,
+            worker.last_worker_sequence,
+            sequence,
+            worker.last_server_sequence_acknowledged,
+            now_ms,
+        )?;
+        Ok(Some((
+            worker.sender.clone(),
+            ServerToWorker {
+                sequence,
+                acknowledges_worker_through: worker.last_worker_sequence,
+                message: Some(server_to_worker::Message::Cancel(CancelAttempt {
+                    attempt_id: attempt_id.to_owned(),
+                    reason: reason.to_owned(),
+                })),
+            },
+        )))
     }
 
     async fn register(
         &self,
         hello: WorkerHello,
         sender: mpsc::Sender<Result<ServerToWorker, Status>>,
-    ) -> (String, Vec<ServerToWorker>) {
+    ) -> Result<(String, Vec<ServerToWorker>), RepositoryError> {
         let number = self.connection_counter.fetch_add(1, Ordering::Relaxed);
         let connection_id = format!("connection-{number}");
         let worker_id = hello.worker_id.clone();
-        let mut state = self.state.lock().await;
-        state.workers.insert(
-            worker_id.clone(),
-            WorkerRecord {
-                hello,
+        let now_ms = self.clock.now_unix_ms();
+        self.repository.expire_leases(now_ms)?;
+        self.repository.register_worker(
+            &hello_to_registration(&hello),
+            &ConnectionRegistration {
                 connection_id: connection_id.clone(),
-                connected: true,
-                last_worker_sequence: 1,
-                next_server_sequence: 2,
-                sender,
+                worker_id: worker_id.clone(),
+                instance_id: hello.instance_id.clone(),
+                connected_at_ms: now_ms,
             },
-        );
+        )?;
+
+        {
+            let mut state = self.state.lock().await;
+            state.workers.insert(
+                worker_id.clone(),
+                WorkerRecord {
+                    hello,
+                    connection_id: connection_id.clone(),
+                    connected: true,
+                    last_worker_sequence: 1,
+                    last_server_sequence_acknowledged: 0,
+                    next_server_sequence: 2,
+                    sender,
+                },
+            );
+        }
 
         let mut messages = vec![ServerToWorker {
             sequence: 1,
@@ -270,21 +463,24 @@ impl WorkerControlService {
                 attempt_lease_ms: ATTEMPT_LEASE_MS,
             })),
         }];
-
-        let pending: Vec<String> = state
-            .assignments
-            .iter()
-            .filter(|(_, record)| record.worker_id == worker_id && !record.state.is_terminal())
-            .map(|(attempt_id, _)| attempt_id.clone())
-            .collect();
-        for attempt_id in pending {
-            if let Some((_, message)) =
-                Self::prepare_assignment(&mut state, &worker_id, &attempt_id)
+        let pending = self.repository.replayable_assignments(&worker_id)?;
+        for assignment in pending {
+            let cancellation_reason = assignment.cancellation_reason.clone();
+            if let Some((_, message)) = self
+                .prepare_assignment(&worker_id, &assignment.contract.attempt_id)
+                .await?
+            {
+                messages.push(message);
+            }
+            if let Some(reason) = cancellation_reason
+                && let Some((_, message)) = self
+                    .prepare_cancel(&worker_id, &assignment.contract.attempt_id, &reason)
+                    .await?
             {
                 messages.push(message);
             }
         }
-        (connection_id, messages)
+        Ok((connection_id, messages))
     }
 
     async fn ingest(
@@ -308,32 +504,35 @@ impl WorkerControlService {
                 frame.sequence
             )));
         }
-        worker.last_worker_sequence = frame.sequence;
+        let sent_server_through = worker.next_server_sequence.saturating_sub(1);
+        validate_worker_acknowledgement(
+            frame.acknowledges_server_through,
+            worker.last_server_sequence_acknowledged,
+            sent_server_through,
+        )?;
 
+        let now_ms = self.clock.now_unix_ms();
         match frame.message {
             Some(worker_to_server::Message::Heartbeat(heartbeat)) => {
-                Self::observe_heartbeat(worker, heartbeat);
+                self.observe_heartbeat(worker_id, &heartbeat, now_ms)?;
             }
             Some(worker_to_server::Message::Status(status)) => {
                 Self::observe_status(worker, status);
             }
             Some(worker_to_server::Message::AssignmentAccepted(accepted)) => {
-                Self::transition_assignment(
-                    &mut state,
-                    worker_id,
-                    &accepted.assignment_id,
-                    &accepted.attempt_id,
-                    AssignmentState::Accepted,
-                )?;
+                self.observe_accepted(worker_id, accepted, now_ms)?;
             }
             Some(worker_to_server::Message::AssignmentRejected(rejected)) => {
-                Self::observe_rejection(&mut state, worker_id, &rejected)?;
+                self.observe_rejection(worker_id, rejected, now_ms)?;
             }
             Some(worker_to_server::Message::ExecutionStarted(started)) => {
-                Self::observe_started(&mut state, worker_id, &started)?;
+                self.observe_started(worker_id, started, now_ms)?;
             }
             Some(worker_to_server::Message::ExecutionFinished(finished)) => {
-                Self::observe_finished(&mut state, worker_id, &finished)?;
+                self.observe_finished(worker_id, finished, now_ms)?;
+            }
+            Some(worker_to_server::Message::CancellationAcknowledged(acknowledged)) => {
+                self.observe_cancellation_acknowledged(worker_id, acknowledged, now_ms)?;
             }
             Some(worker_to_server::Message::OutputChunk(_)) => {}
             Some(worker_to_server::Message::Hello(_)) => {
@@ -347,77 +546,152 @@ impl WorkerControlService {
                 ));
             }
         }
+
+        worker.last_worker_sequence = frame.sequence;
+        worker.last_server_sequence_acknowledged = frame.acknowledges_server_through;
+        self.repository
+            .update_connection_sequences(
+                connection_id,
+                worker.last_worker_sequence,
+                worker.next_server_sequence.saturating_sub(1),
+                worker.last_server_sequence_acknowledged,
+                now_ms,
+            )
+            .map_err(repository_status)?;
         Ok(())
     }
 
-    fn observe_heartbeat(_worker: &mut WorkerRecord, _heartbeat: Heartbeat) {}
+    fn observe_heartbeat(
+        &self,
+        worker_id: &str,
+        heartbeat: &Heartbeat,
+        now_ms: u64,
+    ) -> Result<(), Status> {
+        let active_attempts = heartbeat
+            .active_attempts
+            .iter()
+            .map(|attempt| attempt.attempt_id.clone())
+            .collect::<Vec<_>>();
+        self.repository
+            .renew_active_leases(worker_id, &active_attempts, now_ms, ATTEMPT_LEASE_MS)
+            .map_err(repository_status)
+    }
 
     fn observe_status(_worker: &mut WorkerRecord, _status: WorkerStatus) {}
 
-    fn observe_rejection(
-        state: &mut ControlState,
+    fn observe_accepted(
+        &self,
         worker_id: &str,
-        rejected: &AssignmentRejected,
-    ) -> Result<(), Status> {
-        Self::transition_assignment(
-            state,
+        accepted: AssignmentAccepted,
+        now_ms: u64,
+    ) -> Result<ObservationDisposition, Status> {
+        self.observe(
             worker_id,
-            &rejected.assignment_id,
-            &rejected.attempt_id,
-            AssignmentState::Rejected,
+            accepted.assignment_id,
+            accepted.attempt_id,
+            now_ms,
+            AttemptObservation::Accepted {
+                already_known: accepted.already_known,
+            },
+        )
+    }
+
+    fn observe_rejection(
+        &self,
+        worker_id: &str,
+        rejected: AssignmentRejected,
+        now_ms: u64,
+    ) -> Result<ObservationDisposition, Status> {
+        self.observe(
+            worker_id,
+            rejected.assignment_id,
+            rejected.attempt_id,
+            now_ms,
+            AttemptObservation::Rejected {
+                reason: rejected.reason,
+                detail: rejected.detail,
+            },
         )
     }
 
     fn observe_started(
-        state: &mut ControlState,
+        &self,
         worker_id: &str,
-        started: &ExecutionStarted,
-    ) -> Result<(), Status> {
-        Self::transition_assignment(
-            state,
+        started: ExecutionStarted,
+        now_ms: u64,
+    ) -> Result<ObservationDisposition, Status> {
+        self.observe(
             worker_id,
-            &started.assignment_id,
-            &started.attempt_id,
-            AssignmentState::Running,
+            started.assignment_id,
+            started.attempt_id,
+            now_ms,
+            AttemptObservation::Started,
         )
     }
 
     fn observe_finished(
-        state: &mut ControlState,
+        &self,
         worker_id: &str,
-        finished: &ExecutionFinished,
-    ) -> Result<(), Status> {
-        Self::transition_assignment(
-            state,
+        finished: ExecutionFinished,
+        now_ms: u64,
+    ) -> Result<ObservationDisposition, Status> {
+        self.observe(
             worker_id,
-            &finished.assignment_id,
-            &finished.attempt_id,
-            AssignmentState::Finished,
+            finished.assignment_id,
+            finished.attempt_id,
+            now_ms,
+            AttemptObservation::Finished(FinishedObservation {
+                outcome: finished.outcome,
+                exit_code: finished.exit_code,
+                elapsed_ms: finished.elapsed_ms,
+                receipt: finished.receipt.as_ref().map(artifact_to_identity),
+                stdout: finished.stdout.as_ref().map(artifact_to_identity),
+                stderr: finished.stderr.as_ref().map(artifact_to_identity),
+                detail: finished.detail,
+            }),
         )
     }
 
-    fn transition_assignment(
-        state: &mut ControlState,
+    fn observe_cancellation_acknowledged(
+        &self,
         worker_id: &str,
-        assignment_id: &str,
-        attempt_id: &str,
-        target: AssignmentState,
-    ) -> Result<(), Status> {
-        let assignment = state
-            .assignments
-            .get_mut(attempt_id)
-            .ok_or_else(|| Status::not_found("attempt is not assigned"))?;
-        if assignment.worker_id != worker_id || assignment.assignment.assignment_id != assignment_id
-        {
-            return Err(Status::permission_denied(
-                "attempt identity does not match worker",
-            ));
-        }
-        assignment.state = target;
-        Ok(())
+        acknowledged: CancellationAcknowledged,
+        now_ms: u64,
+    ) -> Result<ObservationDisposition, Status> {
+        self.observe(
+            worker_id,
+            acknowledged.assignment_id,
+            acknowledged.attempt_id,
+            now_ms,
+            AttemptObservation::CancellationAcknowledged {
+                already_terminal: acknowledged.already_terminal,
+            },
+        )
+    }
+
+    fn observe(
+        &self,
+        worker_id: &str,
+        assignment_id: String,
+        attempt_id: String,
+        observed_at_ms: u64,
+        observation: AttemptObservation,
+    ) -> Result<ObservationDisposition, Status> {
+        self.repository
+            .observe_attempt(&ObservedAttempt {
+                assignment_id,
+                attempt_id,
+                worker_id: worker_id.to_owned(),
+                observed_at_ms,
+                observation,
+            })
+            .map_err(repository_status)
     }
 
     async fn disconnect(&self, worker_id: &str, connection_id: &str) {
+        let _ = self
+            .repository
+            .disconnect(connection_id, self.clock.now_unix_ms());
         let mut state = self.state.lock().await;
         if let Some(worker) = state.workers.get_mut(worker_id)
             && worker.connection_id == connection_id
@@ -469,6 +743,11 @@ impl WorkerControl for WorkerControlService {
         if first.sequence != 1 {
             return Err(Status::invalid_argument("hello must have sequence 1"));
         }
+        if first.acknowledges_server_through != 0 {
+            return Err(Status::invalid_argument(
+                "hello cannot acknowledge a server connection that is not open",
+            ));
+        }
         let Some(worker_to_server::Message::Hello(hello)) = first.message else {
             return Err(Status::invalid_argument(
                 "first worker message must be hello",
@@ -479,7 +758,10 @@ impl WorkerControl for WorkerControlService {
 
         let worker_id = hello.worker_id.clone();
         let (outbound, receiver) = mpsc::channel(64);
-        let (connection_id, initial_messages) = self.register(hello, outbound.clone()).await;
+        let (connection_id, initial_messages) = self
+            .register(hello, outbound.clone())
+            .await
+            .map_err(repository_status)?;
         for message in initial_messages {
             outbound
                 .send(Ok(message))
@@ -492,5 +774,195 @@ impl WorkerControl for WorkerControlService {
                 .consume_stream(worker_id, connection_id, inbound, outbound),
         );
         Ok(Response::new(Box::pin(ReceiverStream::new(receiver))))
+    }
+}
+
+fn repository_status(error: RepositoryError) -> Status {
+    match error {
+        RepositoryError::NotFound(detail) => Status::not_found(detail),
+        RepositoryError::IdentityMismatch(detail) => Status::permission_denied(detail),
+        RepositoryError::InvalidTransition { .. } => Status::failed_precondition(error.to_string()),
+        _ => Status::internal(error.to_string()),
+    }
+}
+
+fn hello_to_registration(hello: &WorkerHello) -> WorkerRegistration {
+    let capabilities = hello
+        .capabilities
+        .as_ref()
+        .expect("validated worker hello contains capabilities");
+    WorkerRegistration {
+        protocol_major: hello.protocol_major,
+        protocol_minor: hello.protocol_minor,
+        worker_id: hello.worker_id.clone(),
+        instance_id: hello.instance_id.clone(),
+        worker_version: hello.worker_version.clone(),
+        features: hello.features.clone(),
+        capabilities: WorkerCapabilities {
+            backend: capabilities.backend,
+            architecture: capabilities.architecture.clone(),
+            device_count: capabilities.device_count,
+            max_concurrency: capabilities.max_concurrency,
+            driver_version: capabilities.driver_version.clone(),
+            toolkit_version: capabilities.toolkit_version.clone(),
+            container_runtime: capabilities.container_runtime.clone(),
+        },
+    }
+}
+
+fn assignment_to_contract(assignment: &Assignment) -> AssignmentContract {
+    let execution = assignment
+        .execution
+        .as_ref()
+        .expect("validated assignment contains execution");
+    AssignmentContract {
+        assignment_id: assignment.assignment_id.clone(),
+        attempt_id: assignment.attempt_id.clone(),
+        attempt_number: assignment.attempt_number,
+        idempotency_key: assignment.idempotency_key.clone(),
+        task_id: assignment.task_id.clone(),
+        candidate_id: assignment.candidate_id.clone(),
+        execution: ExecutionContract {
+            executor_kind: execution.executor_kind,
+            argv: execution.argv.clone(),
+            working_directory: execution.working_directory.clone(),
+            environment: execution
+                .environment
+                .iter()
+                .map(|entry| EnvironmentEntry {
+                    name: entry.name.clone(),
+                    value: entry.value.clone(),
+                })
+                .collect(),
+            timeout_ms: execution.timeout_ms,
+            bundle: artifact_to_identity(
+                execution
+                    .bundle
+                    .as_ref()
+                    .expect("validated assignment contains bundle"),
+            ),
+            image: artifact_to_identity(
+                execution
+                    .image
+                    .as_ref()
+                    .expect("validated assignment contains image"),
+            ),
+            limits: execution.limits.as_ref().map(|limits| ResourceContract {
+                cpu_millis: limits.cpu_millis,
+                memory_bytes: limits.memory_bytes,
+                disk_bytes: limits.disk_bytes,
+                process_count: limits.process_count,
+                output_bytes: limits.output_bytes,
+                device_count: limits.device_count,
+                network: limits.network,
+            }),
+        },
+        required_features: assignment.required_features.clone(),
+    }
+}
+
+fn contract_to_assignment(contract: &AssignmentContract) -> Assignment {
+    Assignment {
+        assignment_id: contract.assignment_id.clone(),
+        attempt_id: contract.attempt_id.clone(),
+        attempt_number: contract.attempt_number,
+        idempotency_key: contract.idempotency_key.clone(),
+        task_id: contract.task_id.clone(),
+        candidate_id: contract.candidate_id.clone(),
+        execution: Some(ExecutionSpec {
+            executor_kind: contract.execution.executor_kind,
+            argv: contract.execution.argv.clone(),
+            working_directory: contract.execution.working_directory.clone(),
+            environment: contract
+                .execution
+                .environment
+                .iter()
+                .map(|entry| EnvironmentVariable {
+                    name: entry.name.clone(),
+                    value: entry.value.clone(),
+                })
+                .collect(),
+            timeout_ms: contract.execution.timeout_ms,
+            bundle: Some(identity_to_artifact(&contract.execution.bundle)),
+            image: Some(identity_to_artifact(&contract.execution.image)),
+            limits: contract
+                .execution
+                .limits
+                .as_ref()
+                .map(|limits| ResourceLimits {
+                    cpu_millis: limits.cpu_millis,
+                    memory_bytes: limits.memory_bytes,
+                    disk_bytes: limits.disk_bytes,
+                    process_count: limits.process_count,
+                    output_bytes: limits.output_bytes,
+                    device_count: limits.device_count,
+                    network: limits.network,
+                }),
+        }),
+        required_features: contract.required_features.clone(),
+    }
+}
+
+fn artifact_to_identity(artifact: &ArtifactRef) -> ArtifactIdentity {
+    ArtifactIdentity {
+        digest: artifact.digest.clone(),
+        size_bytes: artifact.size_bytes,
+        media_type: artifact.media_type.clone(),
+    }
+}
+
+fn identity_to_artifact(identity: &ArtifactIdentity) -> ArtifactRef {
+    ArtifactRef {
+        digest: identity.digest.clone(),
+        size_bytes: identity.size_bytes,
+        media_type: identity.media_type.clone(),
+    }
+}
+
+fn unique_seed() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    u64::try_from(nanos).unwrap_or(u64::MAX)
+}
+
+fn validate_worker_acknowledgement(
+    acknowledged: u64,
+    last_acknowledged: u64,
+    sent_server_through: u64,
+) -> Result<(), Status> {
+    if acknowledged < last_acknowledged {
+        return Err(Status::invalid_argument(format!(
+            "worker acknowledgement regressed from {last_acknowledged} to {acknowledged}"
+        )));
+    }
+    if acknowledged > sent_server_through {
+        return Err(Status::invalid_argument(format!(
+            "worker acknowledged server sequence {acknowledged} beyond sent sequence {sent_server_through}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_acknowledgement_must_be_monotonic_and_not_future() {
+        assert!(validate_worker_acknowledgement(3, 2, 3).is_ok());
+        assert_eq!(
+            validate_worker_acknowledgement(1, 2, 3)
+                .expect_err("regression is rejected")
+                .code(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            validate_worker_acknowledgement(4, 2, 3)
+                .expect_err("future acknowledgement is rejected")
+                .code(),
+            tonic::Code::InvalidArgument
+        );
     }
 }

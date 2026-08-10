@@ -1,15 +1,23 @@
 //! Outbound worker client and local assignment admission state.
 
+pub mod journal;
+
 use alloyport_proto::v1::worker_control_client::WorkerControlClient;
 use alloyport_proto::v1::{
-    ActiveAttempt, Assignment, AssignmentAccepted, AssignmentRejected, AttemptPhase, ExecutorKind,
-    Heartbeat, RejectionReason, ServerToWorker, WorkerHealth, WorkerHello, WorkerToServer,
-    server_to_worker, worker_to_server,
+    ActiveAttempt, ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, AttemptOutcome,
+    AttemptPhase, CancellationAcknowledged, ExecutionFinished, ExecutorKind, Heartbeat,
+    RejectionReason, ServerToWorker, WorkerHealth, WorkerHello, WorkerToServer, server_to_worker,
+    worker_to_server,
 };
 use alloyport_proto::{ValidationError, validate_assignment, validate_worker_hello};
-use std::collections::BTreeMap;
+use journal::{
+    AttemptStore, AttemptStoreError, LocalAttemptPhase, LocalAttemptRecord, SqliteAttemptStore,
+    StoreAdmissionOutcome, StoredArtifact, StoredAssignment, StoredEnvironment, StoredExecution,
+    StoredLimits,
+};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
@@ -18,6 +26,8 @@ use tonic::Request;
 use tonic::transport::Endpoint;
 
 const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+
+pub use journal::StoredFinished;
 
 /// Whether an admitted attempt is new or an idempotent replay.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,6 +43,7 @@ pub enum WorkerError {
     InvalidAssignment(ValidationError),
     ConflictingAttempt(String),
     PolicyViolation(String),
+    AttemptStore(AttemptStoreError),
     Transport(tonic::transport::Error),
     Rpc(tonic::Status),
     Protocol(String),
@@ -52,6 +63,7 @@ impl Display for WorkerError {
                 )
             }
             Self::PolicyViolation(detail) => write!(formatter, "worker policy rejected: {detail}"),
+            Self::AttemptStore(error) => Display::fmt(error, formatter),
             Self::Transport(error) => Display::fmt(error, formatter),
             Self::Rpc(error) => Display::fmt(error, formatter),
             Self::Protocol(detail) => write!(formatter, "worker protocol error: {detail}"),
@@ -66,6 +78,7 @@ impl Error for WorkerError {
             Self::InvalidHello(error) | Self::InvalidAssignment(error) => Some(error),
             Self::Transport(error) => Some(error),
             Self::Rpc(error) => Some(error),
+            Self::AttemptStore(error) => Some(error),
             Self::ConflictingAttempt(_)
             | Self::PolicyViolation(_)
             | Self::Protocol(_)
@@ -86,6 +99,17 @@ impl From<tonic::Status> for WorkerError {
     }
 }
 
+impl From<AttemptStoreError> for WorkerError {
+    fn from(error: AttemptStoreError) -> Self {
+        match error {
+            AttemptStoreError::ConflictingAttempt(attempt_id) => {
+                Self::ConflictingAttempt(attempt_id)
+            }
+            other => Self::AttemptStore(other),
+        }
+    }
+}
+
 /// Local rules that remain authoritative even for an authenticated server.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AdmissionPolicy {
@@ -101,11 +125,11 @@ impl AdmissionPolicy {
     }
 }
 
-/// Worker-local attempt knowledge. This becomes disk-backed before real execution is enabled.
+/// Worker-local policy facade over a durable attempt journal.
 #[derive(Clone, Debug)]
 pub struct WorkerState {
     policy: AdmissionPolicy,
-    assignments: BTreeMap<String, Assignment>,
+    store: Arc<dyn AttemptStore>,
 }
 
 impl Default for WorkerState {
@@ -115,12 +139,36 @@ impl Default for WorkerState {
 }
 
 impl WorkerState {
+    /// Creates an ephemeral journal with the supplied policy.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the bundled `SQLite` library cannot create an in-memory journal.
     #[must_use]
-    pub const fn with_policy(policy: AdmissionPolicy) -> Self {
-        Self {
+    pub fn with_policy(policy: AdmissionPolicy) -> Self {
+        let store = SqliteAttemptStore::in_memory()
+            .expect("an in-memory worker attempt journal must initialize");
+        Self::with_store(policy, Arc::new(store))
+    }
+
+    #[must_use]
+    pub fn with_store(policy: AdmissionPolicy, store: Arc<dyn AttemptStore>) -> Self {
+        Self { policy, store }
+    }
+
+    /// Opens a crash-durable worker attempt journal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `SQLite` cannot open or migrate the journal.
+    pub fn open_sqlite(
+        policy: AdmissionPolicy,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, WorkerError> {
+        Ok(Self::with_store(
             policy,
-            assignments: BTreeMap::new(),
-        }
+            Arc::new(SqliteAttemptStore::open(path)?),
+        ))
     }
 
     /// Validates and records an immutable attempt before acknowledging it.
@@ -128,8 +176,8 @@ impl WorkerState {
     /// # Errors
     ///
     /// Returns [`WorkerError`] if validation fails or the same attempt ID is reused for other bytes.
-    pub fn admit(&mut self, assignment: Assignment) -> Result<AdmissionOutcome, WorkerError> {
-        validate_assignment(&assignment).map_err(WorkerError::InvalidAssignment)?;
+    pub fn admit(&self, assignment: &Assignment) -> Result<AdmissionOutcome, WorkerError> {
+        validate_assignment(assignment).map_err(WorkerError::InvalidAssignment)?;
         if assignment
             .execution
             .as_ref()
@@ -140,34 +188,87 @@ impl WorkerState {
                 "shell executor is disabled".to_owned(),
             ));
         }
-        if let Some(existing) = self.assignments.get(&assignment.attempt_id) {
-            return if existing == &assignment {
-                Ok(AdmissionOutcome::Duplicate)
-            } else {
-                Err(WorkerError::ConflictingAttempt(
-                    assignment.attempt_id.clone(),
-                ))
-            };
-        }
-        self.assignments
-            .insert(assignment.attempt_id.clone(), assignment);
-        Ok(AdmissionOutcome::New)
+        let stored = assignment_to_stored(assignment);
+        self.store
+            .admit(&stored, now_unix_ms())
+            .map(|outcome| match outcome {
+                StoreAdmissionOutcome::Inserted => AdmissionOutcome::New,
+                StoreAdmissionOutcome::Duplicate => AdmissionOutcome::Duplicate,
+            })
+            .map_err(WorkerError::from)
     }
 
-    #[must_use]
-    pub fn contains_attempt(&self, attempt_id: &str) -> bool {
-        self.assignments.contains_key(attempt_id)
+    /// Checks durable local attempt knowledge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the journal cannot be read.
+    pub fn contains_attempt(&self, attempt_id: &str) -> Result<bool, WorkerError> {
+        self.store
+            .attempt(attempt_id)
+            .map(|attempt| attempt.is_some())
+            .map_err(WorkerError::from)
     }
 
-    fn active_attempts(&self) -> Vec<ActiveAttempt> {
-        self.assignments
-            .values()
-            .map(|assignment| ActiveAttempt {
-                assignment_id: assignment.assignment_id.clone(),
-                attempt_id: assignment.attempt_id.clone(),
-                phase: AttemptPhase::Accepted.into(),
+    /// Persists the transition that must precede starting an executor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown attempt, invalid transition, or journal failure.
+    pub fn mark_running(&self, attempt_id: &str) -> Result<(), WorkerError> {
+        self.store
+            .mark_running(attempt_id, now_unix_ms())
+            .map_err(WorkerError::from)
+    }
+
+    /// Persists terminal result data before it can be reported to the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown attempt, conflicting terminal result, or journal failure.
+    pub fn mark_finished(
+        &self,
+        attempt_id: &str,
+        finished: &StoredFinished,
+    ) -> Result<(), WorkerError> {
+        self.store
+            .mark_finished(attempt_id, finished, now_unix_ms())
+            .map_err(WorkerError::from)
+    }
+
+    fn attempt(&self, attempt_id: &str) -> Result<Option<LocalAttemptRecord>, WorkerError> {
+        self.store.attempt(attempt_id).map_err(WorkerError::from)
+    }
+
+    fn active_attempts(&self) -> Result<Vec<ActiveAttempt>, WorkerError> {
+        self.store
+            .attempts()?
+            .into_iter()
+            .map(|attempt| {
+                Ok(ActiveAttempt {
+                    assignment_id: attempt.assignment.assignment_id,
+                    attempt_id: attempt.assignment.attempt_id,
+                    phase: match attempt.phase {
+                        LocalAttemptPhase::Accepted => AttemptPhase::Accepted,
+                        LocalAttemptPhase::Running => AttemptPhase::Running,
+                        LocalAttemptPhase::Finished => AttemptPhase::Finished,
+                    }
+                    .into(),
+                })
             })
             .collect()
+    }
+
+    fn attempt_count(&self) -> Result<usize, WorkerError> {
+        self.store
+            .attempts()
+            .map(|attempts| {
+                attempts
+                    .iter()
+                    .filter(|attempt| attempt.phase != LocalAttemptPhase::Finished)
+                    .count()
+            })
+            .map_err(WorkerError::from)
     }
 }
 
@@ -186,11 +287,37 @@ impl OutboundWorker {
     ///
     /// Returns [`WorkerError`] when the worker identity or capabilities are invalid.
     pub fn new(endpoint: Endpoint, hello: WorkerHello) -> Result<Self, WorkerError> {
+        Self::with_state(endpoint, hello, WorkerState::default())
+    }
+
+    /// Constructs a worker whose attempt knowledge survives process restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid hello or a journal open/migration failure.
+    pub fn open_sqlite(
+        endpoint: Endpoint,
+        hello: WorkerHello,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, WorkerError> {
+        Self::with_state(
+            endpoint,
+            hello,
+            WorkerState::open_sqlite(AdmissionPolicy::default(), path)?,
+        )
+    }
+
+    fn with_state(
+        endpoint: Endpoint,
+        hello: WorkerHello,
+        state: WorkerState,
+    ) -> Result<Self, WorkerError> {
         validate_worker_hello(&hello).map_err(WorkerError::InvalidHello)?;
+        state.store.bind_worker(&hello.worker_id)?;
         Ok(Self {
             endpoint,
             hello,
-            state: Arc::new(Mutex::new(WorkerState::default())),
+            state: Arc::new(Mutex::new(state)),
         })
     }
 
@@ -211,7 +338,7 @@ impl OutboundWorker {
         let (outbound, receiver) = mpsc::channel(64);
 
         let mut hello = self.hello.clone();
-        hello.active_attempts = self.state.lock().await.active_attempts();
+        hello.active_attempts = self.state.lock().await.active_attempts()?;
         outbound
             .send(WorkerToServer {
                 sequence: 1,
@@ -230,13 +357,20 @@ impl OutboundWorker {
         heartbeat.tick().await;
         let mut next_worker_sequence = 2;
         let mut last_server_sequence = 0;
+        let mut last_worker_sequence_acknowledged = 0;
 
         loop {
             tokio::select! {
                 incoming = inbound.message() => {
                     let message = incoming?.ok_or(WorkerError::StreamClosed)?;
-                    Self::validate_server_sequence(&message, last_server_sequence)?;
+                    Self::validate_server_frame(
+                        &message,
+                        last_server_sequence,
+                        last_worker_sequence_acknowledged,
+                        next_worker_sequence - 1,
+                    )?;
                     last_server_sequence = message.sequence;
+                    last_worker_sequence_acknowledged = message.acknowledges_worker_through;
                     if self.handle_server_message(
                         message,
                         &outbound,
@@ -247,14 +381,14 @@ impl OutboundWorker {
                     }
                 }
                 _ = heartbeat.tick() => {
-                    let active_attempts = self.state.lock().await.active_attempts();
+                    let active_attempts = self.state.lock().await.active_attempts()?;
                     Self::send(
                         &outbound,
                         &mut next_worker_sequence,
                         last_server_sequence,
                         worker_to_server::Message::Heartbeat(Heartbeat {
                             active_attempts,
-                            available_slots: self.available_slots().await,
+                            available_slots: self.available_slots().await?,
                             health: WorkerHealth::Ready.into(),
                         }),
                     ).await?;
@@ -263,15 +397,29 @@ impl OutboundWorker {
         }
     }
 
-    fn validate_server_sequence(
+    fn validate_server_frame(
         message: &ServerToWorker,
         last_server_sequence: u64,
+        last_worker_sequence_acknowledged: u64,
+        sent_worker_through: u64,
     ) -> Result<(), WorkerError> {
         if message.sequence != last_server_sequence + 1 {
             return Err(WorkerError::Protocol(format!(
                 "server sequence gap: expected {}, got {}",
                 last_server_sequence + 1,
                 message.sequence
+            )));
+        }
+        if message.acknowledges_worker_through < last_worker_sequence_acknowledged {
+            return Err(WorkerError::Protocol(format!(
+                "server acknowledgement regressed from {last_worker_sequence_acknowledged} to {}",
+                message.acknowledges_worker_through
+            )));
+        }
+        if message.acknowledges_worker_through > sent_worker_through {
+            return Err(WorkerError::Protocol(format!(
+                "server acknowledged worker sequence {} beyond sent sequence {sent_worker_through}",
+                message.acknowledges_worker_through
             )));
         }
         Ok(())
@@ -295,51 +443,156 @@ impl OutboundWorker {
                 Ok(false)
             }
             Some(server_to_worker::Message::Assignment(assignment)) => {
-                let assignment_id = assignment.assignment_id.clone();
-                let attempt_id = assignment.attempt_id.clone();
-                let response = match self.state.lock().await.admit(assignment) {
-                    Ok(outcome) => {
-                        worker_to_server::Message::AssignmentAccepted(AssignmentAccepted {
-                            assignment_id,
-                            attempt_id,
-                            already_known: outcome == AdmissionOutcome::Duplicate,
-                        })
-                    }
-                    Err(WorkerError::InvalidAssignment(error)) => {
-                        worker_to_server::Message::AssignmentRejected(AssignmentRejected {
-                            assignment_id,
-                            attempt_id,
-                            reason: RejectionReason::Invalid.into(),
-                            detail: error.to_string(),
-                        })
-                    }
-                    Err(WorkerError::ConflictingAttempt(_)) => {
-                        worker_to_server::Message::AssignmentRejected(AssignmentRejected {
-                            assignment_id,
-                            attempt_id,
-                            reason: RejectionReason::Conflict.into(),
-                            detail: "attempt ID conflicts with locally admitted content".to_owned(),
-                        })
-                    }
-                    Err(WorkerError::PolicyViolation(detail)) => {
-                        worker_to_server::Message::AssignmentRejected(AssignmentRejected {
-                            assignment_id,
-                            attempt_id,
-                            reason: RejectionReason::Policy.into(),
-                            detail,
-                        })
-                    }
-                    Err(error) => return Err(error),
-                };
-                Self::send(outbound, next_worker_sequence, acknowledged, response).await?;
+                self.handle_assignment(assignment, outbound, next_worker_sequence, acknowledged)
+                    .await?;
                 Ok(false)
             }
             Some(server_to_worker::Message::Drain(_)) => Ok(true),
-            Some(server_to_worker::Message::Cancel(_)) => Ok(false),
+            Some(server_to_worker::Message::Cancel(cancel)) => {
+                self.handle_cancel(cancel, outbound, next_worker_sequence, acknowledged)
+                    .await?;
+                Ok(false)
+            }
             None => Err(WorkerError::Protocol(
                 "server message payload is missing".to_owned(),
             )),
         }
+    }
+
+    async fn handle_assignment(
+        &self,
+        assignment: Assignment,
+        outbound: &mpsc::Sender<WorkerToServer>,
+        next_worker_sequence: &mut u64,
+        acknowledged: u64,
+    ) -> Result<(), WorkerError> {
+        let assignment_id = assignment.assignment_id.clone();
+        let attempt_id = assignment.attempt_id.clone();
+        let (response, admitted) = match self.state.lock().await.admit(&assignment) {
+            Ok(outcome) => (
+                worker_to_server::Message::AssignmentAccepted(AssignmentAccepted {
+                    assignment_id: assignment_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                    already_known: outcome == AdmissionOutcome::Duplicate,
+                }),
+                true,
+            ),
+            Err(WorkerError::InvalidAssignment(error)) => (
+                worker_to_server::Message::AssignmentRejected(AssignmentRejected {
+                    assignment_id: assignment_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                    reason: RejectionReason::Invalid.into(),
+                    detail: error.to_string(),
+                }),
+                false,
+            ),
+            Err(WorkerError::ConflictingAttempt(_)) => (
+                worker_to_server::Message::AssignmentRejected(AssignmentRejected {
+                    assignment_id: assignment_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                    reason: RejectionReason::Conflict.into(),
+                    detail: "attempt ID conflicts with locally admitted content".to_owned(),
+                }),
+                false,
+            ),
+            Err(WorkerError::PolicyViolation(detail)) => (
+                worker_to_server::Message::AssignmentRejected(AssignmentRejected {
+                    assignment_id: assignment_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                    reason: RejectionReason::Policy.into(),
+                    detail,
+                }),
+                false,
+            ),
+            Err(error) => return Err(error),
+        };
+        Self::send(outbound, next_worker_sequence, acknowledged, response).await?;
+        if admitted
+            && let Some(finished) = self
+                .state
+                .lock()
+                .await
+                .attempt(&attempt_id)?
+                .and_then(|attempt| attempt.finished)
+        {
+            Self::send(
+                outbound,
+                next_worker_sequence,
+                acknowledged,
+                worker_to_server::Message::ExecutionFinished(stored_to_finished(
+                    &assignment_id,
+                    &attempt_id,
+                    &finished,
+                )),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_cancel(
+        &self,
+        cancel: alloyport_proto::v1::CancelAttempt,
+        outbound: &mpsc::Sender<WorkerToServer>,
+        next_worker_sequence: &mut u64,
+        acknowledged: u64,
+    ) -> Result<(), WorkerError> {
+        let (assignment_id, already_terminal, finished) = {
+            let state = self.state.lock().await;
+            let attempt = state.attempt(&cancel.attempt_id)?.ok_or_else(|| {
+                WorkerError::Protocol(format!(
+                    "server cancelled unknown attempt {}",
+                    cancel.attempt_id
+                ))
+            })?;
+            let already_terminal = attempt.phase == LocalAttemptPhase::Finished;
+            if !already_terminal {
+                state.mark_finished(
+                    &cancel.attempt_id,
+                    &StoredFinished {
+                        outcome: AttemptOutcome::Cancelled.into(),
+                        exit_code: None,
+                        elapsed_ms: 0,
+                        receipt: None,
+                        stdout: None,
+                        stderr: None,
+                        detail: cancel.reason.clone(),
+                    },
+                )?;
+            }
+            let finished = state
+                .attempt(&cancel.attempt_id)?
+                .and_then(|record| record.finished)
+                .ok_or_else(|| {
+                    WorkerError::Protocol(
+                        "cancelled attempt lacks terminal journal data".to_owned(),
+                    )
+                })?;
+            (attempt.assignment.assignment_id, already_terminal, finished)
+        };
+        Self::send(
+            outbound,
+            next_worker_sequence,
+            acknowledged,
+            worker_to_server::Message::CancellationAcknowledged(CancellationAcknowledged {
+                assignment_id: assignment_id.clone(),
+                attempt_id: cancel.attempt_id.clone(),
+                already_terminal,
+            }),
+        )
+        .await?;
+        Self::send(
+            outbound,
+            next_worker_sequence,
+            acknowledged,
+            worker_to_server::Message::ExecutionFinished(stored_to_finished(
+                &assignment_id,
+                &cancel.attempt_id,
+                &finished,
+            )),
+        )
+        .await?;
+        Ok(())
     }
 
     async fn send(
@@ -360,12 +613,105 @@ impl OutboundWorker {
             .map_err(|_| WorkerError::StreamClosed)
     }
 
-    async fn available_slots(&self) -> u32 {
-        let active = u32::try_from(self.state.lock().await.assignments.len()).unwrap_or(u32::MAX);
-        self.hello.capabilities.as_ref().map_or(0, |capabilities| {
+    async fn available_slots(&self) -> Result<u32, WorkerError> {
+        let active = u32::try_from(self.state.lock().await.attempt_count()?).unwrap_or(u32::MAX);
+        Ok(self.hello.capabilities.as_ref().map_or(0, |capabilities| {
             capabilities.max_concurrency.saturating_sub(active)
-        })
+        }))
     }
+}
+
+fn assignment_to_stored(assignment: &Assignment) -> StoredAssignment {
+    let execution = assignment
+        .execution
+        .as_ref()
+        .expect("validated assignment contains execution");
+    StoredAssignment {
+        assignment_id: assignment.assignment_id.clone(),
+        attempt_id: assignment.attempt_id.clone(),
+        attempt_number: assignment.attempt_number,
+        idempotency_key: assignment.idempotency_key.clone(),
+        task_id: assignment.task_id.clone(),
+        candidate_id: assignment.candidate_id.clone(),
+        execution: StoredExecution {
+            executor_kind: execution.executor_kind,
+            argv: execution.argv.clone(),
+            working_directory: execution.working_directory.clone(),
+            environment: execution
+                .environment
+                .iter()
+                .map(|entry| StoredEnvironment {
+                    name: entry.name.clone(),
+                    value: entry.value.clone(),
+                })
+                .collect(),
+            timeout_ms: execution.timeout_ms,
+            bundle: artifact_to_stored(
+                execution
+                    .bundle
+                    .as_ref()
+                    .expect("validated assignment contains bundle"),
+            ),
+            image: artifact_to_stored(
+                execution
+                    .image
+                    .as_ref()
+                    .expect("validated assignment contains image"),
+            ),
+            limits: execution.limits.as_ref().map(|limits| StoredLimits {
+                cpu_millis: limits.cpu_millis,
+                memory_bytes: limits.memory_bytes,
+                disk_bytes: limits.disk_bytes,
+                process_count: limits.process_count,
+                output_bytes: limits.output_bytes,
+                device_count: limits.device_count,
+                network: limits.network,
+            }),
+        },
+        required_features: assignment.required_features.clone(),
+    }
+}
+
+fn artifact_to_stored(artifact: &ArtifactRef) -> StoredArtifact {
+    StoredArtifact {
+        digest: artifact.digest.clone(),
+        size_bytes: artifact.size_bytes,
+        media_type: artifact.media_type.clone(),
+    }
+}
+
+fn stored_to_artifact(artifact: &StoredArtifact) -> ArtifactRef {
+    ArtifactRef {
+        digest: artifact.digest.clone(),
+        size_bytes: artifact.size_bytes,
+        media_type: artifact.media_type.clone(),
+    }
+}
+
+fn stored_to_finished(
+    assignment_id: &str,
+    attempt_id: &str,
+    finished: &StoredFinished,
+) -> ExecutionFinished {
+    ExecutionFinished {
+        assignment_id: assignment_id.to_owned(),
+        attempt_id: attempt_id.to_owned(),
+        outcome: finished.outcome,
+        exit_code: finished.exit_code,
+        elapsed_ms: finished.elapsed_ms,
+        receipt: finished.receipt.as_ref().map(stored_to_artifact),
+        stdout: finished.stdout.as_ref().map(stored_to_artifact),
+        stderr: finished.stderr.as_ref().map(stored_to_artifact),
+        detail: finished.detail.clone(),
+    }
+}
+
+fn now_unix_ms() -> u64 {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -405,17 +751,17 @@ mod tests {
 
     #[test]
     fn replay_is_idempotent_but_conflicting_content_is_rejected() {
-        let mut state = WorkerState::default();
+        let state = WorkerState::default();
         assert_eq!(
-            state.admit(assignment("true")).expect("first admission"),
+            state.admit(&assignment("true")).expect("first admission"),
             AdmissionOutcome::New
         );
         assert_eq!(
-            state.admit(assignment("true")).expect("same assignment"),
+            state.admit(&assignment("true")).expect("same assignment"),
             AdmissionOutcome::Duplicate
         );
         assert!(matches!(
-            state.admit(assignment("false")),
+            state.admit(&assignment("false")),
             Err(WorkerError::ConflictingAttempt(attempt)) if attempt == "attempt-1"
         ));
     }
@@ -430,14 +776,119 @@ mod tests {
             .executor_kind = ExecutorKind::Shell.into();
 
         assert!(matches!(
-            WorkerState::default().admit(shell.clone()),
+            WorkerState::default().admit(&shell),
             Err(WorkerError::PolicyViolation(_))
         ));
         assert_eq!(
             WorkerState::with_policy(AdmissionPolicy::default().allowing_shell())
-                .admit(shell)
+                .admit(&shell)
                 .expect("explicit policy allows shell"),
             AdmissionOutcome::New
         );
+    }
+
+    #[test]
+    fn sqlite_journal_restores_finished_attempt_and_rejects_conflict() -> Result<(), Box<dyn Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("worker.sqlite3");
+        let finished = StoredFinished {
+            outcome: alloyport_proto::v1::AttemptOutcome::Succeeded.into(),
+            exit_code: Some(0),
+            elapsed_ms: 25,
+            receipt: Some(StoredArtifact {
+                digest: format!("sha256:{}", "c".repeat(64)),
+                size_bytes: 1,
+                media_type: "application/vnd.alloyport.receipt+json".to_owned(),
+            }),
+            stdout: None,
+            stderr: None,
+            detail: "fixture complete".to_owned(),
+        };
+        {
+            let state = WorkerState::open_sqlite(AdmissionPolicy::default(), &database)?;
+            assert_eq!(state.admit(&assignment("true"))?, AdmissionOutcome::New);
+            state.mark_running("attempt-1")?;
+            state.mark_finished("attempt-1", &finished)?;
+        }
+
+        let restored = WorkerState::open_sqlite(AdmissionPolicy::default(), &database)?;
+        let attempt = restored
+            .attempt("attempt-1")?
+            .expect("journal restores the attempt");
+        assert_eq!(attempt.phase, LocalAttemptPhase::Finished);
+        assert_eq!(attempt.finished, Some(finished));
+        assert_eq!(
+            restored.admit(&assignment("true"))?,
+            AdmissionOutcome::Duplicate
+        );
+        assert!(matches!(
+            restored.admit(&assignment("false")),
+            Err(WorkerError::ConflictingAttempt(attempt)) if attempt == "attempt-1"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn server_acknowledgement_must_be_monotonic_and_not_future() {
+        let valid = ServerToWorker {
+            sequence: 2,
+            acknowledges_worker_through: 3,
+            message: None,
+        };
+        assert!(OutboundWorker::validate_server_frame(&valid, 1, 2, 3).is_ok());
+
+        let regressed = ServerToWorker {
+            acknowledges_worker_through: 1,
+            ..valid.clone()
+        };
+        assert!(matches!(
+            OutboundWorker::validate_server_frame(&regressed, 1, 2, 3),
+            Err(WorkerError::Protocol(detail)) if detail.contains("regressed")
+        ));
+
+        let future = ServerToWorker {
+            acknowledges_worker_through: 4,
+            ..valid
+        };
+        assert!(matches!(
+            OutboundWorker::validate_server_frame(&future, 1, 2, 3),
+            Err(WorkerError::Protocol(detail)) if detail.contains("beyond sent")
+        ));
+    }
+
+    #[test]
+    fn durable_journal_is_bound_to_one_logical_worker() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("worker.sqlite3");
+        let endpoint = Endpoint::from_static("http://127.0.0.1:50051");
+        let first = WorkerHello {
+            protocol_major: alloyport_proto::PROTOCOL_MAJOR,
+            protocol_minor: alloyport_proto::PROTOCOL_MINOR,
+            worker_id: "worker-1".to_owned(),
+            instance_id: "instance-1".to_owned(),
+            worker_version: "test".to_owned(),
+            features: Vec::new(),
+            capabilities: Some(alloyport_proto::v1::WorkerCapabilities {
+                backend: alloyport_proto::v1::Backend::Cuda.into(),
+                architecture: "test".to_owned(),
+                device_count: 1,
+                max_concurrency: 1,
+                driver_version: "test".to_owned(),
+                toolkit_version: "test".to_owned(),
+                container_runtime: "test".to_owned(),
+            }),
+            active_attempts: Vec::new(),
+        };
+        OutboundWorker::open_sqlite(endpoint.clone(), first.clone(), &database)?;
+        let mut changed = first;
+        changed.worker_id = "worker-2".to_owned();
+        assert!(matches!(
+            OutboundWorker::open_sqlite(endpoint, changed, &database),
+            Err(WorkerError::AttemptStore(
+                AttemptStoreError::WorkerIdentityMismatch { .. }
+            ))
+        ));
+        Ok(())
     }
 }

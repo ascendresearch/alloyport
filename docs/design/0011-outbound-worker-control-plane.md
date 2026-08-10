@@ -78,25 +78,36 @@ compiler to `prost-build`, so code generation does not depend on an arbitrary ho
 
 ## Implementation progress
 
-The first contract slice was implemented on 2026-08-10:
+The contract, durable repository, and assignment-level reconciliation slices were implemented on
+2026-08-10:
 
 - `alloyport-proto` publishes the `alloyport.worker.v1` schema, generated client/server bindings, and
   strict hello/assignment validation;
-- `alloyport-server` accepts an outbound bidirectional stream, registers worker identity and
-  capabilities, persists assignment state in the current in-memory repository, replays non-terminal
-  assignments after reconnect, and classifies worker lifecycle messages;
-- `alloyport-worker` performs hello/welcome negotiation, heartbeats and cumulative acknowledgement,
-  locally deduplicates attempts, and accepts only validated assignments;
+- `alloyport-server` accepts an outbound bidirectional stream and separates live connection sessions
+  from a storage-domain `ControlRepository`; its SQLite implementation migrates and transactionally
+  stores worker registrations, connection observations, immutable assignments, lifecycle
+  observations, and attempt leases without storing generated Protobuf messages;
+- the server commits assignments before send, grants/renews bounded leases, periodically expires
+  them using an injectable clock, recovers queued and non-terminal assignments after process restart,
+  and retains a result arriving after lease expiry as stale instead of overwriting attempt state;
+- `alloyport-worker` uses a storage-domain `AttemptStore` and SQLite journal to commit immutable
+  admission before acknowledgement, retain accepted/running/finished state across process restart,
+  populate hello/heartbeat reconciliation snapshots, and replay durable finished results;
+- both stream directions reject cumulative acknowledgements that regress or exceed the sequence
+  actually sent; cancellation is durably requested, independently acknowledged, eventually terminal,
+  replayed after reconnect, and tested against admission and lease-expiry races;
 - runnable server and worker binaries support mTLS from environment-provided certificates and permit
   plaintext only on loopback for development;
-- loopback integration tests cover handshake, assignment delivery, worker acceptance, duplicate
-  enqueue suppression, default shell-executor rejection, and disconnected-queue replay after
-  reconnect without CUDA or Ascend hardware.
+- loopback and repository tests cover handshake, assignment delivery, worker acceptance,
+  store-before-send lease creation, duplicate/conflicting enqueue handling, disconnected replay,
+  SQLite reopen/restart recovery on both sides, heartbeat renewal, lease expiry, late-result and
+  finished-result replay, acknowledgement bounds, and cancellation races without CUDA or Ascend
+  hardware.
 
-This is not the complete control plane. Assignment persistence is not yet crash durable, worker-local
-attempt state is not yet disk backed, execution and cancellation are not wired to a container, and the
-artifact service is not implemented. Those omissions keep the implementation at Stage 1 rather than
-claiming production readiness.
+This is not the complete control plane. Transport frames are not yet replayed from durable cursors,
+expired work is not automatically reassigned, execution and running-process signal delivery are not
+wired to a container, and the artifact service is not implemented. Those omissions keep the
+implementation at Stage 1 rather than claiming production readiness.
 
 ## Product topology
 

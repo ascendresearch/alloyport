@@ -45,8 +45,8 @@ automation, and replay; an agent's narrative remains distinct from verified migr
 - `alloyport-events`: versioned producer/canonical events, lifecycle reduction, JSONL, and plain
   rendering shared with the Python executor bridge.
 - `alloyport-proto`: versioned Protobuf/gRPC worker protocol and strict edge validation.
-- `alloyport-server`: worker connection registry, durable-assignment state model, and gRPC control
-  service.
+- `alloyport-server`: worker connection registry, SQLite control repository, attempt leases, and gRPC
+  control service.
 - `alloyport-worker`: outbound worker client, local assignment admission, reconnect, and heartbeat
   runtime.
 - `alloyport-cli`: command-line entry point; orchestration will grow here only until service
@@ -84,8 +84,12 @@ cargo run -p alloyport-worker
 Remote server mode requires `ALLOYPORT_TLS_CERT`, `ALLOYPORT_TLS_KEY`, and
 `ALLOYPORT_TLS_CLIENT_CA`. A remote worker requires its certificate/key plus
 `ALLOYPORT_TLS_SERVER_CA` and `ALLOYPORT_TLS_SERVER_NAME`; remote plaintext endpoints are rejected.
-The current slice proves registration, heartbeat, assignment admission, deduplication, and reconnect
-replay. It does not yet expose an external scheduling API or execute assignments on devices.
+The server database is selected with `ALLOYPORT_DATABASE` and defaults to
+`alloyport-control.sqlite3`; the worker journal uses `ALLOYPORT_WORKER_DATABASE` and defaults to
+`alloyport-worker.sqlite3`. The current slice proves registration, heartbeat, durable assignment
+admission, server/worker restart reconciliation, finished-result replay, cancellation ordering, and
+server-side lease expiry. It does not yet expose an external scheduling API or execute assignments on
+devices.
 
 No license has been selected yet. Do not publish packages or redistribute the code until that
 decision is recorded.

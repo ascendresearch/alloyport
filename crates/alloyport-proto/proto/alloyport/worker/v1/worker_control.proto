@@ -19,6 +19,7 @@ message WorkerToServer {
     OutputChunk output_chunk = 15;
     ExecutionFinished execution_finished = 16;
     WorkerStatus status = 17;
+    CancellationAcknowledged cancellation_acknowledged = 18;
   }
 }
 
@@ -160,6 +161,12 @@ message AssignmentRejected {
   string attempt_id = 2;
   RejectionReason reason = 3;
   string detail = 4;
+}
+
+message CancellationAcknowledged {
+  string assignment_id = 1;
+  string attempt_id = 2;
+  bool already_terminal = 3;
 }
 
 enum RejectionReason {
