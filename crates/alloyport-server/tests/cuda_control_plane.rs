@@ -1,5 +1,5 @@
 use alloyport_artifacts::upload::{BeginUpload, SqliteUploadStore, UploadQuotas};
-use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
+use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_proto::v1::{
@@ -9,6 +9,7 @@ use alloyport_proto::v1::{
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use alloyport_server::artifact::{ArtifactAccessPolicy, ArtifactServiceImpl};
 use alloyport_server::{AssignmentState, EnqueueOutcome, ManualClock, WorkerControlService};
+use alloyport_worker::artifact_download::RemoteArtifactDownloader;
 use alloyport_worker::artifact_upload::RemoteArtifactPublisher;
 use alloyport_worker::cuda::{
     CUDA_FIXTURE_BUNDLE_MEDIA_TYPE, CUDA_FIXTURE_FEATURE, CudaFixtureBundle, CudaFixturePolicy,
@@ -21,7 +22,6 @@ use alloyport_worker::cuda_supervisor::{
 };
 use alloyport_worker::{OutboundWorker, StoredFinished};
 use std::error::Error;
-use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -120,8 +120,8 @@ impl CudaLoopbackFixture {
             "../../../fixtures/cuda-vectoradd-v1/vector_add.cu"
         ));
         let bundle_bytes = serde_json::to_vec(&bundle)?;
-        let local_bundle =
-            local_artifacts.ingest(&mut Cursor::new(&bundle_bytes), IngestRequest::unverified())?;
+        let bundle_digest = Sha256Digest::digest_bytes(&bundle_bytes);
+        let bundle_size = u64::try_from(bundle_bytes.len())?;
         publish_input_bundle(&uploads, remote_artifacts.as_ref(), &bundle_bytes)?;
 
         let service = WorkerControlService::new().with_artifact_metadata(Arc::clone(&uploads));
@@ -150,7 +150,7 @@ impl CudaLoopbackFixture {
         let image_id = Sha256Digest::digest_bytes(b"image-id");
         let policy = Arc::new(CudaFixturePolicy::new(
             VECTOR_ADD_FIXTURE_ID,
-            local_bundle.artifact.digest,
+            bundle_digest,
             image_manifest,
             format!("example.invalid/cuda@{image_manifest}"),
             image_id,
@@ -173,12 +173,18 @@ impl CudaLoopbackFixture {
         )?);
         let publisher = Arc::new(RemoteArtifactPublisher::new(
             endpoint.clone(),
-            local_artifacts,
+            Arc::clone(&local_artifacts),
             4_096,
             Some(60_000),
         )?);
+        let downloader = Arc::new(RemoteArtifactDownloader::new(
+            endpoint.clone(),
+            local_artifacts,
+            8_192,
+        )?);
         let worker = OutboundWorker::new(endpoint, hello())?
             .with_cuda_executor(runtime)?
+            .with_artifact_downloader(downloader)
             .with_artifact_publisher(publisher);
         Ok(Self {
             _directory: directory,
@@ -186,8 +192,8 @@ impl CudaLoopbackFixture {
             uploads,
             worker,
             engine,
-            bundle_digest: local_bundle.artifact.digest,
-            bundle_size: local_bundle.artifact.size_bytes,
+            bundle_digest,
+            bundle_size,
             image_manifest,
             shutdown,
             server_task,
@@ -453,9 +459,7 @@ impl ArtifactAccessPolicy for FixedArtifactOwner {
     }
 
     fn authorize_download(&self, _owner_id: &str, _digest: Sha256Digest) -> Result<(), Status> {
-        Err(Status::permission_denied(
-            "download is outside this fixture",
-        ))
+        Ok(())
     }
 }
 

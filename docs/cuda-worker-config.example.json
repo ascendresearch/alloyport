@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "fixture_id": "cuda-vectoradd-v1",
+  "bundle_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "image_manifest_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "image_reference": "example.invalid/alloyport-cuda@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "device_id": "0",
+  "sandbox_root": "/var/lib/alloyport/cuda-sandboxes",
+  "ceilings": {
+    "cpu_millis": 2000,
+    "memory_bytes": 2147483648,
+    "disk_bytes": 536870912,
+    "process_count": 64,
+    "output_bytes": 65536
+  },
+  "local_artifact_root": "/var/lib/alloyport/cuda-artifacts",
+  "local_artifact_max_bytes": 8388608,
+  "max_input_bytes": 8388608,
+  "upload_chunk_bytes": 1048576,
+  "upload_ttl_ms": 3600000,
+  "docker_binary": "/usr/bin/docker",
+  "docker_stop_timeout_seconds": 10
+}

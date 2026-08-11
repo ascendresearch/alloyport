@@ -148,8 +148,8 @@ impl CudaExecutionRuntime {
 
     /// Runs one CUDA attempt while forwarding best-effort terminal observations.
     ///
-    /// Live Docker following is intentionally a later boundary; complete terminal bytes remain
-    /// authoritative in the local CAS.
+    /// Docker logs are followed internally for early budget enforcement, but observations remain
+    /// terminal-only; complete terminal bytes are authoritative in the local CAS.
     ///
     /// # Errors
     ///

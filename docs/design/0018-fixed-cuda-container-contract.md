@@ -114,10 +114,19 @@ retain the identified container for safe reconciliation.
 CUDA-fixture-only, verifies worker/runtime identity plus CUDA architecture/driver/toolkit facts, and
 uses the same active-attempt cancellation registry as the fake runtime. Session startup retries
 idempotent cleanup for terminal CUDA attempts without allowing cleanup failure to block durable
-terminal outbox delivery. The worker binary does not construct this stack yet. The log follower now
-enforces early output-limit termination, but does not emit chunked live previews. The next slice must
-add explicit binary configuration and the real GB10 validation; preview streaming remains a separate
-runtime integration.
+terminal outbox delivery. Before CUDA supervision, an optionally attached remote downloader fetches
+the granted exact bundle into the verified local CAS; retry reuses an already verified object.
+
+The worker binary constructs this stack only when `ALLOYPORT_CUDA_CONFIG` names a strict schema-1
+JSON policy. Unknown fields and partial policies are rejected. The file pins the fixture, bundle,
+manifest, resolved image, one device, absolute non-overlapping sandbox/CAS roots, ceilings, Artifact
+bounds, absolute Docker CLI, and stop grace period. The hello must independently declare CUDA,
+matching nonempty environment facts, one device, concurrency one, and Docker. Absence of the file
+retains default-deny admission. The binary always attaches both the input downloader and terminal
+publisher over its authenticated controller endpoint; there is no binary mode that executes CUDA but
+reports unauthoritative digest strings without publication. The log follower enforces early
+output-limit termination but does not emit chunked live previews. The next slice is real GB10
+validation; preview streaming remains a separate runtime integration.
 
 ## Evidence and parity
 
@@ -166,6 +175,9 @@ that publication observes `Running`, terminal commit precedes removal, a cleanup
 the terminal receipt/container, and replay retries only cleanup. A loopback gRPC test sends a real
 typed CUDA assignment through the controller, runs it with a fake container engine, publishes all
 three terminal Artifacts, survives a post-commit cleanup failure, reconnects, reports the terminal
-outbox, and removes without rerunning. An explicitly invoked real-engine GB10 smoke remains. The
+outbox, and removes without rerunning. Its worker CAS begins empty, so the same test also proves that
+the controller grant authorizes an exact remote bundle download before supervision. Binary config
+parsing rejects unknown fields, overlapping roots, unpinned identities, and unsafe partial policy.
+An explicitly invoked real-engine GB10 smoke remains. The
 first manual probe compiled and verified 1,048,576 elements on the target, producing the
 deterministic checksum `670562424`. No CI test may silently depend on a GPU or Docker daemon.

@@ -17,6 +17,7 @@ use alloyport_proto::v1::{
     WorkerToServer, server_to_worker, worker_to_server,
 };
 use alloyport_proto::{ValidationError, validate_assignment, validate_worker_hello};
+use artifact_download::RemoteArtifactDownloader;
 use cuda::CUDA_FIXTURE_FEATURE;
 use cuda_runtime::CudaExecutionRuntime;
 use executor::{
@@ -389,6 +390,7 @@ pub struct OutboundWorker {
     hello: WorkerHello,
     state: Arc<Mutex<WorkerState>>,
     execution: Option<Arc<ExecutionIntegration>>,
+    artifact_downloader: Option<Arc<RemoteArtifactDownloader>>,
     artifact_publisher: Option<Arc<dyn ArtifactPublisher>>,
     execution_updates: broadcast::Sender<ExecutionUpdate>,
 }
@@ -469,6 +471,7 @@ impl OutboundWorker {
             hello,
             state: Arc::new(Mutex::new(state)),
             execution: None,
+            artifact_downloader: None,
             artifact_publisher: None,
             execution_updates,
         })
@@ -572,6 +575,13 @@ impl OutboundWorker {
     #[must_use]
     pub fn with_artifact_publisher(mut self, publisher: Arc<dyn ArtifactPublisher>) -> Self {
         self.artifact_publisher = Some(publisher);
+        self
+    }
+
+    /// Downloads assignment inputs into the verified worker-local CAS before CUDA execution.
+    #[must_use]
+    pub fn with_artifact_downloader(mut self, downloader: Arc<RemoteArtifactDownloader>) -> Self {
+        self.artifact_downloader = Some(downloader);
         self
     }
 
@@ -1051,6 +1061,7 @@ impl OutboundWorker {
         let cancellation_for_task = cancellation.clone();
         let state = self.state.lock().await.clone();
         let integration = Arc::clone(integration);
+        let artifact_downloader = self.artifact_downloader.clone();
         let artifact_publisher = self.artifact_publisher.clone();
         let updates = self.execution_updates.clone();
         tokio::spawn(async move {
@@ -1059,6 +1070,7 @@ impl OutboundWorker {
                 &state,
                 &attempt_id,
                 &cancellation_for_task,
+                artifact_downloader.as_deref(),
                 artifact_publisher.as_deref(),
                 &updates,
             )
@@ -1259,6 +1271,7 @@ async fn run_registered_execution(
     state: &WorkerState,
     attempt_id: &str,
     cancellation: &CancellationToken,
+    downloader: Option<&RemoteArtifactDownloader>,
     publisher: Option<&dyn ArtifactPublisher>,
     updates: &broadcast::Sender<ExecutionUpdate>,
 ) -> Result<executor::ExecutionRun, executor::ExecutionRuntimeError> {
@@ -1290,6 +1303,17 @@ async fn run_registered_execution(
             }
         }
         AttachedRuntime::Cuda(runtime) => {
+            if let Some(downloader) = downloader {
+                let attempt = state.attempt(attempt_id)?.ok_or_else(|| {
+                    executor::ExecutionRuntimeError::MissingAttempt(attempt_id.into())
+                })?;
+                downloader
+                    .download(&attempt.assignment.execution.bundle)
+                    .await
+                    .map_err(|error| {
+                        executor::ExecutionRuntimeError::Executor(error.to_string())
+                    })?;
+            }
             if let Some(publisher) = publisher {
                 runtime
                     .run_observed_and_publish(state, attempt_id, cancellation, publisher, observer)

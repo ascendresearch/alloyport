@@ -376,6 +376,9 @@ execution in the worker binary yet:
 - `OutboundWorker` can explicitly attach that runtime, enforce CUDA-fixture-only admission, match
   hello and receipt environment facts, share cancellation/task ownership, and retry terminal cleanup
   at session startup without blocking terminal outbox delivery.
+- the worker binary attaches the complete CUDA stack only when `ALLOYPORT_CUDA_CONFIG` names a
+  schema-1 local policy file; it then downloads the granted bundle into its verified CAS before
+  execution and requires remote stdout/stderr/receipt publication before terminal commit.
 
 The self-contained fixture covers CUDA compilation, allocation/copy, a real kernel launch,
 synchronization, and deterministic device-result verification. An explicit ephemeral smoke on the
@@ -387,9 +390,14 @@ stdout/stderr/receipt only when the reporting stable worker finalized exact owne
 with matching digest, size, and media type. It then creates idempotent `AssignmentOutput` and
 `Receipt` roots before recording `Finished`. A wire digest cannot manufacture remote evidence.
 
-The worker binary uses `ALLOYPORT_WORKER_DATABASE` or defaults to `alloyport-worker.sqlite3`.
-The worker binary does not attach the fake runtime. Do not enable real candidate execution until
-process identity, attach/terminate recovery, sandboxing, and resource enforcement are durable too.
+The worker binary uses `ALLOYPORT_WORKER_DATABASE` or defaults to `alloyport-worker.sqlite3`. It does
+not attach the fake runtime. CUDA remains default-deny unless `ALLOYPORT_CUDA_CONFIG` points to a
+complete schema-1 JSON policy. [The checked-in template](cuda-worker-config.example.json)
+contains deliberately unusable all-zero digests that operators must replace with the exact granted
+bundle, pinned manifest, and resolved local image identities. The file also declares the one device,
+absolute non-overlapping sandbox/CAS roots, resource ceilings, bounded Artifact download/upload
+settings, absolute Docker CLI, and stop grace period. Enabling it additionally requires CUDA hello
+facts, `device_count=1`, `max_concurrency=1`, and `container_runtime=docker`.
 
 The `alloyport-worker` binary reconnects with capped exponential backoff. Required identity variables:
 
@@ -439,7 +447,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 95 Rust tests. Control-plane coverage includes real loopback gRPC streams and SQLite
+There are 96 Rust tests. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -504,7 +512,8 @@ without requiring Docker in CI. CUDA runtime
 coverage proves publication-before-terminal and terminal-before-removal ordering, durable receipt
 facts, cleanup-failure retention, and cleanup-only terminal replay. A dedicated CUDA control-plane
 test covers CUDA-only outbound admission, Artifact-gated completion, a post-commit cleanup failure,
-session reconnect, durable terminal replay, and cleanup without a second execution.
+session reconnect, durable terminal replay, cleanup without a second execution, and download of the
+granted input bundle into an initially empty worker CAS.
 
 An end-to-end mutual-TLS test creates one CA, a server identity, and three client identities. It
 proves forged worker hello rejection, cross-owner upload/download isolation, termination of an old
@@ -541,9 +550,9 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
   replacement worker or proactively invokes it for every expired lease.
 - The worker journal, lifecycle outbox, and fake executor's local Artifact spool are disk backed. An
   explicitly configured outbound worker launches that fake runtime and preserves its task across
-  stream reconnects. An optional publisher now uploads its spool and gates terminal reporting, but
-  the worker binary does not attach either fake component. The CUDA runtime can now be attached to
-  the same outbound session machinery, but the binary does not construct or configure it.
+  stream reconnects. An optional publisher uploads its spool and gates terminal reporting, but the
+  worker binary does not attach the fake component. The binary now constructs the CUDA runtime,
+  downloader, and mandatory publisher only from one explicit local policy file.
 - Durable lifecycle replay and seven-day orphaned-delivery retention are implemented. Heartbeats,
   status, output previews, welcomes, and ACK-only frames deliberately remain ephemeral; there is no
   generalized durable message bus or server replication.
@@ -552,11 +561,10 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
   quotas are implemented. Worker terminal ingestion now creates typed output/receipt references;
   other controller/public grant operations and automatic retention/collection scheduling remain
   absent. There is no object-store adapter or filesystem-capacity monitor.
-- No live Docker log previews, automatic device discovery, binary CUDA configuration, or device
-  reset. The Docker boundary now follows running logs and actively stops the identified container on
-  combined output-budget exhaustion, but the explicitly attached CUDA runtime still emits only
-  bounded terminal observations plus a configured environment receipt; the worker binary constructs
-  no runtime.
+- No live Docker log previews, automatic device discovery, or device reset. The Docker boundary
+  follows running logs and actively stops the identified container on combined output-budget
+  exhaustion, but the CUDA runtime still emits only bounded terminal observations plus a configured
+  environment receipt. Binary configuration is explicit rather than discovered.
   Attached fake runs emit ephemeral gRPC output previews and accept control-stream cancellation;
   workers with no executor attached still terminate cancelled admitted attempts directly.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
@@ -589,8 +597,9 @@ stdout/stderr, exit classification, and receipt fields.
 The typed executor, fixture bundle, local allowlist, Docker create plan, Artifact bundle
 download/grant, durable supervisor, argv-only Docker engine, gated CUDA runtime, environment receipt,
 terminal cleanup ordering, outbound-session integration, and bounded running-log enforcement are
-implemented. Next add explicit worker-binary configuration, live preview chunk publication, and the
-real GB10 loopback smoke. Keep shell execution disabled.
+implemented. The worker binary now wires a schema-validated local policy, verified input downloader,
+Docker runtime, and mandatory remote publisher. Next run the real GB10 outbound loopback smoke and
+add live preview chunk publication. Keep shell execution disabled.
 
 ### 2. Public event replay and subscription
 
@@ -616,8 +625,8 @@ evidence.
 
 Implement one fixed CUDA execution vertical slice without reviving the SSH runtime path:
 
-> Read `docs/HANDOFF.md` and Designs 0007, 0011, 0015 through 0018. Extend the worker binary's
-> configuration boundary so it constructs CUDA execution only from explicit local fixture, image,
-> device, sandbox, and Artifact settings. Then run the fixed GB10 fixture through outbound loopback
-> gRPC and compare its receipt against the legacy parity attempt. Keep generic shell/container
-> execution disabled, and do not treat bounded terminal observations as live previews.
+> Read `docs/HANDOFF.md` and Designs 0007, 0011, 0015 through 0018. Generate an explicit schema-1
+> worker policy from the already recorded GB10 bundle/image/device facts, then run the fixed fixture
+> through outbound loopback gRPC using the real Docker engine. Compare its receipt against the legacy
+> parity attempt. Keep generic shell/container execution disabled, and do not treat bounded terminal
+> observations as live previews.
