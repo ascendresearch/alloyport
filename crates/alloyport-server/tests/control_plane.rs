@@ -87,7 +87,7 @@ async fn worker_without_execution_backend_rejects_before_local_admission()
         service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Rejected)
     })
     .await?;
-    assert!(!worker_state.lock().await.contains_attempt("attempt-1")?);
+    assert!(!worker_state.contains_attempt("attempt-1")?);
 
     worker_task.abort();
     let _ = worker_task.await;
@@ -136,19 +136,12 @@ async fn worker_handshake_assignment_and_duplicate_suppression() -> Result<(), B
         service.lease("attempt-1")?.is_some(),
         "the lease must be durable before enqueue reports a send"
     );
-    wait_until(|| async {
-        worker_state
-            .lock()
-            .await
-            .contains_attempt("attempt-1")
-            .unwrap_or(false)
-    })
-    .await?;
+    wait_until(|| async { worker_state.contains_attempt("attempt-1").unwrap_or(false) }).await?;
     wait_until(|| async {
         service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Accepted)
     })
     .await?;
-    wait_until(|| async { worker_state.lock().await.outbox_len().ok() == Some(0) }).await?;
+    wait_until(|| async { worker_state.outbox_len().ok() == Some(0) }).await?;
 
     assert_eq!(
         service.enqueue_assignment("cuda-1", assignment).await?,
@@ -198,14 +191,7 @@ async fn queued_assignment_is_recovered_after_server_restart() -> Result<(), Box
         .with_admission_only_mode();
     let worker_state = worker.state();
     let worker_task = tokio::spawn(async move { worker.run_session().await });
-    wait_until(|| async {
-        worker_state
-            .lock()
-            .await
-            .contains_attempt("attempt-1")
-            .unwrap_or(false)
-    })
-    .await?;
+    wait_until(|| async { worker_state.contains_attempt("attempt-1").unwrap_or(false) }).await?;
     wait_until(|| async {
         recovered_server
             .assignment_state("attempt-1")
@@ -356,7 +342,7 @@ async fn worker_restart_replays_durable_finished_result() -> Result<(), Box<dyn 
             .is_some_and(|snapshot| !snapshot.connected)
     })
     .await?;
-    first_state.lock().await.mark_finished(
+    first_state.mark_finished(
         "attempt-1",
         &StoredFinished {
             outcome: AttemptOutcome::Succeeded.into(),
@@ -368,7 +354,7 @@ async fn worker_restart_replays_durable_finished_result() -> Result<(), Box<dyn 
             detail: "durable fixture result".to_owned(),
         },
     )?;
-    assert_eq!(first_state.lock().await.outbox_len()?, 1);
+    assert_eq!(first_state.outbox_len()?, 1);
     drop(first_state);
 
     let mut restarted_hello = hello();
@@ -382,7 +368,7 @@ async fn worker_restart_replays_durable_finished_result() -> Result<(), Box<dyn 
         service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Finished)
     })
     .await?;
-    wait_until(|| async { restarted_state.lock().await.outbox_len().ok() == Some(0) }).await?;
+    wait_until(|| async { restarted_state.outbox_len().ok() == Some(0) }).await?;
 
     restarted_session.abort();
     let _ = restarted_session.await;
@@ -512,8 +498,6 @@ async fn fake_execution_survives_stream_disconnect_and_replays_one_terminal_resu
     })
     .await?;
     let finished = worker_state
-        .lock()
-        .await
         .finished_attempt("attempt-1")?
         .expect("fake runtime must commit a terminal result while disconnected");
     assert_eq!(finished.outcome, i32::from(AttemptOutcome::Succeeded));
@@ -521,9 +505,9 @@ async fn fake_execution_survives_stream_disconnect_and_replays_one_terminal_resu
     assert!(finished.stdout.is_some());
     assert!(finished.stderr.is_some());
 
-    wait_until(|| async { worker_state.lock().await.outbox_len().ok() == Some(0) }).await?;
+    wait_until(|| async { worker_state.outbox_len().ok() == Some(0) }).await?;
     assert_eq!(
-        worker_state.lock().await.finished_attempt("attempt-1")?,
+        worker_state.finished_attempt("attempt-1")?,
         Some(finished),
         "reconnect must replay journal state without launching a second executor"
     );
@@ -591,8 +575,6 @@ async fn fake_execution_cancellation_acknowledges_before_terminal_completion()
     })
     .await?;
     let finished = worker_state
-        .lock()
-        .await
         .finished_attempt("attempt-1")?
         .expect("cancelled fake execution must persist its receipt and terminal result");
     assert_eq!(finished.outcome, i32::from(AttemptOutcome::Cancelled));
@@ -698,8 +680,6 @@ async fn fake_execution_resumes_artifact_uploads_before_controller_accepts_termi
     })
     .await?;
     let finished = worker_state
-        .lock()
-        .await
         .finished_attempt("attempt-1")?
         .expect("terminal state is committed only after all remote finalizations");
     assert_uploaded_execution_artifacts(&uploads, &finished, stdout_digest)?;
@@ -845,14 +825,7 @@ async fn assignment_queued_while_disconnected_is_replayed_after_reconnect()
     );
 
     let second_session = tokio::spawn(async move { worker.run_session().await });
-    wait_until(|| async {
-        worker_state
-            .lock()
-            .await
-            .contains_attempt("attempt-1")
-            .unwrap_or(false)
-    })
-    .await?;
+    wait_until(|| async { worker_state.contains_attempt("attempt-1").unwrap_or(false) }).await?;
     wait_until(|| async {
         service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Accepted)
     })
@@ -922,7 +895,7 @@ async fn expired_attempt_is_reassigned_with_a_new_identity_and_old_result_stays_
             .await?,
         EnqueueOutcome::Pending
     );
-    worker_state.lock().await.mark_finished(
+    worker_state.mark_finished(
         "attempt-1",
         &StoredFinished {
             outcome: AttemptOutcome::Succeeded.into(),
@@ -944,7 +917,7 @@ async fn expired_attempt_is_reassigned_with_a_new_identity_and_old_result_stays_
         service.assignment_state("attempt-1")?,
         Some(AssignmentState::LeaseExpired)
     );
-    assert!(worker_state.lock().await.contains_attempt("attempt-2")?);
+    assert!(worker_state.contains_attempt("attempt-2")?);
 
     second_session.abort();
     let _ = second_session.await;

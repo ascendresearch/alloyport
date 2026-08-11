@@ -76,8 +76,6 @@ async fn cuda_runtime_completes_through_outbound_control_and_artifact_planes()
     .await?;
 
     let finished = worker_state
-        .lock()
-        .await
         .finished_attempt("attempt-1")?
         .expect("CUDA terminal state is durable");
     assert_terminal_artifacts(&fixture.uploads, &finished, "attempt-1", Some(CUDA_STDOUT))?;
@@ -153,8 +151,6 @@ async fn cuda_runtime_completes_through_real_docker_outbound_loopback() -> Resul
     .await?;
 
     let finished = worker_state
-        .lock()
-        .await
         .finished_attempt(&attempt_id)?
         .expect("real CUDA terminal state is durable");
     assert_terminal_artifacts(&fixture.uploads, &finished, &attempt_id, Some(CUDA_STDOUT))?;

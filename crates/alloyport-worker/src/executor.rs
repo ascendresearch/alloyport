@@ -284,7 +284,8 @@ impl FakeExecutionRuntime {
     {
         let _claim = AttemptClaim::acquire(Arc::clone(&self.active_attempts), attempt_id)?;
         let attempt = state
-            .attempt(attempt_id)?
+            .attempt_async(attempt_id.to_owned())
+            .await?
             .ok_or_else(|| ExecutionRuntimeError::MissingAttempt(attempt_id.into()))?;
         if attempt.phase == LocalAttemptPhase::Finished {
             let finished = attempt
@@ -297,7 +298,7 @@ impl FakeExecutionRuntime {
                 replayed_terminal: true,
             });
         }
-        state.mark_running(attempt_id)?;
+        state.mark_running_async(attempt_id.to_owned()).await?;
         observer(ExecutionObservation::Started);
         let input = ExecutorInput::from(&attempt.assignment);
         let (result, mut events) = self
@@ -311,7 +312,9 @@ impl FakeExecutionRuntime {
                 .await
                 .map_err(ExecutionRuntimeError::ArtifactPublication)?;
         }
-        state.mark_finished(attempt_id, &persisted.finished)?;
+        state
+            .mark_finished_async(attempt_id.to_owned(), persisted.finished.clone())
+            .await?;
         self.append_terminal_events(&input, &persisted, &mut events);
         Ok(ExecutionRun {
             reference_intents,

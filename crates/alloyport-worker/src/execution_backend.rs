@@ -158,9 +158,13 @@ impl ExecutionBackend for CudaExecutionBackend {
     fn execute<'a>(&'a self, request: BackendExecutionRequest<'a>) -> BackendExecutionFuture<'a> {
         Box::pin(async move {
             if let Some(input_provider) = request.input_provider {
-                let attempt = request.state.attempt(request.attempt_id)?.ok_or_else(|| {
-                    ExecutionRuntimeError::MissingAttempt(request.attempt_id.into())
-                })?;
+                let attempt = request
+                    .state
+                    .attempt_async(request.attempt_id.to_owned())
+                    .await?
+                    .ok_or_else(|| {
+                        ExecutionRuntimeError::MissingAttempt(request.attempt_id.into())
+                    })?;
                 input_provider
                     .materialize(&attempt.assignment.execution.bundle)
                     .await?;

@@ -184,7 +184,8 @@ impl CudaExecutionRuntime {
     {
         let _claim = CudaAttemptClaim::acquire(Arc::clone(&self.active_attempts), attempt_id)?;
         let attempt = state
-            .attempt(attempt_id)?
+            .attempt_async(attempt_id.to_owned())
+            .await?
             .ok_or_else(|| ExecutionRuntimeError::MissingAttempt(attempt_id.into()))?;
         if attempt.phase == LocalAttemptPhase::Finished {
             let finished = attempt
@@ -199,7 +200,7 @@ impl CudaExecutionRuntime {
             });
         }
 
-        state.mark_running(attempt_id)?;
+        state.mark_running_async(attempt_id.to_owned()).await?;
         observer(ExecutionObservation::Started);
         let input = ExecutorInput::from(&attempt.assignment);
         let mut events = vec![producer_event(
@@ -245,7 +246,9 @@ impl CudaExecutionRuntime {
                 .await
                 .map_err(ExecutionRuntimeError::ArtifactPublication)?;
         }
-        state.mark_finished(attempt_id, &persisted.finished)?;
+        state
+            .mark_finished_async(attempt_id.to_owned(), persisted.finished.clone())
+            .await?;
         append_terminal_events(&self.worker_id, &input, &persisted, &mut events);
         self.remove_after_commit(attempt_id).await?;
         Ok(ExecutionRun {

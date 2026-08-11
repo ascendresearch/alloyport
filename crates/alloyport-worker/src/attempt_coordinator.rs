@@ -30,55 +30,62 @@ impl OutboundWorker {
         let assignment_id = assignment.assignment_id.clone();
         let attempt_id = assignment.attempt_id.clone();
         let admission = match self.validate_execution_support(&assignment) {
-            Ok(()) => self.state.lock().await.admit(&assignment),
+            Ok(()) => self.state.admit_async(assignment.clone()).await,
             Err(error) => Err(error),
         };
         let admitted = match admission {
             Ok(_) => true,
             Err(WorkerError::InvalidAssignment(error)) => {
-                self.state.lock().await.enqueue_lifecycle(
-                    WorkerOutboxPayload::AssignmentRejected {
+                self.state
+                    .enqueue_lifecycle_async(WorkerOutboxPayload::AssignmentRejected {
                         assignment_id: assignment_id.clone(),
                         attempt_id: attempt_id.clone(),
                         reason: RejectionReason::Invalid.into(),
                         detail: error.to_string(),
-                    },
-                )?;
+                    })
+                    .await?;
                 false
             }
             Err(WorkerError::ConflictingAttempt(_)) => {
-                self.state.lock().await.enqueue_lifecycle(
-                    WorkerOutboxPayload::AssignmentRejected {
+                self.state
+                    .enqueue_lifecycle_async(WorkerOutboxPayload::AssignmentRejected {
                         assignment_id: assignment_id.clone(),
                         attempt_id: attempt_id.clone(),
                         reason: RejectionReason::Conflict.into(),
                         detail: "attempt ID conflicts with locally admitted content".to_owned(),
-                    },
-                )?;
+                    })
+                    .await?;
                 false
             }
             Err(WorkerError::PolicyViolation(detail)) => {
-                self.state.lock().await.enqueue_lifecycle(
-                    WorkerOutboxPayload::AssignmentRejected {
+                self.state
+                    .enqueue_lifecycle_async(WorkerOutboxPayload::AssignmentRejected {
                         assignment_id: assignment_id.clone(),
                         attempt_id: attempt_id.clone(),
                         reason: RejectionReason::Policy.into(),
                         detail,
-                    },
-                )?;
+                    })
+                    .await?;
                 false
             }
             Err(error) => return Err(error),
         };
         if admitted {
-            let state = self.state.lock().await;
-            let attempt = state.attempt(&attempt_id)?.ok_or_else(|| {
-                WorkerError::Protocol(format!("admitted attempt {attempt_id} is missing"))
-            })?;
+            let attempt = self
+                .state
+                .attempt_async(attempt_id.clone())
+                .await?
+                .ok_or_else(|| {
+                    WorkerError::Protocol(format!("admitted attempt {attempt_id} is missing"))
+                })?;
             match (attempt.phase, attempt.finished) {
-                (LocalAttemptPhase::Running, _) => state.mark_running(&attempt_id)?,
+                (LocalAttemptPhase::Running, _) => {
+                    self.state.mark_running_async(attempt_id.clone()).await?;
+                }
                 (LocalAttemptPhase::Finished, Some(finished)) => {
-                    state.mark_finished(&attempt_id, &finished)?;
+                    self.state
+                        .mark_finished_async(attempt_id.clone(), finished)
+                        .await?;
                 }
                 (LocalAttemptPhase::Finished, None) => {
                     return Err(WorkerError::Protocol(format!(
@@ -141,20 +148,25 @@ impl OutboundWorker {
         delivered_message_ids: &mut BTreeSet<String>,
     ) -> Result<(), WorkerError> {
         let already_terminal = {
-            let state = self.state.lock().await;
-            let attempt = state.attempt(&cancel.attempt_id)?.ok_or_else(|| {
-                WorkerError::Protocol(format!(
-                    "server cancelled unknown attempt {}",
-                    cancel.attempt_id
-                ))
-            })?;
+            let attempt = self
+                .state
+                .attempt_async(cancel.attempt_id.clone())
+                .await?
+                .ok_or_else(|| {
+                    WorkerError::Protocol(format!(
+                        "server cancelled unknown attempt {}",
+                        cancel.attempt_id
+                    ))
+                })?;
             let already_terminal = attempt.phase == LocalAttemptPhase::Finished;
             let assignment_id = attempt.assignment.assignment_id;
-            state.enqueue_lifecycle(WorkerOutboxPayload::CancellationAcknowledged {
-                assignment_id: assignment_id.clone(),
-                attempt_id: cancel.attempt_id.clone(),
-                already_terminal,
-            })?;
+            self.state
+                .enqueue_lifecycle_async(WorkerOutboxPayload::CancellationAcknowledged {
+                    assignment_id: assignment_id.clone(),
+                    attempt_id: cancel.attempt_id.clone(),
+                    already_terminal,
+                })
+                .await?;
             already_terminal
         };
 
@@ -172,21 +184,23 @@ impl OutboundWorker {
 
         if self.execution.is_none() {
             {
-                let state = self.state.lock().await;
-                state.mark_finished(
-                    &cancel.attempt_id,
-                    &StoredFinished {
-                        outcome: AttemptOutcome::Cancelled.into(),
-                        exit_code: None,
-                        elapsed_ms: 0,
-                        receipt: None,
-                        stdout: None,
-                        stderr: None,
-                        detail: cancel.reason.clone(),
-                    },
-                )?;
-                state
-                    .attempt(&cancel.attempt_id)?
+                self.state
+                    .mark_finished_async(
+                        cancel.attempt_id.clone(),
+                        StoredFinished {
+                            outcome: AttemptOutcome::Cancelled.into(),
+                            exit_code: None,
+                            elapsed_ms: 0,
+                            receipt: None,
+                            stdout: None,
+                            stderr: None,
+                            detail: cancel.reason.clone(),
+                        },
+                    )
+                    .await?;
+                self.state
+                    .attempt_async(cancel.attempt_id.clone())
+                    .await?
                     .and_then(|record| record.finished)
                     .ok_or_else(|| {
                         WorkerError::Protocol(
@@ -239,9 +253,8 @@ impl OutboundWorker {
         };
         let attempt = self
             .state
-            .lock()
-            .await
-            .attempt(attempt_id)?
+            .attempt_async(attempt_id.to_owned())
+            .await?
             .ok_or_else(|| WorkerError::Protocol(format!("attempt {attempt_id} is missing")))?;
         if attempt.phase == LocalAttemptPhase::Finished {
             return Ok(None);
@@ -265,7 +278,7 @@ impl OutboundWorker {
 
         let attempt_id = attempt_id.to_owned();
         let cancellation_for_task = cancellation.clone();
-        let state = self.state.lock().await.clone();
+        let state = Arc::clone(&self.state);
         let integration = Arc::clone(integration);
         let artifact_input = self.artifact_input.clone();
         let artifact_publisher = self.artifact_publisher.clone();
@@ -273,7 +286,7 @@ impl OutboundWorker {
         tokio::spawn(async move {
             let result = run_registered_execution(
                 backend.as_ref(),
-                &state,
+                state.as_ref(),
                 &attempt_id,
                 &cancellation_for_task,
                 artifact_input.as_deref(),
@@ -413,7 +426,7 @@ impl OutboundWorker {
         let Some(publisher) = self.artifact_publisher.as_ref() else {
             return Ok(());
         };
-        let pending = self.state.lock().await.pending_outbox()?;
+        let pending = self.state.pending_outbox_async().await?;
         for entry in pending {
             let WorkerOutboxPayload::ExecutionFinished {
                 attempt_id,
@@ -439,16 +452,15 @@ impl OutboundWorker {
         acknowledges_server_through: u64,
         delivered_message_ids: &mut BTreeSet<String>,
     ) -> Result<(), WorkerError> {
-        let pending = self.state.lock().await.pending_outbox()?;
+        let pending = self.state.pending_outbox_async().await?;
         for entry in pending {
             if delivered_message_ids.contains(&entry.message_id) {
                 continue;
             }
             let sequence = *next_worker_sequence;
             self.state
-                .lock()
-                .await
-                .record_delivery(connection_id, sequence, &entry.message_id)?;
+                .record_delivery_async(connection_id.to_owned(), sequence, entry.message_id.clone())
+                .await?;
             *next_worker_sequence += 1;
             delivered_message_ids.insert(entry.message_id.clone());
             outbound
@@ -465,7 +477,7 @@ impl OutboundWorker {
     }
 
     pub(super) async fn available_slots(&self) -> Result<u32, WorkerError> {
-        let active = u32::try_from(self.state.lock().await.attempt_count()?).unwrap_or(u32::MAX);
+        let active = u32::try_from(self.state.attempt_count_async().await?).unwrap_or(u32::MAX);
         Ok(self.hello.capabilities.as_ref().map_or(0, |capabilities| {
             capabilities.max_concurrency.saturating_sub(active)
         }))

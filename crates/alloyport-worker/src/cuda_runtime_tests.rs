@@ -121,8 +121,7 @@ async fn publication_and_terminal_commit_precede_retryable_cleanup()
         stored.artifact.digest,
         stored.artifact.size_bytes,
         image_manifest,
-    )
-    .await?;
+    )?;
     Ok(())
 }
 
@@ -151,7 +150,7 @@ fn assert_live_observations(observations: &Mutex<Vec<ExecutionObservation>>) {
     );
 }
 
-async fn assert_outbound_cuda_only(
+fn assert_outbound_cuda_only(
     runtime: Arc<CudaExecutionRuntime>,
     bundle: Sha256Digest,
     bundle_size: u64,
@@ -163,7 +162,6 @@ async fn assert_outbound_cuda_only(
     )?
     .with_cuda_executor(runtime)?;
     let worker_state = worker.state();
-    let worker_state = worker_state.lock().await;
     assert_eq!(
         worker_state.admit(&assignment(bundle, bundle_size, image))?,
         AdmissionOutcome::New

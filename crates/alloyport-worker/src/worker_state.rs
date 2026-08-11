@@ -13,6 +13,41 @@ use alloyport_proto::v1::{Assignment, AttemptPhase, ExecutorKind};
 use alloyport_proto::{v1::ActiveAttempt, validate_assignment};
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
+
+const MAX_BLOCKING_PERSISTENCE_OPERATIONS: usize = 4;
+
+#[derive(Clone, Debug)]
+pub(crate) struct WorkerPersistence {
+    permits: Arc<Semaphore>,
+}
+
+impl Default for WorkerPersistence {
+    fn default() -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(MAX_BLOCKING_PERSISTENCE_OPERATIONS)),
+        }
+    }
+}
+
+impl WorkerPersistence {
+    pub(crate) async fn run<T, F>(&self, operation: F) -> Result<T, WorkerError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T, WorkerError> + Send + 'static,
+    {
+        let permit = Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .map_err(|_| WorkerError::Execution("persistence executor closed".into()))?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            operation()
+        })
+        .await
+        .map_err(WorkerError::PersistenceTask)?
+    }
+}
 
 impl WorkerState {
     /// Creates an ephemeral journal with the supplied policy.
@@ -29,7 +64,11 @@ impl WorkerState {
 
     #[must_use]
     pub fn with_store(policy: AdmissionPolicy, store: Arc<dyn AttemptStore>) -> Self {
-        Self { policy, store }
+        Self {
+            policy,
+            store,
+            persistence: WorkerPersistence::default(),
+        }
     }
 
     /// Opens a crash-durable worker attempt journal.
@@ -226,5 +265,92 @@ impl WorkerState {
                     .count()
             })
             .map_err(WorkerError::from)
+    }
+
+    async fn blocking<T, F>(&self, operation: F) -> Result<T, WorkerError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Self) -> Result<T, WorkerError> + Send + 'static,
+    {
+        let state = self.clone();
+        self.persistence.run(move || operation(state)).await
+    }
+
+    pub(crate) async fn admit_async(
+        &self,
+        assignment: Assignment,
+    ) -> Result<AdmissionOutcome, WorkerError> {
+        self.blocking(move |state| state.admit(&assignment)).await
+    }
+
+    pub(crate) async fn mark_running_async(&self, attempt_id: String) -> Result<(), WorkerError> {
+        self.blocking(move |state| state.mark_running(&attempt_id))
+            .await
+    }
+
+    pub(crate) async fn mark_finished_async(
+        &self,
+        attempt_id: String,
+        finished: StoredFinished,
+    ) -> Result<(), WorkerError> {
+        self.blocking(move |state| state.mark_finished(&attempt_id, &finished))
+            .await
+    }
+
+    pub(crate) async fn enqueue_lifecycle_async(
+        &self,
+        payload: WorkerOutboxPayload,
+    ) -> Result<String, WorkerError> {
+        self.blocking(move |state| state.enqueue_lifecycle(payload))
+            .await
+    }
+
+    pub(crate) async fn pending_outbox_async(
+        &self,
+    ) -> Result<Vec<WorkerOutboxMessage>, WorkerError> {
+        self.blocking(|state| state.pending_outbox()).await
+    }
+
+    pub(crate) async fn record_delivery_async(
+        &self,
+        connection_id: String,
+        sequence: u64,
+        message_id: String,
+    ) -> Result<(), WorkerError> {
+        self.blocking(move |state| state.record_delivery(&connection_id, sequence, &message_id))
+            .await
+    }
+
+    pub(crate) async fn acknowledge_outbox_async(
+        &self,
+        connection_id: String,
+        acknowledged_through: u64,
+    ) -> Result<usize, WorkerError> {
+        self.blocking(move |state| state.acknowledge_outbox(&connection_id, acknowledged_through))
+            .await
+    }
+
+    pub(crate) async fn prune_old_deliveries_async(&self) -> Result<usize, WorkerError> {
+        self.blocking(|state| state.prune_old_deliveries()).await
+    }
+
+    pub(crate) async fn attempt_async(
+        &self,
+        attempt_id: String,
+    ) -> Result<Option<LocalAttemptRecord>, WorkerError> {
+        self.blocking(move |state| state.attempt(&attempt_id)).await
+    }
+
+    pub(crate) async fn active_attempts_async(&self) -> Result<Vec<ActiveAttempt>, WorkerError> {
+        self.blocking(|state| state.active_attempts()).await
+    }
+
+    pub(crate) async fn attempt_count_async(&self) -> Result<usize, WorkerError> {
+        self.blocking(|state| state.attempt_count()).await
+    }
+
+    pub(crate) async fn attempts_async(&self) -> Result<Vec<LocalAttemptRecord>, WorkerError> {
+        self.blocking(|state| state.store.attempts().map_err(WorkerError::from))
+            .await
     }
 }

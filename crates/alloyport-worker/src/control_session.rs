@@ -30,10 +30,10 @@ impl OutboundWorker {
         let Some(integration) = self.execution.as_ref() else {
             return Ok(());
         };
-        let state = self.state.lock().await.clone();
+        let state = std::sync::Arc::clone(&self.state);
         let terminal_attempts = state
-            .store
-            .attempts()?
+            .attempts_async()
+            .await?
             .into_iter()
             .filter(|attempt| attempt.phase == LocalAttemptPhase::Finished)
             .map(|attempt| {
@@ -62,7 +62,7 @@ impl OutboundWorker {
         let mut execution_updates = self.execution_updates.subscribe();
 
         let mut hello = self.hello.clone();
-        hello.active_attempts = self.state.lock().await.active_attempts()?;
+        hello.active_attempts = self.state.active_attempts_async().await?;
         outbound
             .send(WorkerToServer {
                 sequence: 1,
@@ -88,16 +88,12 @@ impl OutboundWorker {
         let mut last_worker_sequence_acknowledged = welcome_frame.acknowledges_worker_through;
         let mut delivered_message_ids = BTreeSet::new();
         let require_message_ids = negotiated_protocol_minor >= 2;
-        {
-            let state = self.state.lock().await;
-            state.acknowledge_outbox(&connection_id, last_worker_sequence_acknowledged)?;
-            state.prune_old_deliveries()?;
-        }
-        self.send_pending_outbox(
+        self.resume_outbox_delivery(
             &connection_id,
             &outbound,
             &mut next_worker_sequence,
             last_server_sequence,
+            last_worker_sequence_acknowledged,
             &mut delivered_message_ids,
         )
         .await?;
@@ -125,15 +121,15 @@ impl OutboundWorker {
                     ).await? {
                         return Ok(());
                     }
-                    self.state.lock().await.acknowledge_outbox(
-                        &connection_id,
+                    self.state.acknowledge_outbox_async(
+                        connection_id.clone(),
                         acknowledges_worker_through,
-                    )?;
+                    ).await?;
                     last_server_sequence = server_sequence;
                     last_worker_sequence_acknowledged = acknowledges_worker_through;
                 }
                 _ = heartbeat.tick() => {
-                    let active_attempts = self.state.lock().await.active_attempts()?;
+                    let active_attempts = self.state.active_attempts_async().await?;
                     Self::send_ephemeral(
                         &outbound,
                         &mut next_worker_sequence,
@@ -157,6 +153,29 @@ impl OutboundWorker {
                 }
             }
         }
+    }
+
+    async fn resume_outbox_delivery(
+        &self,
+        connection_id: &str,
+        outbound: &mpsc::Sender<WorkerToServer>,
+        next_worker_sequence: &mut u64,
+        last_server_sequence: u64,
+        last_worker_sequence_acknowledged: u64,
+        delivered_message_ids: &mut BTreeSet<String>,
+    ) -> Result<(), WorkerError> {
+        self.state
+            .acknowledge_outbox_async(connection_id.to_owned(), last_worker_sequence_acknowledged)
+            .await?;
+        self.state.prune_old_deliveries_async().await?;
+        self.send_pending_outbox(
+            connection_id,
+            outbound,
+            next_worker_sequence,
+            last_server_sequence,
+            delivered_message_ids,
+        )
+        .await
     }
 
     fn welcome_identity(&self, frame: &ServerToWorker) -> Result<(String, u32), WorkerError> {

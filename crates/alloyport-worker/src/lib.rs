@@ -16,6 +16,7 @@ pub mod fake_executor;
 pub mod journal;
 mod wire_mapping;
 mod worker_state;
+use worker_state::WorkerPersistence;
 
 use alloyport_proto::v1::{Backend, WorkerHello};
 use alloyport_proto::{ValidationError, validate_worker_hello};
@@ -59,6 +60,7 @@ pub enum WorkerError {
     ConflictingAttempt(String),
     PolicyViolation(String),
     AttemptStore(AttemptStoreError),
+    PersistenceTask(tokio::task::JoinError),
     Transport(tonic::transport::Error),
     Rpc(tonic::Status),
     Execution(String),
@@ -80,6 +82,7 @@ impl Display for WorkerError {
             }
             Self::PolicyViolation(detail) => write!(formatter, "worker policy rejected: {detail}"),
             Self::AttemptStore(error) => Display::fmt(error, formatter),
+            Self::PersistenceTask(error) => write!(formatter, "persistence task failed: {error}"),
             Self::Transport(error) => Display::fmt(error, formatter),
             Self::Rpc(error) => Display::fmt(error, formatter),
             Self::Execution(detail) => write!(formatter, "worker execution failed: {detail}"),
@@ -96,6 +99,7 @@ impl Error for WorkerError {
             Self::Transport(error) => Some(error),
             Self::Rpc(error) => Some(error),
             Self::AttemptStore(error) => Some(error),
+            Self::PersistenceTask(error) => Some(error),
             Self::ConflictingAttempt(_)
             | Self::PolicyViolation(_)
             | Self::Execution(_)
@@ -165,6 +169,7 @@ impl AdmissionPolicy {
 pub struct WorkerState {
     policy: AdmissionPolicy,
     store: Arc<dyn AttemptStore>,
+    persistence: WorkerPersistence,
 }
 
 impl Default for WorkerState {
@@ -178,7 +183,7 @@ impl Default for WorkerState {
 pub struct OutboundWorker {
     endpoint: Endpoint,
     hello: WorkerHello,
-    state: Arc<Mutex<WorkerState>>,
+    state: Arc<WorkerState>,
     execution: Option<Arc<ExecutionIntegration>>,
     admission_only: bool,
     artifact_input: Option<Arc<dyn ArtifactInputProvider>>,
@@ -267,7 +272,7 @@ impl OutboundWorker {
         Ok(Self {
             endpoint,
             hello,
-            state: Arc::new(Mutex::new(state)),
+            state: Arc::new(state),
             execution: None,
             admission_only: false,
             artifact_input: None,
@@ -348,7 +353,7 @@ impl OutboundWorker {
                 "CUDA runtime must be attached before sharing the worker state".into(),
             )
         })?;
-        state.get_mut().policy = state.get_mut().policy.cuda_fixture_only();
+        state.policy = state.policy.cuda_fixture_only();
         self.with_execution_backend(Arc::new(CudaExecutionBackend::new(runtime)))
     }
 
@@ -411,7 +416,7 @@ impl OutboundWorker {
     }
 
     #[must_use]
-    pub fn state(&self) -> Arc<Mutex<WorkerState>> {
+    pub fn state(&self) -> Arc<WorkerState> {
         Arc::clone(&self.state)
     }
 }
@@ -419,3 +424,5 @@ impl OutboundWorker {
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
+#[cfg(test)]
+mod worker_state_tests;
