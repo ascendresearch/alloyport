@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-08-10
 - Scope: first real CUDA fixture, local admission authority, immutable bundle/image identity,
-  sandbox planning, resource bounds, and the boundary before process supervision
+  sandbox planning, resource bounds, and durable container reconciliation
 
 ## Context
 
@@ -81,11 +81,19 @@ container name and attempt/bundle/image labels for later recovery. It selects:
   whose combined capacity equals the assignment disk budget;
 - the locally pinned image and worker-owned Python runner, with no shell.
 
-This revision deliberately produces the exact create plan but does not yet invoke Docker. The next
-implementation slice must add a durable container supervisor that verifies the local image ID,
-creates or reattaches by deterministic identity, streams bounded logs, stops on cancellation or
-timeout, retains an exited container until its Artifact publication and terminal journal commit,
-and records driver/device/image facts in a Design 0007 receipt.
+The engine-neutral supervisor verifies the resolved local image ID before inspecting or creating a
+container. It reconciles the deterministic name through `Created`, `Running`, and `Exited` states,
+requires exact attempt/bundle/manifest/image identity on every reattach, and refuses to delete or
+reuse a conflicting container. Missing containers are created once, created containers are started,
+running containers are waited without another start, and exited containers are replayed only to
+recover their terminal result and logs. Cancellation and timeout stop the same identified container
+and then wait for its terminal state. Output exhaustion, nonzero exit, and exit zero without the
+fixture's `PASS` marker have distinct fail-closed outcomes.
+
+This revision still does not invoke Docker from the worker. The next implementation slice must add
+the argv-only Docker engine adapter, stream and bound logs while the process is live, retain an
+exited container until Artifact publication and terminal journal commit, and record
+driver/device/image facts in a Design 0007 receipt.
 
 ## Evidence and parity
 
@@ -117,12 +125,14 @@ claim that transport parity proves CUDA-to-Ascend correctness.
 ## Verification
 
 Current tests prove default-deny admission, explicit typed opt-in, controller input grants only for a
-published size-matched bundle, bounded digest-verified download and local replay, field/limit allowlisting,
-verified bundle parsing, independent source-digest rejection, restart-idempotent materialization,
-conflicting sandbox-byte rejection, stable process identity, and Docker argv construction without a
-shell, network, arbitrary mounts, or server-selected devices.
+published size-matched bundle, bounded digest-verified download and local replay, field/limit
+allowlisting, verified bundle parsing, independent source-digest rejection, restart-idempotent
+materialization, conflicting sandbox-byte rejection, stable process identity, and Docker argv
+construction without a shell, network, arbitrary mounts, or server-selected devices.
 
-The supervisor slice must add fake-engine state-machine tests followed by an explicitly invoked real
-GB10 smoke test. The first explicit probe compiled and verified 1,048,576 elements on the target,
-producing the deterministic checksum `670562424`. No CI test may silently depend on a GPU or Docker
-daemon.
+Fake-engine state-machine tests cover missing-container create/start, exited replay without another
+create/start, running reattach, cancellation and timeout stop/wait, exact-identity conflict,
+resolved-image mismatch, output exhaustion, nonzero exit, and exit zero without the fixture marker.
+The argv-only Docker adapter and an explicitly invoked outbound-worker GB10 smoke remain. The first
+manual probe compiled and verified 1,048,576 elements on the target, producing the deterministic
+checksum `670562424`. No CI test may silently depend on a GPU or Docker daemon.

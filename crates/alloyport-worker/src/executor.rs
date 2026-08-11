@@ -155,7 +155,7 @@ impl CancellationToken {
         *self.sender.borrow()
     }
 
-    fn subscribe(&self) -> watch::Receiver<bool> {
+    pub(crate) fn subscribe(&self) -> watch::Receiver<bool> {
         self.sender.subscribe()
     }
 }
