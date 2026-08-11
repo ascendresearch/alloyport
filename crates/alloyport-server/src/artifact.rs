@@ -1,8 +1,10 @@
 //! Artifact gRPC edge over durable upload sessions and the filesystem CAS.
 
+use alloyport_artifacts::SqliteUploadStore;
+
 use crate::identity::ConnectionIdentityResolver;
 use crate::storage::Clock;
-use alloyport_artifacts::upload::{BeginUpload, SqliteUploadStore, UploadError, UploadSession};
+use alloyport_artifacts::upload::{BeginUpload, UploadError, UploadSession};
 use alloyport_artifacts::{ArtifactIdentity, FilesystemArtifactStore, Sha256Digest};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactService;
 use alloyport_proto::artifact_v1::{
@@ -405,7 +407,7 @@ pub(crate) fn upload_status(error: UploadError) -> Status {
         | UploadError::Incomplete { .. }
         | UploadError::InvalidState(_) => Status::failed_precondition(error.to_string()),
         UploadError::Artifact(error) => artifact_status(&error),
-        UploadError::Sqlite(_) | UploadError::Io { .. } | UploadError::Corrupt(_) => {
+        UploadError::Storage(_) | UploadError::Io { .. } | UploadError::Corrupt(_) => {
             Status::internal(error.to_string())
         }
     }

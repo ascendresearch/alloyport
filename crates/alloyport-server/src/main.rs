@@ -1,5 +1,6 @@
 use alloyport_artifacts::FilesystemArtifactStore;
-use alloyport_artifacts::upload::{SqliteUploadStore, UploadQuotas};
+use alloyport_artifacts::SqliteUploadStore;
+use alloyport_artifacts::upload::UploadQuotas;
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::interaction_v1::interaction_service_server::InteractionServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;

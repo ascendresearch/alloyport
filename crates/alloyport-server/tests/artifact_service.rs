@@ -1,4 +1,5 @@
-use alloyport_artifacts::upload::{SqliteUploadStore, UploadQuotas};
+use alloyport_artifacts::SqliteUploadStore;
+use alloyport_artifacts::upload::UploadQuotas;
 use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest};
 use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient;
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;

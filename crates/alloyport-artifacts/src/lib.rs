@@ -1,6 +1,9 @@
 //! Content-addressed artifact storage with a crash-recoverable filesystem implementation.
 
+pub mod adapters;
 pub mod upload;
+
+pub use adapters::sqlite::SqliteUploadStore;
 
 use ring::digest::{Context, SHA256};
 use std::error::Error;

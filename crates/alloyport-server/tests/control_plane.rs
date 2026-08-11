@@ -1,7 +1,5 @@
-use alloyport_artifacts::upload::{
-    ArtifactReferenceKind, BeginUpload, SqliteUploadStore, UploadQuotas,
-};
-use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest};
+use alloyport_artifacts::upload::{ArtifactReferenceKind, BeginUpload, UploadQuotas};
+use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest, SqliteUploadStore};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_proto::v1::{

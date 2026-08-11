@@ -1,4 +1,3 @@
-
 use super::*;
 use alloyport_events::{Authority, OutputStream, Producer, Visibility};
 use std::error::Error;

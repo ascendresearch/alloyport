@@ -1,7 +1,5 @@
-use alloyport_artifacts::upload::{
-    ArtifactReferenceKind, GrantArtifactReference, SqliteUploadStore,
-};
-use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest};
+use alloyport_artifacts::upload::{ArtifactReferenceKind, GrantArtifactReference};
+use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest, SqliteUploadStore};
 use alloyport_events::{Event, EventEnvelope, Producer, ProducerEvent};
 use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient;
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;

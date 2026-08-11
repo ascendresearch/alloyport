@@ -8,10 +8,8 @@ pub mod interaction_service;
 pub mod storage;
 
 use adapters::sqlite::{SqliteControlRepository, SqliteInteractionStore};
-use alloyport_artifacts::Sha256Digest;
-use alloyport_artifacts::upload::{
-    ArtifactReferenceKind, GrantArtifactReference, SqliteUploadStore,
-};
+use alloyport_artifacts::upload::{ArtifactReferenceKind, GrantArtifactReference};
+use alloyport_artifacts::{Sha256Digest, SqliteUploadStore};
 use alloyport_events::{
     ArtifactRef as EventArtifactRef, Authority, Event, EventEnvelope,
     OutputStream as EventOutputStream, Producer, ProducerEvent, Visibility,
