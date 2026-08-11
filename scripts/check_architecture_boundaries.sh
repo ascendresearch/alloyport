@@ -45,6 +45,11 @@ if filesystem_impl=$(rg -n \
     crates/alloyport-artifacts/src/lib.rs); then
     violations+=("filesystem CAS implementation escaped its adapter: ${filesystem_impl}")
 fi
+if event_responsibility=$(rg -n \
+    'pub struct RunReducer|pub enum ReduceError|pub fn render_plain|enum OperationKind' \
+    crates/alloyport-events/src/lib.rs); then
+    violations+=("event reducer or rendering responsibility returned to the schema module: ${event_responsibility}")
+fi
 if string_error=$(rg -n 'Future<Output = Result<\(\), String>>' \
     crates/alloyport-worker/src/executor.rs); then
     violations+=("Artifact publisher port regained an untyped String error: ${string_error}")

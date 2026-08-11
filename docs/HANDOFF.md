@@ -160,9 +160,10 @@ Release construction requires every gate and independent evidence.
 ### `alloyport-events`
 
 Typed producer events, canonical event envelopes, per-run sequencing, lifecycle reduction, JSONL,
-and plain rendering. This is the first Codex-like interaction vertical slice. The server now
-translates assigned worker command lifecycle, output previews, and terminal Artifact observations
-into a durable canonical stream.
+and plain rendering. Schema/sequencing, stateful lifecycle reduction, and presentation are separate
+modules with their original root-level API re-exported. This is the first Codex-like interaction
+vertical slice. The server now translates assigned worker command lifecycle, output previews, and
+terminal Artifact observations into a durable canonical stream.
 
 ### `alloyport-cli`
 

@@ -290,9 +290,13 @@ directories (including their migration and adapter-test files).
 - [x] Worker Artifact input port: execution backends depend on `ArtifactInputProvider`, while the
   remote downloader maps adapter-specific failures into typed Invalid/Policy/Unavailable/Integrity/
   Internal categories.
+- [x] Canonical event responsibilities separated without breaking the crate API: the schema and
+  sequencing root is 338 lines (down from 657), lifecycle reduction is 214 lines, and plain-text
+  presentation is a 120-line adapter. CI prevents reducer state or renderer logic returning to the
+  schema module.
 - [x] Repository-wide production module size gate reached: tests were separated from CUDA Docker,
   CUDA supervisor/runtime, Artifact CAS, and event reducer modules. The largest production Rust
-  module is now 657 lines; no production module exceeds the 800-line review threshold.
+  module is now 647 lines; no production module exceeds the 800-line review threshold.
 - [x] First R6 async-persistence slice: worker control and execution paths use an immutable shared
   state handle and route journal operations through a four-permit bounded blocking adapter. No
   SQLite-backed journal call runs while holding a Tokio state mutex; a slow-operation concurrency
