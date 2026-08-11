@@ -535,6 +535,16 @@ impl SqliteUploadStore {
         self.owns_completed_artifact(owner_id, digest)
     }
 
+    /// Returns the durable byte size of a managed Artifact, if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata cannot be read or contains an invalid stored size.
+    pub fn artifact_size_bytes(&self, digest: Sha256Digest) -> Result<Option<u64>, UploadError> {
+        let database = self.connection()?;
+        artifact_size(&database, digest)
+    }
+
     pub fn grant_reference(
         &self,
         request: &GrantArtifactReference,

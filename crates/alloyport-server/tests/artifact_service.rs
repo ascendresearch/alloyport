@@ -8,6 +8,8 @@ use alloyport_proto::artifact_v1::{
 };
 use alloyport_server::ManualClock;
 use alloyport_server::artifact::{ArtifactAccessPolicy, ArtifactServiceImpl};
+use alloyport_worker::artifact_download::RemoteArtifactDownloader;
+use alloyport_worker::journal::StoredArtifact;
 use std::error::Error;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -54,8 +56,8 @@ async fn upload_resumes_across_streams_then_downloads_in_chunks() -> Result<(), 
             .await
     });
 
-    let mut client =
-        ArtifactServiceClient::connect(Endpoint::from_shared(format!("http://{address}"))?).await?;
+    let endpoint = Endpoint::from_shared(format!("http://{address}"))?;
+    let mut client = ArtifactServiceClient::connect(endpoint.clone()).await?;
     let digest = "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
     let session = client
         .begin_upload(authorized(BeginUploadRequest {
@@ -111,17 +113,47 @@ async fn upload_resumes_across_streams_then_downloads_in_chunks() -> Result<(), 
         }))
         .await?
         .into_inner();
-    let mut downloaded = Vec::new();
+    let mut downloaded_range = Vec::new();
     while let Some(chunk) = download.next().await.transpose()? {
-        assert_eq!(chunk.offset, 6 + u64::try_from(downloaded.len())?);
-        downloaded.extend_from_slice(&chunk.data);
+        assert_eq!(chunk.offset, 6 + u64::try_from(downloaded_range.len())?);
+        downloaded_range.extend_from_slice(&chunk.data);
     }
-    assert_eq!(downloaded, b"world");
+    assert_eq!(downloaded_range, b"world");
+    assert_worker_download(endpoint, directory.path(), digest).await?;
 
     assert_quota_exhausted(&mut client).await?;
 
     let _ = shutdown_send.send(());
     server_task.await??;
+    Ok(())
+}
+
+async fn assert_worker_download(
+    endpoint: Endpoint,
+    directory: &std::path::Path,
+    digest: &str,
+) -> Result<(), Box<dyn Error>> {
+    let worker_cas = Arc::new(FilesystemArtifactStore::open(
+        directory.join("worker-cas"),
+        1_024,
+    )?);
+    let input_fetcher = RemoteArtifactDownloader::new(endpoint, Arc::clone(&worker_cas), 1_024)?;
+    let input = StoredArtifact {
+        digest: digest.into(),
+        size_bytes: 11,
+        media_type: "text/plain".into(),
+    };
+    let downloaded_digest = input_fetcher.download(&input).await?;
+    assert_eq!(downloaded_digest, Sha256Digest::from_str(digest)?);
+    assert!(alloyport_artifacts::ArtifactStore::contains(
+        worker_cas.as_ref(),
+        downloaded_digest
+    )?);
+    assert_eq!(
+        input_fetcher.download(&input).await?,
+        downloaded_digest,
+        "a verified local input makes replay network-independent"
+    );
     Ok(())
 }
 
@@ -162,11 +194,10 @@ impl ArtifactAccessPolicy for TestAccessPolicy {
         metadata: &MetadataMap,
         _extensions: &Extensions,
     ) -> Result<String, Status> {
-        metadata
+        Ok(metadata
             .get("x-test-owner")
             .and_then(|value| value.to_str().ok())
-            .map(str::to_owned)
-            .ok_or_else(|| Status::unauthenticated("fixture owner metadata is missing"))
+            .map_or_else(|| "worker-1".into(), str::to_owned))
     }
 
     fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {

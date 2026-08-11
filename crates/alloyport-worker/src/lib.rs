@@ -1,5 +1,6 @@
 //! Outbound worker client and local assignment admission state.
 
+pub mod artifact_download;
 pub mod artifact_upload;
 pub mod cuda;
 pub mod executor;

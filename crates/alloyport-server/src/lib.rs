@@ -17,9 +17,9 @@ use alloyport_proto::v1::worker_control_server::WorkerControl;
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, CancelAttempt,
     CancellationAcknowledged, ControlAcknowledgement, EnvironmentVariable, ExecutionFinished,
-    ExecutionSpec, ExecutionStarted, Heartbeat, OutputChunk, OutputStream as WorkerOutputStream,
-    ResourceLimits, ServerToWorker, ServerWelcome, WorkerHello, WorkerStatus, WorkerToServer,
-    server_to_worker, worker_to_server,
+    ExecutionSpec, ExecutionStarted, ExecutorKind, Heartbeat, OutputChunk,
+    OutputStream as WorkerOutputStream, ResourceLimits, ServerToWorker, ServerWelcome, WorkerHello,
+    WorkerStatus, WorkerToServer, server_to_worker, worker_to_server,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR, ValidationError, validate_assignment};
 use identity::{ConnectionIdentityResolver, ResolvedConnectionIdentity};
@@ -84,6 +84,7 @@ pub enum EnqueueError {
     ConflictingAttempt(String),
     Repository(RepositoryError),
     Interaction(InteractionError),
+    Artifact(String),
 }
 
 impl Display for EnqueueError {
@@ -98,6 +99,7 @@ impl Display for EnqueueError {
             }
             Self::Repository(error) => Display::fmt(error, formatter),
             Self::Interaction(error) => Display::fmt(error, formatter),
+            Self::Artifact(detail) => write!(formatter, "assignment Artifact error: {detail}"),
         }
     }
 }
@@ -108,7 +110,7 @@ impl Error for EnqueueError {
             Self::Invalid(error) => Some(error),
             Self::Repository(error) => Some(error),
             Self::Interaction(error) => Some(error),
-            Self::ConflictingAttempt(_) => None,
+            Self::ConflictingAttempt(_) | Self::Artifact(_) => None,
         }
     }
 }
@@ -339,6 +341,7 @@ impl WorkerControlService {
         let worker_id = worker_id.into();
         let contract = assignment_to_contract(&assignment);
         let now_ms = self.clock.now_unix_ms();
+        self.grant_cuda_assignment_input(&worker_id, &contract, now_ms)?;
         let stored = self
             .repository
             .store_assignment(&worker_id, &contract, now_ms)?;
@@ -385,6 +388,11 @@ impl WorkerControlService {
             self.clock.now_unix_ms(),
         )?;
         validate_assignment(&contract_to_assignment(&reassignment.assignment.contract))?;
+        self.grant_cuda_assignment_input(
+            &replacement_worker_id,
+            &reassignment.assignment.contract,
+            self.clock.now_unix_ms(),
+        )?;
         self.record_run_started(&reassignment.assignment.contract, self.clock.now_unix_ms())?;
         if reassignment.outcome == StoreAssignmentOutcome::Duplicate {
             return Ok(EnqueueOutcome::Duplicate);
@@ -400,6 +408,51 @@ impl WorkerControlService {
             return Ok(EnqueueOutcome::Pending);
         }
         Ok(EnqueueOutcome::Sent)
+    }
+
+    fn grant_cuda_assignment_input(
+        &self,
+        worker_id: &str,
+        contract: &AssignmentContract,
+        now_ms: u64,
+    ) -> Result<(), EnqueueError> {
+        if ExecutorKind::try_from(contract.execution.executor_kind)
+            .unwrap_or(ExecutorKind::Unspecified)
+            != ExecutorKind::CudaFixture
+        {
+            return Ok(());
+        }
+        let uploads = self.artifact_metadata.as_ref().ok_or_else(|| {
+            EnqueueError::Artifact(
+                "CUDA fixture assignments require the Artifact metadata service".into(),
+            )
+        })?;
+        let digest = Sha256Digest::from_str(&contract.execution.bundle.digest)
+            .map_err(|error| EnqueueError::Artifact(error.to_string()))?;
+        let stored_size = uploads
+            .artifact_size_bytes(digest)
+            .map_err(|error| EnqueueError::Artifact(error.to_string()))?
+            .ok_or_else(|| {
+                EnqueueError::Artifact(format!("input bundle {digest} is not published"))
+            })?;
+        if stored_size != contract.execution.bundle.size_bytes {
+            return Err(EnqueueError::Artifact(format!(
+                "input bundle {digest} has size {stored_size}, assignment declares {}",
+                contract.execution.bundle.size_bytes
+            )));
+        }
+        uploads
+            .grant_reference(&GrantArtifactReference {
+                owner_id: worker_id.to_owned(),
+                reference_key: format!("input:{}:bundle", contract.attempt_id),
+                digest,
+                kind: ArtifactReferenceKind::AssignmentInput,
+                purpose: "CUDA fixture input bundle".into(),
+                now_ms,
+                retained_until_ms: None,
+            })
+            .map_err(|error| EnqueueError::Artifact(error.to_string()))?;
+        Ok(())
     }
 
     /// Durably requests cancellation and sends it when the owning worker is connected.
@@ -1552,6 +1605,8 @@ fn validate_worker_acknowledgement(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloyport_artifacts::FilesystemArtifactStore;
+    use alloyport_artifacts::upload::BeginUpload;
 
     #[test]
     fn worker_acknowledgement_must_be_monotonic_and_not_future() {
@@ -1604,6 +1659,83 @@ mod tests {
         )
         .expect_err("a wire digest cannot manufacture remote Artifact evidence");
         assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cuda_assignment_grants_only_a_published_size_matched_input_bundle()
+    -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let uploads = Arc::new(SqliteUploadStore::open(
+            directory.path().join("uploads.sqlite3"),
+            directory.path().join("upload-data"),
+            1_024,
+            1_024,
+        )?);
+        let cas = FilesystemArtifactStore::open(directory.path().join("cas"), 1_024)?;
+        let bytes = b"fixture bundle";
+        let digest = Sha256Digest::digest_bytes(bytes);
+        let session = uploads.begin(&BeginUpload {
+            owner_id: "controller".into(),
+            upload_key: "fixture:cuda-vectoradd-v1".into(),
+            expected_digest: digest,
+            expected_size_bytes: u64::try_from(bytes.len())?,
+            media_type: "application/vnd.alloyport.cuda-fixture.v1+json".into(),
+            now_ms: 1,
+            expires_at_ms: 1_001,
+        })?;
+        uploads.append("controller", &session.upload_id, 0, bytes, 2)?;
+        uploads.finalize("controller", &session.upload_id, &cas, 3)?;
+
+        let assignment = Assignment {
+            assignment_id: "assignment-1".into(),
+            attempt_id: "attempt-1".into(),
+            attempt_number: 1,
+            idempotency_key: "cuda-vectoradd-v1".into(),
+            task_id: "task-1".into(),
+            candidate_id: "candidate-1".into(),
+            execution: Some(ExecutionSpec {
+                executor_kind: ExecutorKind::CudaFixture.into(),
+                argv: vec!["cuda-vectoradd-v1".into()],
+                working_directory: ".".into(),
+                environment: Vec::new(),
+                timeout_ms: 30_000,
+                bundle: Some(ArtifactRef {
+                    digest: digest.to_string(),
+                    size_bytes: u64::try_from(bytes.len())?,
+                    media_type: "application/vnd.alloyport.cuda-fixture.v1+json".into(),
+                }),
+                image: Some(ArtifactRef {
+                    digest: format!("sha256:{}", "b".repeat(64)),
+                    size_bytes: 0,
+                    media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+                }),
+                limits: Some(ResourceLimits {
+                    cpu_millis: 1_000,
+                    memory_bytes: 1_024,
+                    disk_bytes: 1_024,
+                    process_count: 1,
+                    output_bytes: 1_024,
+                    device_count: 1,
+                    network: alloyport_proto::v1::NetworkPolicy::Disabled.into(),
+                }),
+            }),
+            required_features: vec!["cuda-fixture-v1".into()],
+        };
+        assert!(matches!(
+            WorkerControlService::new()
+                .enqueue_assignment("cuda-1", assignment.clone())
+                .await,
+            Err(EnqueueError::Artifact(_))
+        ));
+        let service = WorkerControlService::new().with_artifact_metadata(Arc::clone(&uploads));
+        assert_eq!(
+            service.enqueue_assignment("cuda-1", assignment).await?,
+            EnqueueOutcome::Pending
+        );
+        let reference = uploads.reference("cuda-1", "input:attempt-1:bundle")?;
+        assert_eq!(reference.digest, digest);
+        assert_eq!(reference.kind, ArtifactReferenceKind::AssignmentInput);
         Ok(())
     }
 }

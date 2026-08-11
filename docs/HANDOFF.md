@@ -357,6 +357,9 @@ Design 0018 adds the first real-CUDA contract boundary without starting Docker f
   idempotently, and rejects changed bytes or an inner source-digest mismatch;
 - Docker create argv is derived without a shell, arbitrary environment, server-selected mount/device,
   or network, and splits the declared disk budget across bounded `/work` and `/tmp` tmpfs.
+- CUDA enqueue requires a published size-matched bundle, grants the assigned worker a typed
+  `AssignmentInput` reference before delivery, and the worker can download it with bounded contiguous
+  offsets plus final digest/size verification into its local CAS.
 
 The self-contained fixture covers CUDA compilation, allocation/copy, a real kernel launch,
 synchronization, and deterministic device-result verification. An explicit ephemeral smoke on the
@@ -420,7 +423,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 82 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
+There are 83 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -471,6 +474,9 @@ versus retryable finalization failures, including direct finalization of a zero-
 loopback Artifact gRPC test begins a session, resumes
 it through two independent client streams, finalizes it, reads completed status, and downloads a
 bounded range from a nonzero offset.
+The Artifact loopback also downloads a complete assignment input into a worker-local verified CAS
+and proves a repeated fetch reuses the local object. CUDA enqueue coverage rejects missing Artifact
+metadata and grants only an already published bundle with the exact declared size.
 
 An end-to-end mutual-TLS test creates one CA, a server identity, and three client identities. It
 proves forged worker hello rejection, cross-owner upload/download isolation, termination of an old

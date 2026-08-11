@@ -57,6 +57,13 @@ sandbox root: the CUDA source and a worker-owned runner. Materialization uses cr
 An identical existing file is restart-idempotent; changed bytes are an integrity failure. No archive
 path or server-chosen filename is extracted.
 
+Before a CUDA assignment is stored or sent, the controller requires its bundle digest to exist in
+the managed Artifact metadata with the exact declared size, then creates an idempotent
+`AssignmentInput` reference for the assigned worker. A CUDA assignment is rejected when Artifact
+metadata is unavailable. The worker's bounded downloader requires contiguous server offsets and the
+exact final size/digest before ingesting into its verified local CAS. An already verified local copy
+makes reconnect/restart idempotent without another download.
+
 The trusted runner invokes `nvcc` and then `exec`s the resulting fixture binary using argument
 vectors. It does not parse assignment text or invoke a shell.
 
@@ -109,7 +116,8 @@ claim that transport parity proves CUDA-to-Ascend correctness.
 
 ## Verification
 
-Current tests prove default-deny admission, explicit typed opt-in, complete field/limit allowlisting,
+Current tests prove default-deny admission, explicit typed opt-in, controller input grants only for a
+published size-matched bundle, bounded digest-verified download and local replay, field/limit allowlisting,
 verified bundle parsing, independent source-digest rejection, restart-idempotent materialization,
 conflicting sandbox-byte rejection, stable process identity, and Docker argv construction without a
 shell, network, arbitrary mounts, or server-selected devices.
