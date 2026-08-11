@@ -221,6 +221,10 @@ Current behavior:
 - checks raw output replay by attempt, stream, and byte offset, rejects changed or overlapping bytes,
   and emits a visible warning for accepted forward gaps while treating final Artifacts as complete
   output authority;
+- pages durable events strictly after a canonical sequence and provides a bounded per-run
+  replay-to-live subscription foundation that attaches before capturing the SQLite high-water mark;
+- terminates lagged subscribers with an explicit resumable cursor, rejects future cursors and
+  sequence gaps, and isolates one run's notification pressure from another without blocking append;
 - renews active leases from heartbeats, expires them with a periodic reaper, and retains a late
   finished observation as stale rather than replacing the expired attempt state;
 - recovers queued and non-terminal assignments after a server process restart when the worker
@@ -454,7 +458,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 98 Rust tests, one ignored by default because it explicitly requires Docker and a CUDA
+There are 102 Rust tests, one ignored by default because it explicitly requires Docker and a CUDA
 device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -490,7 +494,9 @@ replayed accepted assignment neither duplicates nor renumbers its canonical run 
 
 Interaction repository coverage includes transactional per-run sequencing, semantic replay across
 changed timestamps and producer instances, conflicting deduplication keys, exact raw output replay,
-changed and overlapping output rejection, visible forward gaps, and SQLite close/reopen recovery.
+changed and overlapping output rejection, visible forward gaps, SQLite close/reopen recovery,
+bounded cursor paging, replay-to-live handoff, explicit slow-consumer termination and resume,
+future-cursor rejection, and per-run notification-pressure isolation.
 
 Fake executor coverage includes independent output offsets, bounded preview backpressure, timeout,
 cancellation, output exhaustion, deterministic elapsed time, stdout/stderr/receipt CAS spooling,
@@ -593,10 +599,12 @@ cargo test -p alloyport-server --test cuda_control_plane \
   Attached fake runs emit ephemeral gRPC output previews and accept control-stream cancellation;
   workers with no executor attached still terminate cancelled admitted attempts directly.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
-- Assigned worker lifecycle and raw previews are durably translated into observed canonical events,
-  but there is no public replay/subscription API, broadcast channel, authorization boundary,
-  retention/redaction scheduler, or terminal UI worker view. Preview gaps are visible and final
-  Artifacts retain the complete bytes; preview coalescing is not implemented.
+- Assigned worker lifecycle and raw previews are durably translated into observed canonical events.
+  A bounded per-run replay/subscription hub with canonical reconnect cursors now exists at the
+  library boundary, but it is not yet wired into the production control service and there is no
+  public RPC, durable run-owner authorization, retention/redaction scheduler, or terminal UI worker
+  view. Preview gaps are visible and final Artifacts retain the complete bytes; preview coalescing is
+  not implemented.
 - No external scheduling API or task controller integration. The worker translator intentionally
   does not emit `run.completed`, gate verdicts, or audited transitions because it does not own those
   decisions.
@@ -631,8 +639,9 @@ subscription.
 
 ### 2. Public event replay and subscription
 
-Expose authorized per-run replay and a bounded live subscription over the canonical repository.
-Define reconnect cursors, slow-consumer behavior, redaction, and retention before attaching a TUI;
+The durable cursor and bounded per-run replay-to-live hub are implemented. Next, bind runs to stable
+owners, apply controller redaction, wire worker ingestion through the shared hub, and expose the
+authorized replay/subscription RPC. Define retention-expired cursor behavior before attaching a TUI;
 the transport must not become a second event type system.
 
 ### 3. One Ascend vertical slice
@@ -651,10 +660,10 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Expose authorized public event replay and bounded live subscription:
+Add durable run ownership and the authorized public event transport:
 
-> Read `docs/HANDOFF.md` and Designs 0010, 0011, and 0017. Add an authorized per-run replay API over
-> the canonical interaction repository plus a bounded live subscription with reconnect cursors.
-> Define slow-consumer termination, redaction, retention, and visible-gap semantics before attaching
-> a TUI. Reuse the canonical event types and repository sequence; do not create a second event model
-> or treat ephemeral worker previews as authority.
+> Read `docs/HANDOFF.md` and Designs 0010, 0011, and 0017. Persist idempotent owner/run grants, resolve
+> the caller from verified enrolled mTLS identity, apply controller redaction, and wire both worker
+> ingestion and a new replay/subscription RPC through `InteractionHub`. Preserve its canonical
+> reconnect cursor and explicit slow-consumer termination. Define retention-expired cursor status
+> before attaching a TUI; do not create a second event model or treat previews as authority.

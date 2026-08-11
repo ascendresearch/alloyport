@@ -1499,9 +1499,11 @@ fn interaction_status(error: &InteractionError) -> Status {
         InteractionError::InvalidFrame(_)
         | InteractionError::ConflictingDedupKey(_)
         | InteractionError::ConflictingOutput { .. }
+        | InteractionError::InvalidCursor { .. }
         | InteractionError::ValueOutOfRange(_) => Status::invalid_argument(detail),
         InteractionError::Sqlite(_)
         | InteractionError::Serialization(_)
+        | InteractionError::InvalidSubscriptionCapacity
         | InteractionError::LockPoisoned => Status::internal(detail),
     }
 }
