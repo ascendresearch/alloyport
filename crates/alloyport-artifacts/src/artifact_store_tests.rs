@@ -1,7 +1,9 @@
 //! Behavioral tests for the Artifact store module.
 
 use super::*;
-use std::io::Cursor;
+use std::error::Error;
+use std::fs;
+use std::io::{self, Cursor, Read};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Barrier};

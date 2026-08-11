@@ -104,8 +104,10 @@ The workspace requires Rust 1.88 or newer.
 
 ### `alloyport-artifacts`
 
-Defines an object-safe immutable `ArtifactStore`, canonical `Sha256Digest`, streaming `Read`-based
-ingestion, verified readers, and a filesystem CAS. The filesystem implementation:
+Defines an object-safe immutable `ArtifactStore`, narrow administrative `ArtifactRetentionStore`,
+canonical `Sha256Digest`, streaming `Read`-based ingestion, and verified readers. The concrete
+filesystem CAS is isolated in `adapters::filesystem` and re-exported for compatibility. Its
+implementation:
 
 - hashes and writes through a bounded 64 KiB buffer rather than loading an artifact into memory;
 - enforces a configured per-artifact byte limit plus optional declared digest and size;
