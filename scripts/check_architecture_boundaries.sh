@@ -84,6 +84,11 @@ if interaction_store_capability=$(rg -n \
     crates/alloyport-server/src/adapters/sqlite/interaction_store.rs); then
     violations+=("interaction persistence capability SQL returned to the SQLite composition shell: ${interaction_store_capability}")
 fi
+if assignment_responsibility=$(rg -n \
+    'reconcile_preparing_assignments|pub\(super\) async fn prepare_assignment|pub\(super\) async fn prepare_cancel' \
+    crates/alloyport-server/src/assignment_coordinator.rs); then
+    violations+=("assignment reconciliation or delivery mechanics returned to the use-case coordinator: ${assignment_responsibility}")
+fi
 if ! rg -q 'pub trait InteractionEventWriter' crates/alloyport-server/src/interaction.rs \
     || ! rg -q 'pub trait InteractionEventReader' crates/alloyport-server/src/interaction.rs \
     || ! rg -q 'pub trait InteractionRunAccessStore' crates/alloyport-server/src/interaction.rs; then

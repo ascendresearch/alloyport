@@ -216,6 +216,8 @@ run-access ports. Its SQLite schema shell, event/output log, and authorization g
 implementation modules, alongside independent replay-to-live broadcast and display sanitization.
 Worker registration, replay reconstruction, inbound stream consumption, identity revalidation, and
 disconnect handling live in a dedicated session-lifecycle module outside the service facade.
+Assignment admission/reassignment/cancellation, durable frame preparation with connection sequence
+and lease allocation, and abandoned-preparation reconciliation are three separate use-case modules.
 
 Current behavior:
 

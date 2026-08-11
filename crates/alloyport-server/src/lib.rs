@@ -3,6 +3,8 @@
 pub mod adapters;
 pub mod artifact;
 mod assignment_coordinator;
+mod assignment_delivery;
+mod assignment_reconciliation;
 mod attempt_observer;
 mod control_transport;
 pub mod identity;

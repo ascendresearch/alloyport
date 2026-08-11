@@ -283,10 +283,10 @@ directories (including their migration and adapter-test files).
   authorized reader leases/garbage collection are 126 lines. Schema/migrations, quota accounting,
   record mapping/staging helpers, and adapter tests remain separate modules.
 - [x] Server control coordinator split by use case: `lib.rs` is 488 lines (down from 2,030), with
-  assignment coordination (585), attempt observation/projection (552), worker registration/replay/
-  stream lifecycle (161), gRPC transport and wire mapping (310), and tests (211) isolated in cohesive
-  modules. Protobuf/domain conversion lives at the transport edge, and no module in this slice
-  exceeds the review threshold.
+  assignment admission/reassignment/cancellation (281), durable delivery/connection sequencing
+  (175), abandoned-preparation reconciliation (144), attempt observation/projection (552), worker
+  session lifecycle (161), and gRPC transport/wire mapping (310) isolated in cohesive modules.
+  Protobuf/domain conversion lives at the transport edge.
 - [x] Worker outbound coordinator split by use case: `lib.rs` is 440 lines (down from 1,838), with
   local admission/journal state (356), control-session framing (289), attempt execution coordination
   (513), wire/journal mapping (188), and tests (340) isolated in cohesive modules. No module in this
@@ -308,7 +308,7 @@ directories (including their migration and adapter-test files).
   schema module.
 - [x] Repository-wide production module size gate reached: tests were separated from CUDA Docker,
   CUDA supervisor/runtime, Artifact CAS, and event reducer modules. The largest production Rust
-  module is now 585 lines; no production module exceeds the 800-line review threshold.
+  module is now 578 lines; no production module exceeds the 800-line review threshold.
 - [x] First R6 async-persistence slice: worker control and execution paths use an immutable shared
   state handle and route journal operations through a four-permit bounded blocking adapter. No
   SQLite-backed journal call runs while holding a Tokio state mutex; a slow-operation concurrency
