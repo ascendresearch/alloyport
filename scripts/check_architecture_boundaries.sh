@@ -165,6 +165,16 @@ if raw_contract_identity=$(rg -n -U \
     crates/alloyport-server/src/storage/model.rs crates/alloyport-worker/src/journal.rs); then
     violations+=("immutable assignment contract regained a raw attempt/assignment/task ID: ${raw_contract_identity}")
 fi
+for trusted_outbox_variant in AssignmentAccepted ExecutionStarted ExecutionFinished CancellationAcknowledged; do
+    if ! rg -q -U "${trusted_outbox_variant} \\{[^}]*(assignment_id: AssignmentId[^}]*attempt_id: AttemptId|attempt_id: AttemptId[^}]*assignment_id: AssignmentId)" \
+        crates/alloyport-worker/src/journal.rs; then
+        violations+=("trusted worker outbox variant ${trusted_outbox_variant} does not retain typed assignment/attempt identities")
+    fi
+done
+if ! rg -q -U 'AssignmentRejected \{[^}]*assignment_id: String[^}]*attempt_id: String' \
+    crates/alloyport-worker/src/journal.rs; then
+    violations+=("worker rejection outbox no longer preserves invalid wire identities as boundary text")
+fi
 if interaction_store_capability=$(rg -n \
     'impl InteractionEventWriter|impl InteractionEventReader|impl InteractionRunAccessStore' \
     crates/alloyport-server/src/adapters/sqlite/interaction_store.rs); then

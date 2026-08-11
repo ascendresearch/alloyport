@@ -83,8 +83,9 @@ fn accepted_message(attempt_id: &str) -> WorkerOutboxMessage {
         message_id: format!("assignment-accepted:{attempt_id}"),
         attempt_id: attempt_id.to_owned(),
         payload: WorkerOutboxPayload::AssignmentAccepted {
-            assignment_id: format!("assignment-{attempt_id}"),
-            attempt_id: attempt_id.to_owned(),
+            assignment_id: AssignmentId::try_from(format!("assignment-{attempt_id}"))
+                .expect("valid fixture assignment ID"),
+            attempt_id: AttemptId::try_from(attempt_id).expect("valid fixture attempt ID"),
             already_known: false,
         },
     }

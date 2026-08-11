@@ -319,8 +319,11 @@ directories (including their migration and adapter-test files).
   identity validation/serde/display behavior consistent without collapsing the public types.
   Wire/event/path edges convert explicitly, whitespace-only IDs fail construction, and lease-expiry
   replacement reports typed `InvalidIdentity` rather than admitting invalid state. `CandidateId`
-  remains a string until its currently optional/empty protocol semantics are decided; outbox and
-  observation identities remain staged follow-ups.
+  remains a string until its currently optional/empty protocol semantics are decided. Worker
+  durable outbox accepted/started/finished/cancellation payloads retain typed assignment/attempt
+  identities through SQLite and convert only at the Protobuf edge; rejection payloads intentionally
+  preserve raw text so malformed wire identities can still be reported. Server observation
+  identities remain a staged follow-up.
 - [x] Worker executor responsibilities split: the durable fake execution coordinator is 501 lines
   (down from a 1,395-line mixed module), the shared local-spool/remote-publication boundary is 113
   lines, canonical event projection is 56 lines, and deterministic fake process behavior is 344

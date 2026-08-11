@@ -7,6 +7,7 @@ use crate::journal::{
     StoreAdmissionOutcome, StoredAssignment, StoredFinished, WorkerOutboxMessage,
     WorkerOutboxPayload,
 };
+use alloyport_core::{AssignmentId, AttemptId};
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
 impl AttemptLifecycleStore for SqliteAttemptStore {
@@ -80,8 +81,8 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
                 message_id: format!("assignment-accepted:{}", assignment.attempt_id),
                 attempt_id: assignment.attempt_id.to_string(),
                 payload: WorkerOutboxPayload::AssignmentAccepted {
-                    assignment_id: assignment.assignment_id.to_string(),
-                    attempt_id: assignment.attempt_id.to_string(),
+                    assignment_id: assignment.assignment_id.clone(),
+                    attempt_id: assignment.attempt_id.clone(),
                     already_known: outcome == StoreAdmissionOutcome::Duplicate,
                 },
             },
@@ -143,11 +144,7 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
                 });
             }
         }
-        let assignment_id: String = transaction.query_row(
-            "SELECT assignment_id FROM attempts WHERE attempt_id = ?1",
-            [attempt_id],
-            |row| row.get(0),
-        )?;
+        let (assignment_id, durable_attempt_id) = durable_identity(&transaction, attempt_id)?;
         enqueue_outbox_transaction(
             &transaction,
             &WorkerOutboxMessage {
@@ -155,7 +152,7 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
                 attempt_id: attempt_id.to_owned(),
                 payload: WorkerOutboxPayload::ExecutionStarted {
                     assignment_id,
-                    attempt_id: attempt_id.to_owned(),
+                    attempt_id: durable_attempt_id,
                 },
             },
             at_ms,
@@ -198,11 +195,7 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
                 ],
             )?;
         }
-        let assignment_id: String = transaction.query_row(
-            "SELECT assignment_id FROM attempts WHERE attempt_id = ?1",
-            [attempt_id],
-            |row| row.get(0),
-        )?;
+        let (assignment_id, durable_attempt_id) = durable_identity(&transaction, attempt_id)?;
         enqueue_outbox_transaction(
             &transaction,
             &WorkerOutboxMessage {
@@ -210,7 +203,7 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
                 attempt_id: attempt_id.to_owned(),
                 payload: WorkerOutboxPayload::ExecutionFinished {
                     assignment_id,
-                    attempt_id: attempt_id.to_owned(),
+                    attempt_id: durable_attempt_id,
                     finished: finished.clone(),
                 },
             },
@@ -219,6 +212,24 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
         transaction.commit()?;
         Ok(())
     }
+}
+
+fn durable_identity(
+    transaction: &rusqlite::Transaction<'_>,
+    attempt_id: &str,
+) -> Result<(AssignmentId, AttemptId), AttemptStoreError> {
+    let assignment_id = transaction.query_row(
+        "SELECT assignment_id FROM attempts WHERE attempt_id = ?1",
+        [attempt_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    let assignment_id = AssignmentId::try_from(assignment_id).map_err(|error| {
+        AttemptStoreError::Corrupt(format!("stored assignment identity is invalid: {error}"))
+    })?;
+    let attempt_id = AttemptId::try_from(attempt_id).map_err(|error| {
+        AttemptStoreError::Corrupt(format!("stored attempt identity is invalid: {error}"))
+    })?;
+    Ok((assignment_id, attempt_id))
 }
 
 fn phase(

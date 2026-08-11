@@ -93,8 +93,8 @@ pub struct StoredFinished {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum WorkerOutboxPayload {
     AssignmentAccepted {
-        assignment_id: String,
-        attempt_id: String,
+        assignment_id: AssignmentId,
+        attempt_id: AttemptId,
         already_known: bool,
     },
     AssignmentRejected {
@@ -104,17 +104,17 @@ pub enum WorkerOutboxPayload {
         detail: String,
     },
     ExecutionStarted {
-        assignment_id: String,
-        attempt_id: String,
+        assignment_id: AssignmentId,
+        attempt_id: AttemptId,
     },
     ExecutionFinished {
-        assignment_id: String,
-        attempt_id: String,
+        assignment_id: AssignmentId,
+        attempt_id: AttemptId,
         finished: StoredFinished,
     },
     CancellationAcknowledged {
-        assignment_id: String,
-        attempt_id: String,
+        assignment_id: AssignmentId,
+        attempt_id: AttemptId,
         already_terminal: bool,
     },
 }

@@ -103,22 +103,22 @@ fn stored_to_finished(
 pub(super) fn lifecycle_identity(payload: &WorkerOutboxPayload) -> (String, String) {
     let (kind, attempt_id) = match payload {
         WorkerOutboxPayload::AssignmentAccepted { attempt_id, .. } => {
-            ("assignment-accepted", attempt_id)
+            ("assignment-accepted", attempt_id.to_string())
         }
         WorkerOutboxPayload::AssignmentRejected { attempt_id, .. } => {
-            ("assignment-rejected", attempt_id)
+            ("assignment-rejected", attempt_id.clone())
         }
         WorkerOutboxPayload::ExecutionStarted { attempt_id, .. } => {
-            ("execution-started", attempt_id)
+            ("execution-started", attempt_id.to_string())
         }
         WorkerOutboxPayload::ExecutionFinished { attempt_id, .. } => {
-            ("execution-finished", attempt_id)
+            ("execution-finished", attempt_id.to_string())
         }
         WorkerOutboxPayload::CancellationAcknowledged { attempt_id, .. } => {
-            ("cancellation-acknowledged", attempt_id)
+            ("cancellation-acknowledged", attempt_id.to_string())
         }
     };
-    (format!("{kind}:{attempt_id}"), attempt_id.clone())
+    (format!("{kind}:{attempt_id}"), attempt_id)
 }
 
 pub(super) fn expected_server_message_id(
@@ -142,8 +142,8 @@ pub(super) fn outbox_to_wire(payload: WorkerOutboxPayload) -> worker_to_server::
             attempt_id,
             already_known,
         } => worker_to_server::Message::AssignmentAccepted(AssignmentAccepted {
-            assignment_id,
-            attempt_id,
+            assignment_id: assignment_id.into(),
+            attempt_id: attempt_id.into(),
             already_known,
         }),
         WorkerOutboxPayload::AssignmentRejected {
@@ -161,8 +161,8 @@ pub(super) fn outbox_to_wire(payload: WorkerOutboxPayload) -> worker_to_server::
             assignment_id,
             attempt_id,
         } => worker_to_server::Message::ExecutionStarted(alloyport_proto::v1::ExecutionStarted {
-            assignment_id,
-            attempt_id,
+            assignment_id: assignment_id.into(),
+            attempt_id: attempt_id.into(),
         }),
         WorkerOutboxPayload::ExecutionFinished {
             assignment_id,
@@ -178,8 +178,8 @@ pub(super) fn outbox_to_wire(payload: WorkerOutboxPayload) -> worker_to_server::
             attempt_id,
             already_terminal,
         } => worker_to_server::Message::CancellationAcknowledged(CancellationAcknowledged {
-            assignment_id,
-            attempt_id,
+            assignment_id: assignment_id.into(),
+            attempt_id: attempt_id.into(),
             already_terminal,
         }),
     }

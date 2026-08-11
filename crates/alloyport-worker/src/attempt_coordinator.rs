@@ -151,10 +151,11 @@ impl OutboundWorker {
                 })?;
             let already_terminal = attempt.phase == LocalAttemptPhase::Finished;
             let assignment_id = attempt.assignment.assignment_id;
+            let attempt_id = attempt.assignment.attempt_id;
             self.state
                 .enqueue_lifecycle_async(WorkerOutboxPayload::CancellationAcknowledged {
-                    assignment_id: assignment_id.to_string(),
-                    attempt_id: cancel.attempt_id.clone(),
+                    assignment_id,
+                    attempt_id,
                     already_terminal,
                 })
                 .await?;
