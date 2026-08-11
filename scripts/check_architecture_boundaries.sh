@@ -55,6 +55,14 @@ if interaction_runtime=$(rg -n \
     crates/alloyport-server/src/interaction.rs); then
     violations+=("interaction live-delivery or sanitization logic returned to the domain port: ${interaction_runtime}")
 fi
+if mixed_worker_store=$(rg -n 'impl AttemptStore for SqliteAttemptStore' \
+    crates/alloyport-worker/src/adapters/sqlite/attempt_store.rs); then
+    violations+=("worker lifecycle and outbox capabilities regained one concrete trait impl: ${mixed_worker_store}")
+fi
+if ! rg -q 'pub trait AttemptLifecycleStore' crates/alloyport-worker/src/journal.rs \
+    || ! rg -q 'pub trait WorkerOutboxStore' crates/alloyport-worker/src/journal.rs; then
+    violations+=("worker journal capability ports are missing")
+fi
 if string_error=$(rg -n 'Future<Output = Result<\(\), String>>' \
     crates/alloyport-worker/src/executor.rs); then
     violations+=("Artifact publisher port regained an untyped String error: ${string_error}")

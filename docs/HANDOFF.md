@@ -341,6 +341,8 @@ enrollment, CA revocation, and replicated identity storage are not implemented.
 
 Implements an outbound client session, hello/welcome negotiation, heartbeat, cumulative server
 acknowledgement, disk-backed attempt knowledge, local admission, and reconnectable session state.
+The worker journal exposes separate attempt-lifecycle and durable-outbox ports; `AttemptStore`
+composes them for the complete outbound worker while narrower consumers can depend on one capability.
 
 Current behavior:
 

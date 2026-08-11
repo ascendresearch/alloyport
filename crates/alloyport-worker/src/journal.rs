@@ -211,7 +211,7 @@ impl Error for AttemptStoreError {
 }
 
 #[allow(clippy::missing_errors_doc)]
-pub trait AttemptStore: Debug + Send + Sync {
+pub trait AttemptLifecycleStore: Debug + Send + Sync {
     fn bind_worker(&self, worker_id: &str) -> Result<(), AttemptStoreError>;
 
     fn admit(
@@ -232,7 +232,10 @@ pub trait AttemptStore: Debug + Send + Sync {
         finished: &StoredFinished,
         at_ms: u64,
     ) -> Result<(), AttemptStoreError>;
+}
 
+#[allow(clippy::missing_errors_doc)]
+pub trait WorkerOutboxStore: Debug + Send + Sync {
     fn enqueue_outbox(
         &self,
         message: &WorkerOutboxMessage,
@@ -259,3 +262,8 @@ pub trait AttemptStore: Debug + Send + Sync {
 
     fn outbox_len(&self) -> Result<usize, AttemptStoreError>;
 }
+
+/// Compatibility composition for workers that need both attempt lifecycle and durable outbox.
+pub trait AttemptStore: AttemptLifecycleStore + WorkerOutboxStore {}
+
+impl<T> AttemptStore for T where T: AttemptLifecycleStore + WorkerOutboxStore + ?Sized {}
