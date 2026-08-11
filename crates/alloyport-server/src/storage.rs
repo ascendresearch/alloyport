@@ -227,7 +227,8 @@ pub struct ResourceContract {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[repr(i64)]
 pub enum AttemptState {
-    Queued = 1,
+    Preparing = 10,
+    Dispatchable = 1,
     Sent = 2,
     Accepted = 3,
     Running = 4,
@@ -241,7 +242,7 @@ pub enum AttemptState {
 impl AttemptState {
     fn from_i64(value: i64) -> Result<Self, RepositoryError> {
         match value {
-            1 => Ok(Self::Queued),
+            1 => Ok(Self::Dispatchable),
             2 => Ok(Self::Sent),
             3 => Ok(Self::Accepted),
             4 => Ok(Self::Running),
@@ -250,6 +251,7 @@ impl AttemptState {
             7 => Ok(Self::LeaseExpired),
             8 => Ok(Self::CancelRequested),
             9 => Ok(Self::Cancelled),
+            10 => Ok(Self::Preparing),
             _ => Err(RepositoryError::Corrupt(format!(
                 "unknown attempt state {value}"
             ))),
@@ -259,7 +261,11 @@ impl AttemptState {
     const fn is_replayable(self) -> bool {
         matches!(
             self,
-            Self::Queued | Self::Sent | Self::Accepted | Self::Running | Self::CancelRequested
+            Self::Dispatchable
+                | Self::Sent
+                | Self::Accepted
+                | Self::Running
+                | Self::CancelRequested
         )
     }
 }
@@ -378,11 +384,26 @@ pub struct ServerOutboxFrame {
     pub attempt_id: Option<String>,
 }
 
+/// All durable inputs required before an assignment frame may be published.
+///
+/// Repository implementations must apply the attempt transition, lease grant, outbox insert, and
+/// connection sequence update in one transaction. Returning successfully is the application's
+/// permission to place the corresponding frame on the network.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssignmentDeliveryPreparation {
+    pub frame: ServerOutboxFrame,
+    pub lease_id: String,
+    pub last_worker_sequence: u64,
+    pub last_server_acknowledged_by_worker: u64,
+    pub now_ms: u64,
+    pub lease_duration_ms: u64,
+}
+
 /// Storage failures are kept distinct from RPC validation failures.
 #[derive(Debug)]
 pub enum RepositoryError {
-    Sqlite(rusqlite::Error),
-    Serialization(serde_json::Error),
+    Storage(Box<dyn Error + Send + Sync>),
+    Encoding(Box<dyn Error + Send + Sync>),
     LockPoisoned,
     NotFound(String),
     IdentityMismatch(String),
@@ -397,8 +418,10 @@ pub enum RepositoryError {
 impl Display for RepositoryError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Sqlite(error) => Display::fmt(error, formatter),
-            Self::Serialization(error) => Display::fmt(error, formatter),
+            Self::Storage(error) => write!(formatter, "control repository storage error: {error}"),
+            Self::Encoding(error) => {
+                write!(formatter, "control repository encoding error: {error}")
+            }
             Self::LockPoisoned => write!(formatter, "control repository lock is poisoned"),
             Self::NotFound(attempt) => write!(formatter, "attempt {attempt} is not assigned"),
             Self::IdentityMismatch(attempt) => {
@@ -427,8 +450,7 @@ impl Display for RepositoryError {
 impl Error for RepositoryError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Sqlite(error) => Some(error),
-            Self::Serialization(error) => Some(error),
+            Self::Storage(error) | Self::Encoding(error) => Some(error.as_ref()),
             _ => None,
         }
     }
@@ -436,13 +458,13 @@ impl Error for RepositoryError {
 
 impl From<rusqlite::Error> for RepositoryError {
     fn from(error: rusqlite::Error) -> Self {
-        Self::Sqlite(error)
+        Self::Storage(Box::new(error))
     }
 }
 
 impl From<serde_json::Error> for RepositoryError {
     fn from(error: serde_json::Error) -> Self {
-        Self::Serialization(error)
+        Self::Encoding(Box::new(error))
     }
 }
 
@@ -473,7 +495,29 @@ pub trait ControlRepository: Debug + Send + Sync {
         at_ms: u64,
     ) -> Result<StoreAssignmentOutcome, RepositoryError>;
 
+    /// Makes a fully prepared assignment eligible for dispatch and replay.
+    ///
+    /// Returns `true` only when this call performs the `Preparing -> Dispatchable` transition.
+    fn mark_assignment_dispatchable(
+        &self,
+        attempt_id: &str,
+        worker_id: &str,
+        at_ms: u64,
+    ) -> Result<bool, RepositoryError>;
+
     fn assignment(&self, attempt_id: &str) -> Result<Option<AssignmentRecord>, RepositoryError>;
+
+    fn preparing_assignments(&self, limit: usize)
+    -> Result<Vec<AssignmentRecord>, RepositoryError>;
+
+    fn preparing_assignment_count(&self) -> Result<usize, RepositoryError>;
+
+    fn defer_assignment_preparation(
+        &self,
+        attempt_id: &str,
+        worker_id: &str,
+        retry_at_ms: u64,
+    ) -> Result<bool, RepositoryError>;
 
     fn replayable_assignments(
         &self,
@@ -488,14 +532,10 @@ pub trait ControlRepository: Debug + Send + Sync {
         at_ms: u64,
     ) -> Result<ReassignmentRecord, RepositoryError>;
 
-    fn mark_sent_and_grant_lease(
+    fn prepare_assignment_delivery(
         &self,
-        attempt_id: &str,
-        worker_id: &str,
-        lease_id: &str,
-        now_ms: u64,
-        lease_duration_ms: u64,
-    ) -> Result<(), RepositoryError>;
+        preparation: &AssignmentDeliveryPreparation,
+    ) -> Result<AssignmentContract, RepositoryError>;
 
     fn observe_attempt(
         &self,
@@ -729,12 +769,38 @@ impl ControlRepository for SqliteControlRepository {
                 contract.assignment_id,
                 worker_id,
                 contract_json,
-                AttemptState::Queued as i64,
+                AttemptState::Preparing as i64,
                 to_i64(at_ms)?
             ],
         )?;
         transaction.commit()?;
         Ok(StoreAssignmentOutcome::Inserted)
+    }
+
+    fn mark_assignment_dispatchable(
+        &self,
+        attempt_id: &str,
+        worker_id: &str,
+        at_ms: u64,
+    ) -> Result<bool, RepositoryError> {
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = assignment_identity(&transaction, attempt_id, worker_id, None)?;
+        let transitioned = if state == AttemptState::Preparing {
+            transaction.execute(
+                "UPDATE assignments SET state = ?2, updated_at_ms = ?3 WHERE attempt_id = ?1",
+                params![
+                    attempt_id,
+                    AttemptState::Dispatchable as i64,
+                    to_i64(at_ms)?
+                ],
+            )?;
+            true
+        } else {
+            false
+        };
+        transaction.commit()?;
+        Ok(transitioned)
     }
 
     fn assignment(&self, attempt_id: &str) -> Result<Option<AssignmentRecord>, RepositoryError> {
@@ -749,6 +815,34 @@ impl ControlRepository for SqliteControlRepository {
             .optional()
             .map_err(RepositoryError::from)
             .and_then(Option::transpose)
+    }
+
+    fn preparing_assignments(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<AssignmentRecord>, RepositoryError> {
+        let database = self.connection()?;
+        crate::adapters::sqlite::assignment_delivery::load_preparing(&database, limit)
+    }
+
+    fn preparing_assignment_count(&self) -> Result<usize, RepositoryError> {
+        let database = self.connection()?;
+        crate::adapters::sqlite::assignment_delivery::preparing_count(&database)
+    }
+
+    fn defer_assignment_preparation(
+        &self,
+        attempt_id: &str,
+        worker_id: &str,
+        retry_at_ms: u64,
+    ) -> Result<bool, RepositoryError> {
+        let database = self.connection()?;
+        crate::adapters::sqlite::assignment_delivery::defer_preparation(
+            &database,
+            attempt_id,
+            worker_id,
+            retry_at_ms,
+        )
     }
 
     fn replayable_assignments(
@@ -798,7 +892,7 @@ impl ControlRepository for SqliteControlRepository {
         if original.state != AttemptState::LeaseExpired {
             return Err(RepositoryError::InvalidTransition {
                 from: original.state,
-                to: AttemptState::Queued,
+                to: AttemptState::Dispatchable,
             });
         }
         if replacement_attempt_id.is_empty() || replacement_attempt_id == expired_attempt_id {
@@ -821,70 +915,28 @@ impl ControlRepository for SqliteControlRepository {
         })
     }
 
-    fn mark_sent_and_grant_lease(
+    fn prepare_assignment_delivery(
         &self,
-        attempt_id: &str,
-        worker_id: &str,
-        lease_id: &str,
-        now_ms: u64,
-        lease_duration_ms: u64,
-    ) -> Result<(), RepositoryError> {
+        preparation: &AssignmentDeliveryPreparation,
+    ) -> Result<AssignmentContract, RepositoryError> {
         let mut database = self.connection()?;
         let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let state = assignment_identity(&transaction, attempt_id, worker_id, None)?;
-        if !state.is_replayable() {
-            return Err(RepositoryError::InvalidTransition {
-                from: state,
-                to: AttemptState::Sent,
-            });
+        match crate::adapters::sqlite::assignment_delivery::prepare(&transaction, preparation) {
+            Ok(contract) => {
+                transaction.commit()?;
+                Ok(contract)
+            }
+            Err(
+                error @ RepositoryError::InvalidTransition {
+                    from: AttemptState::LeaseExpired,
+                    ..
+                },
+            ) => {
+                transaction.commit()?;
+                Err(error)
+            }
+            Err(error) => Err(error),
         }
-        let existing_expiry = transaction
-            .query_row(
-                "SELECT expires_at_ms FROM attempt_leases WHERE attempt_id = ?1",
-                [attempt_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?
-            .map(from_i64)
-            .transpose()?;
-        if existing_expiry.is_some_and(|expiry| expiry <= now_ms) {
-            expire_one(&transaction, attempt_id, now_ms)?;
-            transaction.commit()?;
-            return Err(RepositoryError::InvalidTransition {
-                from: AttemptState::LeaseExpired,
-                to: AttemptState::Sent,
-            });
-        }
-        let next_state = if state == AttemptState::Queued {
-            AttemptState::Sent
-        } else {
-            state
-        };
-        transaction.execute(
-            "UPDATE assignments
-             SET state = ?2, updated_at_ms = ?3, last_sent_at_ms = ?3
-             WHERE attempt_id = ?1",
-            params![attempt_id, next_state as i64, to_i64(now_ms)?],
-        )?;
-        let expires_at_ms = now_ms.saturating_add(lease_duration_ms);
-        transaction.execute(
-            "INSERT INTO attempt_leases(
-                 attempt_id, lease_id, worker_id, granted_at_ms, renewed_at_ms, expires_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?4, ?5)
-             ON CONFLICT(attempt_id) DO UPDATE SET
-                 renewed_at_ms = excluded.renewed_at_ms,
-                 expires_at_ms = excluded.expires_at_ms,
-                 expired_at_ms = NULL",
-            params![
-                attempt_id,
-                lease_id,
-                worker_id,
-                to_i64(now_ms)?,
-                to_i64(expires_at_ms)?
-            ],
-        )?;
-        transaction.commit()?;
-        Ok(())
     }
 
     fn observe_attempt(
@@ -1063,7 +1115,7 @@ impl ControlRepository for SqliteControlRepository {
             .ok_or_else(|| RepositoryError::NotFound(attempt_id.to_owned()))?;
         let state = AttemptState::from_i64(state_value)?;
         let (next_state, outcome) = match state {
-            AttemptState::Queued => (
+            AttemptState::Preparing | AttemptState::Dispatchable => (
                 AttemptState::Cancelled,
                 CancellationStoreOutcome::CancelledBeforeSend,
             ),
@@ -1266,7 +1318,7 @@ fn insert_reassignment(
     replacement_worker_id.clone_into(&mut replacement.worker_id);
     replacement_attempt_id.clone_into(&mut replacement.contract.attempt_id);
     replacement.contract.attempt_number = replacement.contract.attempt_number.saturating_add(1);
-    replacement.state = AttemptState::Queued;
+    replacement.state = AttemptState::Preparing;
     replacement.created_at_ms = at_ms;
     replacement.updated_at_ms = at_ms;
     replacement.cancellation_reason = None;
@@ -1281,7 +1333,7 @@ fn insert_reassignment(
             replacement.contract.assignment_id,
             replacement.worker_id,
             contract_json,
-            AttemptState::Queued as i64,
+            AttemptState::Preparing as i64,
             to_i64(at_ms)?
         ],
     )?;
@@ -1436,7 +1488,86 @@ mod tests {
             .assignment("attempt-1")?
             .expect("stored assignment is recovered");
         assert_eq!(recovered.contract, contract);
-        assert_eq!(recovered.state, AttemptState::Queued);
+        assert_eq!(recovered.state, AttemptState::Preparing);
+        Ok(())
+    }
+
+    #[test]
+    fn preparing_assignment_is_not_replayable_until_side_effects_complete()
+    -> Result<(), Box<dyn Error>> {
+        let repository = SqliteControlRepository::in_memory()?;
+        repository.store_assignment("worker-1", &contract(), 1_000)?;
+
+        assert!(repository.replayable_assignments("worker-1")?.is_empty());
+        assert!(repository.mark_assignment_dispatchable("attempt-1", "worker-1", 1_001)?);
+        assert!(!repository.mark_assignment_dispatchable("attempt-1", "worker-1", 1_002)?);
+        assert_eq!(repository.replayable_assignments("worker-1")?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_preparation_rotates_behind_newer_work() -> Result<(), Box<dyn Error>> {
+        let repository = SqliteControlRepository::in_memory()?;
+        repository.store_assignment("worker-1", &contract(), 1_000)?;
+        let mut second = contract();
+        second.assignment_id = "assignment-2".into();
+        second.attempt_id = "attempt-2".into();
+        repository.store_assignment("worker-1", &second, 1_001)?;
+
+        assert_eq!(
+            repository.preparing_assignments(1)?[0].contract.attempt_id,
+            "attempt-1"
+        );
+        assert!(repository.defer_assignment_preparation("attempt-1", "worker-1", 2_000)?);
+        assert_eq!(
+            repository.preparing_assignments(1)?[0].contract.attempt_id,
+            "attempt-2"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn assignment_delivery_rolls_back_lease_and_state_when_outbox_insert_fails()
+    -> Result<(), Box<dyn Error>> {
+        let repository = SqliteControlRepository::in_memory()?;
+        repository.store_assignment("worker-1", &contract(), 1_000)?;
+        prepare_test_assignment(&repository, "attempt-1", 1_000, 100)?;
+
+        let mut second = contract();
+        second.assignment_id = "assignment-2".into();
+        second.attempt_id = "attempt-2".into();
+        repository.store_assignment("worker-1", &second, 1_001)?;
+        repository.mark_assignment_dispatchable("attempt-2", "worker-1", 1_001)?;
+        let failed = repository.prepare_assignment_delivery(&AssignmentDeliveryPreparation {
+            frame: ServerOutboxFrame {
+                connection_id: "test-connection".into(),
+                sequence: 1_000,
+                message_id: "assignment:attempt-2".into(),
+                worker_id: "worker-1".into(),
+                kind: ServerFrameKind::Assignment,
+                attempt_id: Some("attempt-2".into()),
+            },
+            lease_id: "lease:attempt-2".into(),
+            last_worker_sequence: 1,
+            last_server_acknowledged_by_worker: 0,
+            now_ms: 1_001,
+            lease_duration_ms: 100,
+        });
+        assert!(failed.is_err());
+        assert_eq!(
+            repository
+                .assignment("attempt-2")?
+                .expect("failed preparation keeps the assignment")
+                .state,
+            AttemptState::Dispatchable
+        );
+        assert!(repository.lease("attempt-2")?.is_none());
+        let persisted_sequence = repository.connection()?.query_row(
+            "SELECT last_server_sequence FROM worker_connections WHERE connection_id = ?1",
+            ["test-connection"],
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert_eq!(persisted_sequence, 1_000);
         Ok(())
     }
 
@@ -1505,7 +1636,7 @@ mod tests {
         let repository = SqliteControlRepository::in_memory()?;
         let contract = contract();
         repository.store_assignment("worker-1", &contract, 1_000)?;
-        repository.mark_sent_and_grant_lease("attempt-1", "worker-1", "lease-1", 1_000, 100)?;
+        prepare_test_assignment(&repository, "attempt-1", 1_000, 100)?;
         assert_eq!(
             repository.observe_attempt(&observation(
                 1_001,
@@ -1558,12 +1689,12 @@ mod tests {
     {
         let repository = SqliteControlRepository::in_memory()?;
         repository.store_assignment("worker-1", &contract(), 1_000)?;
-        repository.mark_sent_and_grant_lease("attempt-1", "worker-1", "lease-1", 1_000, 100)?;
+        prepare_test_assignment(&repository, "attempt-1", 1_000, 100)?;
         assert!(matches!(
             repository.reassign_expired("attempt-1", "worker-2", "attempt-2", 1_050),
             Err(RepositoryError::InvalidTransition {
                 from: AttemptState::Sent,
-                to: AttemptState::Queued,
+                to: AttemptState::Dispatchable,
             })
         ));
         assert_eq!(repository.expire_leases(1_100)?, vec!["attempt-1"]);
@@ -1574,7 +1705,7 @@ mod tests {
         assert_eq!(reassigned.assignment.worker_id, "worker-2");
         assert_eq!(reassigned.assignment.contract.attempt_id, "attempt-2");
         assert_eq!(reassigned.assignment.contract.attempt_number, 2);
-        assert_eq!(reassigned.assignment.state, AttemptState::Queued);
+        assert_eq!(reassigned.assignment.state, AttemptState::Preparing);
         assert_eq!(
             repository
                 .assignment("attempt-1")?
@@ -1611,7 +1742,7 @@ mod tests {
     fn active_heartbeat_renews_the_lease() -> Result<(), Box<dyn Error>> {
         let repository = SqliteControlRepository::in_memory()?;
         repository.store_assignment("worker-1", &contract(), 1_000)?;
-        repository.mark_sent_and_grant_lease("attempt-1", "worker-1", "lease-1", 1_000, 100)?;
+        prepare_test_assignment(&repository, "attempt-1", 1_000, 100)?;
         repository.renew_active_leases("worker-1", &["attempt-1".to_owned()], 1_050, 100)?;
         assert!(repository.expire_leases(1_100)?.is_empty());
         assert_eq!(repository.expire_leases(1_150)?, vec!["attempt-1"]);
@@ -1622,7 +1753,7 @@ mod tests {
     fn heartbeat_after_expiry_cannot_resurrect_a_lease() -> Result<(), Box<dyn Error>> {
         let repository = SqliteControlRepository::in_memory()?;
         repository.store_assignment("worker-1", &contract(), 1_000)?;
-        repository.mark_sent_and_grant_lease("attempt-1", "worker-1", "lease-1", 1_000, 100)?;
+        prepare_test_assignment(&repository, "attempt-1", 1_000, 100)?;
         repository.renew_active_leases("worker-1", &["attempt-1".to_owned()], 1_101, 100)?;
         assert_eq!(
             repository
@@ -1663,7 +1794,7 @@ mod tests {
         second.assignment_id = "assignment-2".to_owned();
         second.attempt_id = "attempt-2".to_owned();
         repository.store_assignment("worker-1", &second, 2_000)?;
-        repository.mark_sent_and_grant_lease("attempt-2", "worker-1", "lease-2", 2_000, 100)?;
+        prepare_test_assignment(&repository, "attempt-2", 2_000, 100)?;
         assert_eq!(repository.expire_leases(2_100)?, vec!["attempt-2"]);
         assert_eq!(
             repository
@@ -1771,6 +1902,64 @@ mod tests {
             observed_at_ms: at_ms,
             observation,
         }
+    }
+
+    fn prepare_test_assignment(
+        repository: &SqliteControlRepository,
+        attempt_id: &str,
+        now_ms: u64,
+        lease_duration_ms: u64,
+    ) -> Result<(), RepositoryError> {
+        let connection_id = "test-connection";
+        let connection_exists = repository.connection()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM worker_connections WHERE connection_id = ?1)",
+            [connection_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !connection_exists {
+            repository.register_worker(
+                &WorkerRegistration {
+                    protocol_major: 1,
+                    protocol_minor: 0,
+                    worker_id: "worker-1".into(),
+                    instance_id: "test-instance".into(),
+                    worker_version: "test".into(),
+                    features: Vec::new(),
+                    capabilities: WorkerCapabilities {
+                        backend: 1,
+                        architecture: "test".into(),
+                        device_count: 1,
+                        max_concurrency: 1,
+                        driver_version: "test".into(),
+                        toolkit_version: "test".into(),
+                        container_runtime: "test".into(),
+                    },
+                },
+                &ConnectionRegistration {
+                    connection_id: connection_id.into(),
+                    worker_id: "worker-1".into(),
+                    instance_id: "test-instance".into(),
+                    connected_at_ms: now_ms,
+                },
+            )?;
+        }
+        repository.mark_assignment_dispatchable(attempt_id, "worker-1", now_ms)?;
+        repository.prepare_assignment_delivery(&AssignmentDeliveryPreparation {
+            frame: ServerOutboxFrame {
+                connection_id: connection_id.into(),
+                sequence: now_ms,
+                message_id: format!("assignment:{attempt_id}"),
+                worker_id: "worker-1".into(),
+                kind: ServerFrameKind::Assignment,
+                attempt_id: Some(attempt_id.into()),
+            },
+            lease_id: format!("lease:{attempt_id}"),
+            last_worker_sequence: 1,
+            last_server_acknowledged_by_worker: 0,
+            now_ms,
+            lease_duration_ms,
+        })?;
+        Ok(())
     }
 
     fn contract() -> AssignmentContract {

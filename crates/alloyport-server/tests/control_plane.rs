@@ -54,7 +54,8 @@ async fn owner_enqueue_publishes_through_shared_hub_and_grant_survives_restart()
 }
 
 #[tokio::test]
-async fn worker_handshake_assignment_and_duplicate_suppression() -> Result<(), Box<dyn Error>> {
+async fn worker_without_execution_backend_rejects_before_local_admission()
+-> Result<(), Box<dyn Error>> {
     let service = WorkerControlService::new();
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
@@ -70,6 +71,51 @@ async fn worker_handshake_assignment_and_duplicate_suppression() -> Result<(), B
     });
 
     let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?;
+    let worker_state = worker.state();
+    let worker_task = tokio::spawn(async move { worker.run_session().await });
+    wait_until(|| async {
+        service
+            .worker_snapshot("cuda-1")
+            .await
+            .is_some_and(|worker| worker.connected)
+    })
+    .await?;
+
+    assert_eq!(
+        service.enqueue_assignment("cuda-1", assignment()).await?,
+        EnqueueOutcome::Sent
+    );
+    wait_until(|| async {
+        service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Rejected)
+    })
+    .await?;
+    assert!(!worker_state.lock().await.contains_attempt("attempt-1")?);
+
+    worker_task.abort();
+    let _ = worker_task.await;
+    let _ = shutdown_send.send(());
+    server_task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn worker_handshake_assignment_and_duplicate_suppression() -> Result<(), Box<dyn Error>> {
+    let service = WorkerControlService::new();
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (shutdown_send, shutdown_receive) = oneshot::channel();
+    let server_service = service.clone();
+    let server_task = tokio::spawn(async move {
+        Server::builder()
+            .add_service(WorkerControlServer::new(server_service))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_receive.await;
+            })
+            .await
+    });
+
+    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?
+        .with_admission_only_mode();
     let worker_state = worker.state();
     let worker_task = tokio::spawn(async move { worker.run_session().await });
 
@@ -132,7 +178,7 @@ async fn queued_assignment_is_recovered_after_server_restart() -> Result<(), Box
         );
         assert_eq!(
             first_server.assignment_state("attempt-1")?,
-            Some(AssignmentState::Queued)
+            Some(AssignmentState::Dispatchable)
         );
     }
 
@@ -150,7 +196,8 @@ async fn queued_assignment_is_recovered_after_server_restart() -> Result<(), Box
             .await
     });
 
-    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?;
+    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?
+        .with_admission_only_mode();
     let worker_state = worker.state();
     let worker_task = tokio::spawn(async move { worker.run_session().await });
     wait_until(|| async {
@@ -197,7 +244,8 @@ async fn accepted_assignment_replay_after_restart_does_not_regress_state()
             .await
     });
 
-    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?;
+    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?
+        .with_admission_only_mode();
     let first_session_worker = worker.clone();
     let first_session = tokio::spawn(async move { first_session_worker.run_session().await });
     wait_until(|| async {
@@ -282,7 +330,8 @@ async fn worker_restart_replays_durable_finished_result() -> Result<(), Box<dyn 
     });
 
     let endpoint = Endpoint::from_shared(format!("http://{address}"))?;
-    let first_worker = OutboundWorker::open_sqlite(endpoint.clone(), hello(), &worker_database)?;
+    let first_worker = OutboundWorker::open_sqlite(endpoint.clone(), hello(), &worker_database)?
+        .with_admission_only_mode();
     let first_state = first_worker.state();
     let first_session = tokio::spawn(async move { first_worker.run_session().await });
     wait_until(|| async {
@@ -327,7 +376,8 @@ async fn worker_restart_replays_durable_finished_result() -> Result<(), Box<dyn 
     let mut restarted_hello = hello();
     restarted_hello.instance_id = "cuda-1-restarted-process".to_owned();
     let restarted_worker =
-        OutboundWorker::open_sqlite(endpoint, restarted_hello, &worker_database)?;
+        OutboundWorker::open_sqlite(endpoint, restarted_hello, &worker_database)?
+            .with_admission_only_mode();
     let restarted_state = restarted_worker.state();
     let restarted_session = tokio::spawn(async move { restarted_worker.run_session().await });
     wait_until(|| async {
@@ -358,7 +408,8 @@ async fn cancellation_is_acknowledged_and_becomes_terminal() -> Result<(), Box<d
             })
             .await
     });
-    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?;
+    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?
+        .with_admission_only_mode();
     let worker_task = tokio::spawn(async move { worker.run_session().await });
     wait_until(|| async {
         service
@@ -768,7 +819,8 @@ async fn assignment_queued_while_disconnected_is_replayed_after_reconnect()
             .await
     });
 
-    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?;
+    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?
+        .with_admission_only_mode();
     let worker_state = worker.state();
     let first_session_worker = worker.clone();
     let first_session = tokio::spawn(async move { first_session_worker.run_session().await });
@@ -834,7 +886,8 @@ async fn expired_attempt_is_reassigned_with_a_new_identity_and_old_result_stays_
             .await
     });
 
-    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?;
+    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?
+        .with_admission_only_mode();
     let worker_state = worker.state();
     let first_worker = worker.clone();
     let first_session = tokio::spawn(async move { first_worker.run_session().await });

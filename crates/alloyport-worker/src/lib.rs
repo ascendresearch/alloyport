@@ -390,6 +390,7 @@ pub struct OutboundWorker {
     hello: WorkerHello,
     state: Arc<Mutex<WorkerState>>,
     execution: Option<Arc<ExecutionIntegration>>,
+    admission_only: bool,
     artifact_downloader: Option<Arc<RemoteArtifactDownloader>>,
     artifact_publisher: Option<Arc<dyn ArtifactPublisher>>,
     execution_updates: broadcast::Sender<ExecutionUpdate>,
@@ -471,6 +472,7 @@ impl OutboundWorker {
             hello,
             state: Arc::new(Mutex::new(state)),
             execution: None,
+            admission_only: false,
             artifact_downloader: None,
             artifact_publisher: None,
             execution_updates,
@@ -582,6 +584,16 @@ impl OutboundWorker {
     #[must_use]
     pub fn with_artifact_downloader(mut self, downloader: Arc<RemoteArtifactDownloader>) -> Self {
         self.artifact_downloader = Some(downloader);
+        self
+    }
+
+    /// Enables an explicit control-plane harness mode that admits work without executing it.
+    ///
+    /// Production workers must attach a matching execution backend instead. This mode exists for
+    /// protocol, lease, replay, and restart tests whose subject is deliberately not execution.
+    #[must_use]
+    pub fn with_admission_only_mode(mut self) -> Self {
+        self.admission_only = true;
         self
     }
 
@@ -856,7 +868,11 @@ impl OutboundWorker {
     ) -> Result<(), WorkerError> {
         let assignment_id = assignment.assignment_id.clone();
         let attempt_id = assignment.attempt_id.clone();
-        let admitted = match self.state.lock().await.admit(&assignment) {
+        let admission = match self.validate_execution_support(&assignment) {
+            Ok(()) => self.state.lock().await.admit(&assignment),
+            Err(error) => Err(error),
+        };
+        let admitted = match admission {
             Ok(_) => true,
             Err(WorkerError::InvalidAssignment(error)) => {
                 self.state.lock().await.enqueue_lifecycle(
@@ -923,6 +939,32 @@ impl OutboundWorker {
             self.ensure_execution(&attempt_id).await?;
         }
         Ok(())
+    }
+
+    fn validate_execution_support(&self, assignment: &Assignment) -> Result<(), WorkerError> {
+        validate_assignment(assignment).map_err(WorkerError::InvalidAssignment)?;
+        if self.admission_only {
+            return Ok(());
+        }
+        let execution = assignment.execution.as_ref().ok_or_else(|| {
+            WorkerError::Protocol("validated assignment lacks execution".to_owned())
+        })?;
+        let executor =
+            ExecutorKind::try_from(execution.executor_kind).unwrap_or(ExecutorKind::Unspecified);
+        let integration = self.execution.as_ref().ok_or_else(|| {
+            WorkerError::PolicyViolation(format!(
+                "no execution backend is attached for {}",
+                executor.as_str_name()
+            ))
+        })?;
+        if integration.attached.supports(executor) {
+            Ok(())
+        } else {
+            Err(WorkerError::PolicyViolation(format!(
+                "attached execution backend does not support {}",
+                executor.as_str_name()
+            )))
+        }
     }
 
     async fn handle_cancel(
@@ -1536,6 +1578,27 @@ mod tests {
             }),
             required_features: Vec::new(),
         }
+    }
+
+    #[test]
+    fn worker_requires_an_attached_backend_unless_harness_mode_is_explicit() {
+        let endpoint = Endpoint::from_static("http://127.0.0.1:50051");
+        let worker = OutboundWorker::new(endpoint.clone(), worker_hello("worker-1"))
+            .expect("worker fixture is valid");
+        assert!(matches!(
+            worker.validate_execution_support(&assignment("true")),
+            Err(WorkerError::PolicyViolation(detail))
+                if detail.contains("no execution backend is attached")
+        ));
+
+        let harness = OutboundWorker::new(endpoint, worker_hello("worker-1"))
+            .expect("worker fixture is valid")
+            .with_admission_only_mode();
+        assert!(
+            harness
+                .validate_execution_support(&assignment("true"))
+                .is_ok()
+        );
     }
 
     #[test]

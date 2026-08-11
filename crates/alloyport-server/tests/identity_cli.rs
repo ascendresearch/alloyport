@@ -1,5 +1,6 @@
+use alloyport_server::adapters::sqlite::SqliteIdentityRegistry;
 use alloyport_server::identity::{
-    EnrollmentState, IdentityError, SqliteIdentityRegistry, certificate_fingerprint_from_pem,
+    EnrollmentState, IdentityError, IdentityRegistry, certificate_fingerprint_from_pem,
 };
 use rcgen::generate_simple_self_signed;
 use std::error::Error;

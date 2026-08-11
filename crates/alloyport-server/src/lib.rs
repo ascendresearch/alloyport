@@ -1,5 +1,6 @@
 //! Server-side worker sessions backed by a crash-durable control repository.
 
+pub mod adapters;
 pub mod artifact;
 pub mod identity;
 pub mod interaction;
@@ -37,10 +38,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use storage::{
-    ArtifactIdentity, AssignmentContract, AttemptObservation, CancellationStoreOutcome, Clock,
-    ConnectionRegistration, ControlRepository, EnvironmentEntry, ExecutionContract,
-    FinishedObservation, ObservationDisposition, ObservedAttempt, RepositoryError,
-    ResourceContract, ServerFrameKind, ServerOutboxFrame, SqliteControlRepository,
+    ArtifactIdentity, AssignmentContract, AssignmentDeliveryPreparation, AttemptObservation,
+    CancellationStoreOutcome, Clock, ConnectionRegistration, ControlRepository, EnvironmentEntry,
+    ExecutionContract, FinishedObservation, ObservationDisposition, ObservedAttempt,
+    RepositoryError, ResourceContract, ServerFrameKind, ServerOutboxFrame, SqliteControlRepository,
     StoreAssignmentOutcome, SystemClock, WorkerCapabilities, WorkerRegistration,
 };
 use tokio::sync::{Mutex, mpsc};
@@ -50,6 +51,8 @@ use tonic::{Request, Response, Status, Streaming};
 const HEARTBEAT_INTERVAL_MS: u64 = 5_000;
 const ATTEMPT_LEASE_MS: u64 = 30_000;
 const LEASE_REAPER_INTERVAL_MS: u64 = 1_000;
+const PREPARATION_RECONCILE_INTERVAL_MS: u64 = 5_000;
+const PREPARATION_RECONCILE_BATCH_SIZE: usize = 128;
 const OUTBOX_ORPHAN_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const INTERACTION_LIVE_CAPACITY: usize = 1_024;
 const INTERACTION_REPLAY_BATCH_SIZE: usize = 256;
@@ -81,6 +84,23 @@ pub enum CancelOutcome {
     Pending,
     CancelledBeforeSend,
     AlreadyTerminal,
+}
+
+/// One assignment that could not complete durable preparation during a reconciliation pass.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparationReconciliationFailure {
+    pub attempt_id: String,
+    pub detail: String,
+}
+
+/// Observable result of one bounded assignment-preparation reconciliation pass.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PreparationReconciliationReport {
+    pub scanned: usize,
+    pub recovered: usize,
+    pub sent: usize,
+    pub pending_delivery: usize,
+    pub failures: Vec<PreparationReconciliationFailure>,
 }
 
 /// A server-side assignment cannot be admitted.
@@ -349,6 +369,126 @@ impl WorkerControlService {
         }
     }
 
+    /// Completes one bounded batch of assignments left in `Preparing` by a failed enqueue or
+    /// process crash.
+    ///
+    /// Per-assignment dependency failures are reported and remain retryable. Repository failures
+    /// that prevent a trustworthy scan or state transition abort the pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns a repository error if the durable preparation set cannot be read or updated.
+    pub async fn reconcile_preparing_assignments(
+        &self,
+    ) -> Result<PreparationReconciliationReport, RepositoryError> {
+        let assignments = self
+            .repository
+            .preparing_assignments(PREPARATION_RECONCILE_BATCH_SIZE)?;
+        let mut report = PreparationReconciliationReport {
+            scanned: assignments.len(),
+            ..PreparationReconciliationReport::default()
+        };
+        for assignment in assignments {
+            let attempt_id = assignment.contract.attempt_id.clone();
+            let now_ms = self.clock.now_unix_ms();
+            if let Err(error) = self.grant_cuda_assignment_input(
+                &assignment.worker_id,
+                &assignment.contract,
+                now_ms,
+            ) {
+                self.repository.defer_assignment_preparation(
+                    &assignment.contract.attempt_id,
+                    &assignment.worker_id,
+                    now_ms,
+                )?;
+                report.failures.push(PreparationReconciliationFailure {
+                    attempt_id,
+                    detail: error.to_string(),
+                });
+                continue;
+            }
+            if let Err(error) = self.record_run_started(&assignment.contract, now_ms) {
+                self.repository.defer_assignment_preparation(
+                    &assignment.contract.attempt_id,
+                    &assignment.worker_id,
+                    now_ms,
+                )?;
+                report.failures.push(PreparationReconciliationFailure {
+                    attempt_id,
+                    detail: error.to_string(),
+                });
+                continue;
+            }
+            if !self.repository.mark_assignment_dispatchable(
+                &assignment.contract.attempt_id,
+                &assignment.worker_id,
+                now_ms,
+            )? {
+                continue;
+            }
+            report.recovered += 1;
+            match self
+                .prepare_assignment(&assignment.worker_id, &assignment.contract.attempt_id)
+                .await
+            {
+                Ok(Some((sender, message))) => {
+                    if sender.send(Ok(message)).await.is_ok() {
+                        report.sent += 1;
+                    } else {
+                        self.mark_send_failed(&assignment.worker_id).await;
+                        report.pending_delivery += 1;
+                    }
+                }
+                Ok(None) => report.pending_delivery += 1,
+                Err(error) => report.failures.push(PreparationReconciliationFailure {
+                    attempt_id,
+                    detail: error.to_string(),
+                }),
+            }
+        }
+        Ok(report)
+    }
+
+    /// Reconciles every assignment that was preparing when startup began, using bounded queries.
+    /// Rows deferred by one pass are rotated behind unseen work, preventing one unavailable
+    /// Artifact from starving the rest of the startup recovery set.
+    ///
+    /// # Errors
+    ///
+    /// Returns a repository error if the recovery set cannot be counted, read, or updated.
+    pub async fn reconcile_preparing_assignments_at_startup(
+        &self,
+    ) -> Result<PreparationReconciliationReport, RepositoryError> {
+        let count = self.repository.preparing_assignment_count()?;
+        let passes = count.div_ceil(PREPARATION_RECONCILE_BATCH_SIZE);
+        let mut aggregate = PreparationReconciliationReport::default();
+        for _ in 0..passes {
+            let report = self.reconcile_preparing_assignments().await?;
+            aggregate.scanned += report.scanned;
+            aggregate.recovered += report.recovered;
+            aggregate.sent += report.sent;
+            aggregate.pending_delivery += report.pending_delivery;
+            aggregate.failures.extend(report.failures);
+        }
+        Ok(aggregate)
+    }
+
+    /// Reconciles abandoned assignment preparation periodically until cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first repository failure that prevents a trustworthy reconciliation pass.
+    pub async fn run_preparation_reconciler(&self) -> Result<(), RepositoryError> {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(
+            PREPARATION_RECONCILE_INTERVAL_MS,
+        ));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let _report = self.reconcile_preparing_assignments().await?;
+        }
+    }
+
     /// Persists and, if connected, sends an assignment to a named worker.
     ///
     /// The immutable contract is committed before a send is prepared. Preparing the send commits
@@ -367,12 +507,17 @@ impl WorkerControlService {
         let worker_id = worker_id.into();
         let contract = assignment_to_contract(&assignment);
         let now_ms = self.clock.now_unix_ms();
-        self.grant_cuda_assignment_input(&worker_id, &contract, now_ms)?;
         let stored = self
             .repository
             .store_assignment(&worker_id, &contract, now_ms)?;
+        self.grant_cuda_assignment_input(&worker_id, &contract, now_ms)?;
         self.record_run_started(&contract, now_ms)?;
-        if stored == StoreAssignmentOutcome::Duplicate {
+        let became_dispatchable = self.repository.mark_assignment_dispatchable(
+            &contract.attempt_id,
+            &worker_id,
+            self.clock.now_unix_ms(),
+        )?;
+        if stored == StoreAssignmentOutcome::Duplicate && !became_dispatchable {
             return Ok(EnqueueOutcome::Duplicate);
         }
 
@@ -470,7 +615,12 @@ impl WorkerControlService {
             self.clock.now_unix_ms(),
         )?;
         self.record_run_started(&reassignment.assignment.contract, self.clock.now_unix_ms())?;
-        if reassignment.outcome == StoreAssignmentOutcome::Duplicate {
+        let became_dispatchable = self.repository.mark_assignment_dispatchable(
+            &replacement_attempt_id,
+            &replacement_worker_id,
+            self.clock.now_unix_ms(),
+        )?;
+        if reassignment.outcome == StoreAssignmentOutcome::Duplicate && !became_dispatchable {
             return Ok(EnqueueOutcome::Duplicate);
         }
         let outbound = self
@@ -582,52 +732,37 @@ impl WorkerControlService {
         if !worker.connected {
             return Ok(None);
         }
-        let assignment = self
-            .repository
-            .assignment(attempt_id)?
-            .ok_or_else(|| RepositoryError::NotFound(attempt_id.to_owned()))?;
-        if assignment.worker_id != worker_id {
-            return Err(RepositoryError::IdentityMismatch(attempt_id.to_owned()));
-        }
-
         let sequence = worker.next_server_sequence;
         let lease_number = self.lease_counter.fetch_add(1, Ordering::Relaxed);
         let lease_id = format!("lease-{lease_number}");
         let now_ms = self.clock.now_unix_ms();
-        self.repository.mark_sent_and_grant_lease(
-            attempt_id,
-            worker_id,
-            &lease_id,
-            now_ms,
-            ATTEMPT_LEASE_MS,
-        )?;
-        self.repository.record_server_frame(
-            &ServerOutboxFrame {
-                connection_id: worker.connection_id.clone(),
-                sequence,
-                message_id: format!("assignment:{attempt_id}"),
-                worker_id: worker_id.to_owned(),
-                kind: ServerFrameKind::Assignment,
-                attempt_id: Some(attempt_id.to_owned()),
-            },
-            now_ms,
-        )?;
+        let message_id = format!("assignment:{attempt_id}");
+        let contract =
+            self.repository
+                .prepare_assignment_delivery(&AssignmentDeliveryPreparation {
+                    frame: ServerOutboxFrame {
+                        connection_id: worker.connection_id.clone(),
+                        sequence,
+                        message_id: message_id.clone(),
+                        worker_id: worker_id.to_owned(),
+                        kind: ServerFrameKind::Assignment,
+                        attempt_id: Some(attempt_id.to_owned()),
+                    },
+                    lease_id,
+                    last_worker_sequence: worker.last_worker_sequence,
+                    last_server_acknowledged_by_worker: worker.last_server_sequence_acknowledged,
+                    now_ms,
+                    lease_duration_ms: ATTEMPT_LEASE_MS,
+                })?;
         worker.next_server_sequence += 1;
-        self.repository.update_connection_sequences(
-            &worker.connection_id,
-            worker.last_worker_sequence,
-            sequence,
-            worker.last_server_sequence_acknowledged,
-            now_ms,
-        )?;
         Ok(Some((
             worker.sender.clone(),
             ServerToWorker {
                 sequence,
                 acknowledges_worker_through: worker.last_worker_sequence,
-                message_id: format!("assignment:{attempt_id}"),
+                message_id,
                 message: Some(server_to_worker::Message::Assignment(
-                    contract_to_assignment(&assignment.contract),
+                    contract_to_assignment(&contract),
                 )),
             },
         )))
@@ -1706,6 +1841,50 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn reconciliation_recovers_restart_residue_without_blocking_on_another_attempt()
+    -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("control.sqlite3");
+        {
+            let repository = SqliteControlRepository::open(&database)?;
+            repository.store_assignment(
+                "worker-1",
+                &stored_contract("fake-attempt", ExecutorKind::Process),
+                1_000,
+            )?;
+            repository.store_assignment(
+                "worker-1",
+                &stored_contract("cuda-attempt", ExecutorKind::CudaFixture),
+                1_001,
+            )?;
+        }
+
+        let service = WorkerControlService::open_sqlite(&database)?;
+        let report = service.reconcile_preparing_assignments().await?;
+        assert_eq!(report.scanned, 2);
+        assert_eq!(report.recovered, 1);
+        assert_eq!(report.pending_delivery, 1);
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].attempt_id, "cuda-attempt");
+        assert_eq!(
+            service.assignment_state("fake-attempt")?,
+            Some(AssignmentState::Dispatchable)
+        );
+        assert_eq!(
+            service.assignment_state("cuda-attempt")?,
+            Some(AssignmentState::Preparing)
+        );
+        assert_eq!(service.interaction_events("task-fake-attempt")?.len(), 1);
+
+        let second = service.reconcile_preparing_assignments().await?;
+        assert_eq!(second.scanned, 1);
+        assert_eq!(second.recovered, 0);
+        assert_eq!(second.failures.len(), 1);
+        assert_eq!(service.interaction_events("task-fake-attempt")?.len(), 1);
+        Ok(())
+    }
+
     #[test]
     fn terminal_artifacts_must_be_finalized_by_the_reporting_worker() -> Result<(), Box<dyn Error>>
     {
@@ -1818,5 +1997,35 @@ mod tests {
         assert_eq!(reference.digest, digest);
         assert_eq!(reference.kind, ArtifactReferenceKind::AssignmentInput);
         Ok(())
+    }
+
+    fn stored_contract(attempt_id: &str, executor_kind: ExecutorKind) -> AssignmentContract {
+        AssignmentContract {
+            assignment_id: format!("assignment-{attempt_id}"),
+            attempt_id: attempt_id.into(),
+            attempt_number: 1,
+            idempotency_key: format!("key-{attempt_id}"),
+            task_id: format!("task-{attempt_id}"),
+            candidate_id: "candidate-1".into(),
+            execution: ExecutionContract {
+                executor_kind: executor_kind.into(),
+                argv: vec!["fixture".into()],
+                working_directory: ".".into(),
+                environment: Vec::new(),
+                timeout_ms: 1_000,
+                bundle: ArtifactIdentity {
+                    digest: format!("sha256:{}", "a".repeat(64)),
+                    size_bytes: 1,
+                    media_type: "application/octet-stream".into(),
+                },
+                image: ArtifactIdentity {
+                    digest: format!("sha256:{}", "b".repeat(64)),
+                    size_bytes: 0,
+                    media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+                },
+                limits: None,
+            },
+            required_features: Vec::new(),
+        }
     }
 }

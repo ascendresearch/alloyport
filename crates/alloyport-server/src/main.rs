@@ -4,9 +4,11 @@ use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer
 use alloyport_proto::interaction_v1::interaction_service_server::InteractionServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_server::WorkerControlService;
+use alloyport_server::adapters::sqlite::SqliteIdentityRegistry;
 use alloyport_server::artifact::{ArtifactServiceImpl, EnrolledArtifactAccessPolicy};
 use alloyport_server::identity::{
-    ConnectionIdentityResolver, SqliteIdentityRegistry, certificate_fingerprint_from_pem,
+    ConnectionIdentityResolver, IdentityRegistry, MtlsConnectionIdentityResolver,
+    certificate_fingerprint_from_pem,
 };
 use alloyport_server::interaction::InteractionStore;
 use alloyport_server::interaction_service::{
@@ -54,21 +56,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let identities = Arc::new(SqliteIdentityRegistry::open(identity_database(
         &artifact_root,
     ))?);
-    let artifact = artifact_runtime(&artifact_root, Arc::clone(&identities))?;
+    let identity_registry: Arc<dyn IdentityRegistry> = identities.clone();
+    let identity_resolver: Arc<dyn ConnectionIdentityResolver> =
+        Arc::new(MtlsConnectionIdentityResolver::new(identity_registry));
+    let artifact = artifact_runtime(&artifact_root, Arc::clone(&identity_resolver))?;
     let (control_service, interaction_hub) =
         WorkerControlService::open_sqlite_with_interaction_hub(database)?;
     let mut control_service = control_service.with_artifact_metadata(Arc::clone(&artifact.uploads));
     if require_enrollment {
-        let resolver: Arc<dyn ConnectionIdentityResolver> = identities.clone();
-        control_service = control_service.require_identity_resolver(resolver);
+        control_service = control_service.require_identity_resolver(Arc::clone(&identity_resolver));
+    }
+    let initial_reconciliation = control_service
+        .reconcile_preparing_assignments_at_startup()
+        .await?;
+    if !initial_reconciliation.failures.is_empty() {
+        eprintln!(
+            "deferred {} of {} preparing assignments during startup reconciliation",
+            initial_reconciliation.failures.len(),
+            initial_reconciliation.scanned
+        );
     }
     let interaction_store: Arc<dyn InteractionStore> = interaction_hub.clone();
-    let interaction_resolver: Arc<dyn ConnectionIdentityResolver> = identities.clone();
     let interaction_service = InteractionServiceImpl::new(
         interaction_hub,
         Arc::new(EnrolledInteractionAccessPolicy::new(
             interaction_store,
-            interaction_resolver,
+            Arc::clone(&identity_resolver),
         )),
     );
     let mut server = Server::builder();
@@ -78,6 +91,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("AlloyPort worker control, artifact, and interaction services listening on {address}");
     let reaper_service = control_service.clone();
     let mut lease_reaper = tokio::spawn(async move { reaper_service.run_lease_reaper().await });
+    let reconciler_service = control_service.clone();
+    let mut preparation_reconciler =
+        tokio::spawn(async move { reconciler_service.run_preparation_reconciler().await });
     let serve = server
         .add_service(WorkerControlServer::new(control_service))
         .add_service(
@@ -89,11 +105,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::select! {
         serve_result = serve => {
             lease_reaper.abort();
+            preparation_reconciler.abort();
             serve_result?;
         }
         reaper_result = &mut lease_reaper => {
+            preparation_reconciler.abort();
             reaper_result??;
             return Err("lease reaper stopped unexpectedly".into());
+        }
+        reconciler_result = &mut preparation_reconciler => {
+            lease_reaper.abort();
+            reconciler_result??;
+            return Err("assignment preparation reconciler stopped unexpectedly".into());
         }
     }
     Ok(())
@@ -101,7 +124,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 fn artifact_runtime(
     root: &Path,
-    identities: Arc<SqliteIdentityRegistry>,
+    identity_resolver: Arc<dyn ConnectionIdentityResolver>,
 ) -> Result<ArtifactRuntime, Box<dyn Error>> {
     let max_artifact_bytes =
         positive_environment_u64("ALLOYPORT_ARTIFACT_MAX_BYTES", DEFAULT_MAX_ARTIFACT_BYTES)?;
@@ -133,10 +156,9 @@ fn artifact_runtime(
             per_owner_bytes: per_owner_quota_bytes,
         },
     )?);
-    let resolver: Arc<dyn ConnectionIdentityResolver> = identities;
     let access = Arc::new(EnrolledArtifactAccessPolicy::new(
         Arc::clone(&uploads),
-        resolver,
+        identity_resolver,
     ));
     Ok(ArtifactRuntime {
         service: ArtifactServiceImpl::new(

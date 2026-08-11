@@ -18,9 +18,11 @@ use alloyport_proto::v1::{
     WorkerToServer, worker_to_server,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
+use alloyport_server::adapters::sqlite::SqliteIdentityRegistry;
 use alloyport_server::artifact::{ArtifactServiceImpl, EnrolledArtifactAccessPolicy};
 use alloyport_server::identity::{
-    ConnectionIdentityResolver, SqliteIdentityRegistry, certificate_fingerprint_from_pem,
+    ConnectionIdentityResolver, IdentityRegistry, MtlsConnectionIdentityResolver,
+    certificate_fingerprint_from_pem,
 };
 use alloyport_server::interaction::{InteractionHub, InteractionStore, SqliteInteractionStore};
 use alloyport_server::interaction_service::{
@@ -61,32 +63,32 @@ async fn client_certificate_owns_sessions_and_completed_artifacts() -> Result<()
         directory.path().join("identities.sqlite3"),
     )?);
     let (fingerprint_a, fingerprint_c) = enroll_test_identities(&identities, &pki)?;
+    let identity_registry: Arc<dyn IdentityRegistry> = identities.clone();
+    let identity_resolver: Arc<dyn ConnectionIdentityResolver> =
+        Arc::new(MtlsConnectionIdentityResolver::new(identity_registry));
     let durable_interactions: Arc<dyn InteractionStore> =
         Arc::new(SqliteInteractionStore::in_memory()?);
     let interaction_hub = Arc::new(InteractionHub::new(durable_interactions, 8, 2)?);
     interaction_hub.grant_run_access("run-1", "worker-a", 1)?;
     append_interaction(&interaction_hub, 1)?;
     let interaction_store: Arc<dyn InteractionStore> = interaction_hub.clone();
-    let interaction_resolver: Arc<dyn ConnectionIdentityResolver> = identities.clone();
     let interaction_service = InteractionServiceImpl::new(
         Arc::clone(&interaction_hub),
         Arc::new(EnrolledInteractionAccessPolicy::new(
             interaction_store,
-            interaction_resolver,
+            Arc::clone(&identity_resolver),
         )),
     );
-    let artifact_resolver: Arc<dyn ConnectionIdentityResolver> = identities.clone();
     let artifact_service = ArtifactServiceImpl::new(
         Arc::clone(&uploads),
         artifacts,
         Arc::new(EnrolledArtifactAccessPolicy::new(
             Arc::clone(&uploads),
-            artifact_resolver,
+            Arc::clone(&identity_resolver),
         )),
         Arc::new(ManualClock::new(1_000)),
     );
-    let control_resolver: Arc<dyn ConnectionIdentityResolver> = identities.clone();
-    let control_service = WorkerControlService::new().require_identity_resolver(control_resolver);
+    let control_service = WorkerControlService::new().require_identity_resolver(identity_resolver);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let (shutdown_send, shutdown_receive) = oneshot::channel();
