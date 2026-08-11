@@ -365,6 +365,9 @@ from the worker yet:
 - an engine-neutral supervisor verifies the resolved image ID, reconciles stable container identity
   across missing/created/running/exited states, stops on cancellation or timeout, recovers bounded
   terminal logs, and rejects identity conflicts or a zero exit without the fixed `PASS` marker.
+- an argv-only Docker CLI engine performs bounded image/container inspection, distinguishes a
+  genuinely absent container from an inspect failure, cross-checks wait/inspect exit state, recovers
+  elapsed time from daemon timestamps, drains bounded logs, and exposes explicit terminal removal.
 
 The self-contained fixture covers CUDA compilation, allocation/copy, a real kernel launch,
 synchronization, and deterministic device-result verification. An explicit ephemeral smoke on the
@@ -428,7 +431,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 87 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
+There are 91 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -485,6 +488,9 @@ metadata and grants only an already published bundle with the exact declared siz
 CUDA supervisor coverage uses a fake engine to prove create/start, running reattach, exited replay,
 cancellation and timeout stop/wait, image and durable-identity mismatch rejection, output exhaustion,
 nonzero exit, and mandatory fixture verification-marker classification.
+Docker adapter coverage proves exact inspect identity and timestamp parsing, ambiguous-state
+rejection, bounded pipe draining, exact argv dispatch, missing-container discrimination,
+log-exhaustion propagation, and explicit removal without requiring Docker in CI.
 
 An end-to-end mutual-TLS test creates one CA, a server identity, and three client identities. It
 proves forged worker hello rejection, cross-owner upload/download isolation, termination of an old
@@ -522,9 +528,9 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 - The worker journal, lifecycle outbox, and fake executor's local Artifact spool are disk backed. An
   explicitly configured outbound worker launches that fake runtime and preserves its task across
   stream reconnects. An optional publisher now uploads its spool and gates terminal reporting, but
-  the worker binary does not attach either fake component. CUDA container identity and
-  attach/terminate recovery rules exist behind an engine boundary, but are not connected to the
-  outbound runtime.
+  the worker binary does not attach either fake component. CUDA container identity,
+  attach/terminate recovery, and an argv-only Docker implementation exist, but are not connected to
+  the outbound runtime.
 - Durable lifecycle replay and seven-day orphaned-delivery retention are implemented. Heartbeats,
   status, output previews, welcomes, and ACK-only frames deliberately remain ephemeral; there is no
   generalized durable message bus or server replication.
@@ -533,11 +539,11 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
   quotas are implemented. Worker terminal ingestion now creates typed output/receipt references;
   other controller/public grant operations and automatic retention/collection scheduling remain
   absent. There is no object-store adapter or filesystem-capacity monitor.
-- No Docker CLI engine, live log streaming, real running-process signal delivery, or device reset. A
-  fixed CUDA contract, verified bundle materializer, resource-bounded Docker create planner, and
-  engine-neutral durable supervisor exist, but no worker code invokes Docker yet. Attached fake runs
-  emit ephemeral gRPC output previews and accept control-stream cancellation; workers with no
-  executor attached still terminate cancelled admitted attempts directly.
+- No CUDA execution runtime, live log previews/early output-limit stop, environment receipt, terminal
+  cleanup orchestration, or device reset. The Docker CLI engine exists but neither `OutboundWorker`
+  nor the worker binary constructs it. Attached fake runs emit ephemeral gRPC output previews and
+  accept control-stream cancellation; workers with no executor attached still terminate cancelled
+  admitted attempts directly.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
 - Assigned worker lifecycle and raw previews are durably translated into observed canonical events,
   but there is no public replay/subscription API, broadcast channel, authorization boundary,
@@ -565,8 +571,8 @@ through the new path as separate attempts, then compare bundle digest, image/env
 stdout/stderr, exit classification, and receipt fields.
 
 The typed executor, fixture bundle, local allowlist, Docker create plan, Artifact bundle
-download/grant, and engine-neutral durable supervisor are implemented. Next add the argv-only Docker
-engine with live bounded output, environment receipt, terminal container retention/cleanup, and
+download/grant, durable supervisor, and argv-only Docker engine are implemented. Next add the CUDA
+runtime with live bounded output, environment receipt, terminal container retention/cleanup, and
 outbound-session integration. Keep shell execution disabled.
 
 ### 2. Public event replay and subscription
@@ -593,9 +599,9 @@ evidence.
 
 Implement one fixed CUDA execution vertical slice without reviving the SSH runtime path:
 
-> Read `docs/HANDOFF.md` and Designs 0007, 0011, 0015 through 0018. Implement an argv-only Docker CLI
-> engine behind `CudaContainerSupervisor`, including live bounded stdout/stderr and durable elapsed
-> and exit recovery. Add a CUDA execution runtime that spools artifacts, records
-> bundle/source/image/driver/device facts, retains the exited container through publication and the
-> terminal journal commit, then removes it. Attach it explicitly to `OutboundWorker` and run the GB10
-> fixture through loopback gRPC; keep the worker binary default-deny until configuration is complete.
+> Read `docs/HANDOFF.md` and Designs 0007, 0011, 0015 through 0018. Add a CUDA execution runtime around
+> `CudaContainerSupervisor` and `DockerCliEngine`: stream bounded live observations, spool complete
+> terminal stdout/stderr, and record bundle/source/image/driver/device facts. Retain the exited
+> container through Artifact publication and the terminal journal commit, then remove it. Attach the
+> runtime explicitly to `OutboundWorker` and run the GB10 fixture through loopback gRPC; keep the
+> worker binary default-deny until configuration is complete.

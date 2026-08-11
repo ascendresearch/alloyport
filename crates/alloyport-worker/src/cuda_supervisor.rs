@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-type EngineFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+pub type EngineFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContainerIdentity {
@@ -62,6 +62,8 @@ pub trait CudaContainerEngine: Debug + Send + Sync {
     fn stop<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()>;
     /// Returns at most `limit` combined stdout/stderr bytes and reports whether more existed.
     fn logs<'a>(&'a self, name: &'a str, limit: u64) -> EngineFuture<'a, ContainerLogs>;
+    /// Removes a terminal container after publication and the terminal journal commit.
+    fn remove<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()>;
 }
 
 #[derive(Clone, Debug)]
@@ -114,25 +116,7 @@ impl CudaContainerSupervisor {
             });
         }
 
-        let snapshot = engine
-            .inspect(&identity.name)
-            .await
-            .map_err(CudaSupervisorError::Engine)?;
-        let phase = match snapshot {
-            None => {
-                engine
-                    .create(&plan, &identity)
-                    .await
-                    .map_err(CudaSupervisorError::Engine)?;
-                ContainerPhase::Created
-            }
-            Some(snapshot) => {
-                if snapshot.identity != identity {
-                    return Err(CudaSupervisorError::IdentityConflict(identity.name));
-                }
-                snapshot.phase
-            }
-        };
+        let phase = reconcile_container(engine, &plan, &identity).await?;
         if phase == ContainerPhase::Created {
             engine
                 .start(&identity.name)
@@ -181,6 +165,48 @@ impl CudaContainerSupervisor {
             assignment.execution.timeout_ms,
         ))
     }
+}
+
+async fn reconcile_container(
+    engine: &dyn CudaContainerEngine,
+    plan: &DockerCreatePlan,
+    identity: &ContainerIdentity,
+) -> Result<ContainerPhase, CudaSupervisorError> {
+    if let Some(snapshot) = engine
+        .inspect(&identity.name)
+        .await
+        .map_err(CudaSupervisorError::Engine)?
+    {
+        if snapshot.identity != *identity {
+            return Err(CudaSupervisorError::IdentityConflict(identity.name.clone()));
+        }
+        return Ok(snapshot.phase);
+    }
+
+    engine
+        .create(plan, identity)
+        .await
+        .map_err(CudaSupervisorError::Engine)?;
+    let created = engine
+        .inspect(&identity.name)
+        .await
+        .map_err(CudaSupervisorError::Engine)?
+        .ok_or_else(|| {
+            CudaSupervisorError::Engine(format!(
+                "container {} is missing immediately after create",
+                identity.name
+            ))
+        })?;
+    if created.identity != *identity {
+        return Err(CudaSupervisorError::IdentityConflict(identity.name.clone()));
+    }
+    if created.phase != ContainerPhase::Created {
+        return Err(CudaSupervisorError::Engine(format!(
+            "new container {} has unexpected phase {:?}",
+            identity.name, created.phase
+        )));
+    }
+    Ok(created.phase)
 }
 
 #[derive(Clone, Copy)]
@@ -683,6 +709,13 @@ mod tests {
                     stderr: Vec::new(),
                     output_limit_exceeded: false,
                 })
+            })
+        }
+
+        fn remove<'a>(&'a self, _name: &'a str) -> EngineFuture<'a, ()> {
+            Box::pin(async {
+                self.state.lock().map_err(|_| "lock")?.snapshot = None;
+                Ok(())
             })
         }
     }

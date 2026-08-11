@@ -261,6 +261,7 @@ impl CudaFixturePolicy {
         );
         Ok(DockerCreatePlan {
             container_name: container_name.clone(),
+            image_reference: self.image_reference.clone(),
             expected_image_id: self.image_id,
             argv: vec![
                 "create".into(),
@@ -279,6 +280,12 @@ impl CudaFixturePolicy {
                 "ALL".into(),
                 "--security-opt".into(),
                 "no-new-privileges".into(),
+                "--log-driver".into(),
+                "json-file".into(),
+                "--log-opt".into(),
+                format!("max-size={}", limits.output_bytes),
+                "--log-opt".into(),
+                "max-file=2".into(),
                 "--cpu-period".into(),
                 "100000".into(),
                 "--cpu-quota".into(),
@@ -320,6 +327,7 @@ impl CudaSandbox {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DockerCreatePlan {
     pub container_name: String,
+    pub image_reference: String,
     pub expected_image_id: Sha256Digest,
     pub argv: Vec<String>,
 }
@@ -497,6 +505,10 @@ mod tests {
         );
         let plan = policy.docker_create_plan(&assignment, &sandbox)?;
         assert_eq!(plan.container_name, "alloyport-attempt-1");
+        assert_eq!(
+            plan.image_reference,
+            format!("example.invalid/alloyport/cuda@{image_manifest}")
+        );
         assert_eq!(plan.expected_image_id, image_id);
         assert_eq!(plan.argv.first().map(String::as_str), Some("create"));
         assert!(!plan.argv.iter().any(|part| part == "sh" || part == "-c"));
@@ -509,6 +521,11 @@ mod tests {
             plan.argv
                 .windows(2)
                 .any(|pair| pair == ["--gpus", "device=0"])
+        );
+        assert!(
+            plan.argv
+                .windows(2)
+                .any(|pair| pair == ["--log-opt", "max-size=65536"])
         );
         let tmpfs = plan
             .argv

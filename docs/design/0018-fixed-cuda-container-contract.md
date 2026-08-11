@@ -75,6 +75,8 @@ container name and attempt/bundle/image labels for later recovery. It selects:
 - `--network none`, a read-only root filesystem, all capabilities dropped, and
   `no-new-privileges`;
 - CPU quota, memory, PID, and output policy from validated bounded limits;
+- a worker-selected `json-file` log driver with two size-bounded files, so daemon-side candidate
+  output storage cannot grow without bound before collection;
 - exactly one worker-selected GPU;
 - one read-only worker-owned bundle mount;
 - size-bounded executable tmpfs filesystems for compilation output and compiler temporary files,
@@ -90,10 +92,18 @@ recover their terminal result and logs. Cancellation and timeout stop the same i
 and then wait for its terminal state. Output exhaustion, nonzero exit, and exit zero without the
 fixture's `PASS` marker have distinct fail-closed outcomes.
 
-This revision still does not invoke Docker from the worker. The next implementation slice must add
-the argv-only Docker engine adapter, stream and bound logs while the process is live, retain an
-exited container until Artifact publication and terminal journal commit, and record
-driver/device/image facts in a Design 0007 receipt.
+`DockerCliEngine` implements this boundary with `std::process::Command` argv and no shell. Image and
+container inspect JSON are size-bounded and parsed into exact identities and phases. An inspect
+failure is considered absence only when a second exact-name `container list` succeeds and returns no
+container. `docker wait` is cross-checked against the inspected exit code, while inspected RFC 3339
+start/finish timestamps recover elapsed time after restart. Stdout and stderr pipes are drained
+concurrently, retain only bounded bytes, and preserve an exhaustion flag for terminal
+classification. Removal is a separate operation so a future runtime can call it only after Artifact
+publication and the terminal journal commit.
+
+The CLI engine is not attached to `OutboundWorker` or the worker binary yet. The next slice must add
+the CUDA execution runtime, live previews and early output-limit termination, environment receipts,
+terminal retention/cleanup ordering, and the explicit real-worker configuration.
 
 ## Evidence and parity
 
@@ -133,6 +143,9 @@ construction without a shell, network, arbitrary mounts, or server-selected devi
 Fake-engine state-machine tests cover missing-container create/start, exited replay without another
 create/start, running reattach, cancellation and timeout stop/wait, exact-identity conflict,
 resolved-image mismatch, output exhaustion, nonzero exit, and exit zero without the fixture marker.
-The argv-only Docker adapter and an explicitly invoked outbound-worker GB10 smoke remain. The first
-manual probe compiled and verified 1,048,576 elements on the target, producing the deterministic
-checksum `670562424`. No CI test may silently depend on a GPU or Docker daemon.
+Docker-adapter tests cover exact inspect identity/timestamp parsing, unsupported-state rejection,
+bounded pipe draining, exact command argv, missing-container discrimination, log-exhaustion
+propagation, and explicit terminal removal without contacting a daemon. An explicitly invoked
+outbound-worker GB10 smoke remains. The first manual probe compiled and verified 1,048,576 elements
+on the target, producing the deterministic checksum `670562424`. No CI test may silently depend on a
+GPU or Docker daemon.
