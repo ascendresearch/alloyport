@@ -46,7 +46,7 @@ impl AssignmentRepository for SqliteControlRepository {
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
             params![
                 contract.attempt_id.as_str(),
-                contract.assignment_id,
+                contract.assignment_id.as_str(),
                 worker_id,
                 contract_json,
                 AttemptState::Preparing as i64,

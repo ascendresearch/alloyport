@@ -66,7 +66,7 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
                 params![
                     assignment.attempt_id.as_str(),
-                    assignment.assignment_id,
+                    assignment.assignment_id.as_str(),
                     assignment_json,
                     LocalAttemptPhase::Accepted as i64,
                     to_i64(admitted_at_ms)?
@@ -80,7 +80,7 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
                 message_id: format!("assignment-accepted:{}", assignment.attempt_id),
                 attempt_id: assignment.attempt_id.to_string(),
                 payload: WorkerOutboxPayload::AssignmentAccepted {
-                    assignment_id: assignment.assignment_id.clone(),
+                    assignment_id: assignment.assignment_id.to_string(),
                     attempt_id: assignment.attempt_id.to_string(),
                     already_known: outcome == StoreAdmissionOutcome::Duplicate,
                 },

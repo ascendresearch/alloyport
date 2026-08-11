@@ -313,12 +313,13 @@ directories (including their migration and adapter-test files).
   domain, while network unspecified remains the protocol-compatible default subject to backend
   policy. Protobuf conversion occurs at transport mapping edges. Typed-ID and complete immutable-
   contract migration remain.
-- [x] First R3 typed-identity slice: validated, transparent `alloyport_core::AttemptId` is used by
-  server and worker immutable assignment contracts while retaining the existing JSON string and
-  SQLite text representation. Wire/event/path edges convert explicitly, whitespace-only IDs fail
-  construction, and lease-expiry replacement now reports typed `InvalidIdentity` rather than
-  admitting invalid state. Outbox/observation records and the remaining identity kinds are staged
-  follow-ups.
+- [x] First R3 typed-identity slices: validated, transparent `alloyport_core::{AttemptId,
+  AssignmentId}` are used by server and worker immutable assignment contracts while retaining the
+  existing JSON string and SQLite text representation. A private core macro keeps identity
+  validation/serde/display behavior consistent without collapsing the public types. Wire/event/path
+  edges convert explicitly, whitespace-only IDs fail construction, and lease-expiry replacement
+  reports typed `InvalidIdentity` rather than admitting invalid state. Outbox/observation records
+  and the remaining identity kinds are staged follow-ups.
 - [x] Worker executor responsibilities split: the durable fake execution coordinator is 501 lines
   (down from a 1,395-line mixed module), the shared local-spool/remote-publication boundary is 113
   lines, canonical event projection is 56 lines, and deterministic fake process behavior is 344

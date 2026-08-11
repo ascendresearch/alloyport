@@ -3,7 +3,7 @@
 use super::*;
 use crate::journal::{StoredArtifact, StoredEnvironment, StoredExecution};
 use alloyport_artifacts::{FilesystemArtifactStore, IngestRequest, Sha256Digest};
-use alloyport_core::{AttemptId, ExecutionKind};
+use alloyport_core::{AssignmentId, AttemptId, ExecutionKind};
 use std::io::Cursor;
 
 #[test]
@@ -164,7 +164,7 @@ fn assignment(
     image_digest: Sha256Digest,
 ) -> StoredAssignment {
     StoredAssignment {
-        assignment_id: "assignment-1".into(),
+        assignment_id: AssignmentId::try_from("assignment-1").expect("valid fixture assignment ID"),
         attempt_id: AttemptId::try_from("attempt-1").expect("valid fixture attempt ID"),
         attempt_number: 1,
         idempotency_key: "cuda-vectoradd-v1".into(),

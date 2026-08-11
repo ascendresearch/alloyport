@@ -4,7 +4,7 @@ use super::*;
 use crate::storage::{ArtifactIdentity, AssignmentRepository, ExecutionContract};
 use alloyport_artifacts::upload::BeginUpload;
 use alloyport_artifacts::{FilesystemArtifactStore, SqliteUploadStore};
-use alloyport_core::{AttemptId, AttemptOutcome, ExecutionKind};
+use alloyport_core::{AssignmentId, AttemptId, AttemptOutcome, ExecutionKind};
 use alloyport_proto::v1::{
     ArtifactRef, ExecutionSpec, ExecutorKind as WireExecutorKind, ResourceLimits,
 };
@@ -185,7 +185,8 @@ async fn cuda_assignment_grants_only_a_published_size_matched_input_bundle()
 
 fn stored_contract(attempt_id: &str, executor_kind: ExecutionKind) -> AssignmentContract {
     AssignmentContract {
-        assignment_id: format!("assignment-{attempt_id}"),
+        assignment_id: AssignmentId::try_from(format!("assignment-{attempt_id}"))
+            .expect("valid fixture assignment ID"),
         attempt_id: AttemptId::try_from(attempt_id).expect("valid fixture attempt ID"),
         attempt_number: 1,
         idempotency_key: format!("key-{attempt_id}"),

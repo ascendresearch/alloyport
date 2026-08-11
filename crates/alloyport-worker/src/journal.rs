@@ -2,14 +2,16 @@
 //!
 //! Database drivers, transactions, schema migrations, and SQL belong to outer adapters.
 
-use alloyport_core::{AttemptId, AttemptOutcome, ExecutionKind, NetworkPolicy, RejectionReason};
+use alloyport_core::{
+    AssignmentId, AttemptId, AttemptOutcome, ExecutionKind, NetworkPolicy, RejectionReason,
+};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StoredAssignment {
-    pub assignment_id: String,
+    pub assignment_id: AssignmentId,
     pub attempt_id: AttemptId,
     pub attempt_number: u32,
     pub idempotency_key: String,

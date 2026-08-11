@@ -6,7 +6,7 @@ use crate::storage::{
     ArtifactIdentity, AssignmentContract, EnvironmentEntry, ExecutionContract, RepositoryError,
     ResourceContract, WorkerCapabilities, WorkerRegistration,
 };
-use alloyport_core::{AttemptId, ExecutionKind, NetworkPolicy};
+use alloyport_core::{AssignmentId, AttemptId, ExecutionKind, NetworkPolicy};
 use alloyport_events::{
     ArtifactRef as EventArtifactRef, Authority, Event, Producer, ProducerEvent, Visibility,
 };
@@ -162,7 +162,8 @@ pub(super) fn assignment_to_contract(assignment: &Assignment) -> AssignmentContr
         .as_ref()
         .expect("validated assignment contains execution");
     AssignmentContract {
-        assignment_id: assignment.assignment_id.clone(),
+        assignment_id: AssignmentId::try_from(assignment.assignment_id.clone())
+            .expect("validated assignment contains a non-empty assignment ID"),
         attempt_id: AttemptId::try_from(assignment.attempt_id.clone())
             .expect("validated assignment contains a non-empty attempt ID"),
         attempt_number: assignment.attempt_number,
@@ -212,7 +213,7 @@ pub(super) fn assignment_to_contract(assignment: &Assignment) -> AssignmentContr
 
 pub(super) fn contract_to_assignment(contract: &AssignmentContract) -> Assignment {
     Assignment {
-        assignment_id: contract.assignment_id.clone(),
+        assignment_id: contract.assignment_id.to_string(),
         attempt_id: contract.attempt_id.to_string(),
         attempt_number: contract.attempt_number,
         idempotency_key: contract.idempotency_key.clone(),

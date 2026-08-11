@@ -82,7 +82,7 @@ pub(super) fn insert_reassignment(
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
         params![
             replacement.contract.attempt_id.as_str(),
-            replacement.contract.assignment_id,
+            replacement.contract.assignment_id.as_str(),
             replacement.worker_id,
             contract_json,
             AttemptState::Preparing as i64,

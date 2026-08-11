@@ -5,7 +5,7 @@ use crate::journal::{
     AttemptLifecycleStore, StoreAdmissionOutcome, StoredArtifact, StoredAssignment,
     StoredExecution, WorkerOutboxMessage, WorkerOutboxPayload, WorkerOutboxStore,
 };
-use alloyport_core::{AttemptId, ExecutionKind};
+use alloyport_core::{AssignmentId, AttemptId, ExecutionKind};
 use std::error::Error;
 
 #[test]
@@ -92,7 +92,7 @@ fn accepted_message(attempt_id: &str) -> WorkerOutboxMessage {
 
 fn stored_assignment() -> StoredAssignment {
     StoredAssignment {
-        assignment_id: "assignment-1".to_owned(),
+        assignment_id: AssignmentId::try_from("assignment-1").expect("valid fixture assignment ID"),
         attempt_id: AttemptId::try_from("attempt-1").expect("valid fixture attempt ID"),
         attempt_number: 1,
         idempotency_key: "task-1:build".to_owned(),

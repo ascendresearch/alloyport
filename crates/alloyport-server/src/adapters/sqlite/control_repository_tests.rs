@@ -5,7 +5,7 @@ use crate::storage::{
     ObservationDisposition, ObservedAttempt, RepositoryError, ServerOutboxFrame,
     ServerOutboxRepository, StoreAssignmentOutcome, WorkerConnectionRepository, WorkerRegistration,
 };
-use alloyport_core::{AttemptId, AttemptOutcome, ExecutionKind};
+use alloyport_core::{AssignmentId, AttemptId, AttemptOutcome, ExecutionKind};
 use std::error::Error;
 
 #[test]
@@ -58,7 +58,7 @@ fn deferred_preparation_rotates_behind_newer_work() -> Result<(), Box<dyn Error>
     let repository = SqliteControlRepository::in_memory()?;
     repository.store_assignment("worker-1", &contract(), 1_000)?;
     let mut second = contract();
-    second.assignment_id = "assignment-2".into();
+    second.assignment_id = AssignmentId::try_from("assignment-2")?;
     second.attempt_id = AttemptId::try_from("attempt-2")?;
     repository.store_assignment("worker-1", &second, 1_001)?;
 
@@ -88,7 +88,7 @@ fn assignment_delivery_rolls_back_lease_and_state_when_outbox_insert_fails()
     prepare_test_assignment(&repository, "attempt-1", 1_000, 100)?;
 
     let mut second = contract();
-    second.assignment_id = "assignment-2".into();
+    second.assignment_id = AssignmentId::try_from("assignment-2")?;
     second.attempt_id = AttemptId::try_from("attempt-2")?;
     repository.store_assignment("worker-1", &second, 1_001)?;
     repository.mark_assignment_dispatchable("attempt-2", "worker-1", 1_001)?;
@@ -350,7 +350,7 @@ fn cancellation_cannot_resurrect_expired_work() -> Result<(), Box<dyn Error>> {
     );
 
     let mut second = contract();
-    second.assignment_id = "assignment-2".to_owned();
+    second.assignment_id = AssignmentId::try_from("assignment-2")?;
     second.attempt_id = AttemptId::try_from("attempt-2")?;
     repository.store_assignment("worker-1", &second, 2_000)?;
     prepare_test_assignment(&repository, "attempt-2", 2_000, 100)?;
@@ -522,7 +522,7 @@ fn prepare_test_assignment(
 
 fn contract() -> AssignmentContract {
     AssignmentContract {
-        assignment_id: "assignment-1".to_owned(),
+        assignment_id: AssignmentId::try_from("assignment-1").expect("valid fixture assignment ID"),
         attempt_id: AttemptId::try_from("attempt-1").expect("valid fixture attempt ID"),
         attempt_number: 1,
         idempotency_key: "task-1:build".to_owned(),

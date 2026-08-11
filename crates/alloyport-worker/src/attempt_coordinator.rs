@@ -153,7 +153,7 @@ impl OutboundWorker {
             let assignment_id = attempt.assignment.assignment_id;
             self.state
                 .enqueue_lifecycle_async(WorkerOutboxPayload::CancellationAcknowledged {
-                    assignment_id: assignment_id.clone(),
+                    assignment_id: assignment_id.to_string(),
                     attempt_id: cancel.attempt_id.clone(),
                     already_terminal,
                 })
