@@ -70,7 +70,7 @@ impl Error for RepositoryError {
 
 /// Durable worker registration and control-connection operations.
 #[allow(clippy::missing_errors_doc)]
-pub trait WorkerConnectionRepository {
+pub trait WorkerConnectionRepository: Debug + Send + Sync {
     fn register_worker(
         &self,
         registration: &WorkerRegistration,
@@ -91,7 +91,7 @@ pub trait WorkerConnectionRepository {
 
 /// Durable assignment preparation, dispatch, replay, and reassignment operations.
 #[allow(clippy::missing_errors_doc)]
-pub trait AssignmentRepository {
+pub trait AssignmentRepository: Debug + Send + Sync {
     fn store_assignment(
         &self,
         worker_id: &str,
@@ -144,7 +144,7 @@ pub trait AssignmentRepository {
 
 /// Durable attempt observations and lease lifecycle operations.
 #[allow(clippy::missing_errors_doc)]
-pub trait AttemptLifecycleRepository {
+pub trait AttemptLifecycleRepository: Debug + Send + Sync {
     fn observe_attempt(
         &self,
         observation: &ObservedAttempt,
@@ -172,7 +172,7 @@ pub trait AttemptLifecycleRepository {
 
 /// Durable server-to-worker frame outbox operations.
 #[allow(clippy::missing_errors_doc)]
-pub trait ServerOutboxRepository {
+pub trait ServerOutboxRepository: Debug + Send + Sync {
     fn record_server_frame(
         &self,
         frame: &ServerOutboxFrame,
@@ -200,9 +200,6 @@ pub trait ControlRepository:
     + AssignmentRepository
     + AttemptLifecycleRepository
     + ServerOutboxRepository
-    + Debug
-    + Send
-    + Sync
 {
 }
 
@@ -211,8 +208,5 @@ impl<T> ControlRepository for T where
         + AssignmentRepository
         + AttemptLifecycleRepository
         + ServerOutboxRepository
-        + Debug
-        + Send
-        + Sync
 {
 }

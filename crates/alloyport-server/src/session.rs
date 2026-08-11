@@ -25,7 +25,10 @@ impl WorkerControlService {
         let worker_id = hello.worker_id.clone();
         let negotiated_protocol_minor = hello.protocol_minor.min(PROTOCOL_MINOR);
         let now_ms = self.clock.now_unix_ms();
-        let repository = self.repository.clone();
+        let attempts = self.repositories.attempts.clone();
+        let outbox = self.repositories.outbox.clone();
+        let connections = self.repositories.connections.clone();
+        let assignments = self.repositories.assignments.clone();
         let registration = hello_to_registration(&hello);
         let connection = ConnectionRegistration {
             connection_id: connection_id.clone(),
@@ -36,12 +39,12 @@ impl WorkerControlService {
         let pending = self
             .persistence
             .run(move || {
-                repository.expire_leases(now_ms)?;
-                repository.prune_orphaned_server_frames(
+                attempts.expire_leases(now_ms)?;
+                outbox.prune_orphaned_server_frames(
                     now_ms.saturating_sub(OUTBOX_ORPHAN_RETENTION_MS),
                 )?;
-                repository.register_worker(&registration, &connection)?;
-                repository.replayable_assignments(&registration.worker_id)
+                connections.register_worker(&registration, &connection)?;
+                assignments.replayable_assignments(&registration.worker_id)
             })
             .await
             .map_err(RepositoryError::from)??;
@@ -94,7 +97,7 @@ impl WorkerControlService {
     }
 
     async fn disconnect(&self, worker_id: &str, connection_id: &str) {
-        let repository = self.repository.clone();
+        let repository = self.repositories.connections.clone();
         let persisted_connection_id = connection_id.to_owned();
         let now_ms = self.clock.now_unix_ms();
         let _ = self

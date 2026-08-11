@@ -79,16 +79,17 @@ impl WorkerControlService {
         let last_server_sequence = worker.next_server_sequence.saturating_sub(1);
         drop(state);
 
-        let repository = self.repository.clone();
+        let outbox = self.repositories.outbox.clone();
+        let connections = self.repositories.connections.clone();
         let persisted_connection_id = connection_id.to_owned();
         self.persistence
             .run(move || {
-                repository.compact_server_frames(
+                outbox.compact_server_frames(
                     &persisted_connection_id,
                     frame.acknowledges_server_through,
                     now_ms,
                 )?;
-                repository.update_connection_sequences(
+                connections.update_connection_sequences(
                     &persisted_connection_id,
                     frame.sequence,
                     last_server_sequence,
@@ -126,7 +127,7 @@ impl WorkerControlService {
         }) else {
             return Ok(None);
         };
-        let repository = self.repository.clone();
+        let repository = self.repositories.connections.clone();
         let persisted_connection_id = connection_id.to_owned();
         let now_ms = self.clock.now_unix_ms();
         self.persistence

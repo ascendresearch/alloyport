@@ -119,6 +119,17 @@ if ! rg -q '^pub trait ControlRepository' crates/alloyport-server/src/storage/re
     || ! rg -q '^pub trait Clock' crates/alloyport-server/src/storage/clock.rs; then
     violations+=("control storage model/clock/repository layering is incomplete")
 fi
+if broad_control_repository=$(rg -n '^    repository: Arc<dyn ControlRepository>|self\.repository\b|service\.repository\b' \
+    crates/alloyport-server/src --glob '*.rs'); then
+    violations+=("application use case regained the broad ControlRepository dependency: ${broad_control_repository}")
+fi
+if ! rg -q 'connections: Arc<dyn WorkerConnectionRepository>' crates/alloyport-server/src/lib.rs \
+    || ! rg -q 'assignments: Arc<dyn AssignmentRepository>' crates/alloyport-server/src/lib.rs \
+    || ! rg -q 'attempts: Arc<dyn AttemptLifecycleRepository>' crates/alloyport-server/src/lib.rs \
+    || ! rg -q 'outbox: Arc<dyn ServerOutboxRepository>' crates/alloyport-server/src/lib.rs \
+    || ! rg -q '^    pub fn with_repository_ports\(' crates/alloyport-server/src/lib.rs; then
+    violations+=("control service does not expose independently composable narrow repository ports")
+fi
 if raw_execution_enum=$(rg -n 'pub (executor_kind|network|outcome): i32|reason: i32' \
     crates/alloyport-server/src/storage crates/alloyport-worker/src/journal.rs); then
     violations+=("durable assignment contract regained a raw execution enum integer: ${raw_execution_enum}")

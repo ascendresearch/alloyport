@@ -34,7 +34,7 @@ impl WorkerControlService {
         let (stored, became_dispatchable) = self
             .persistence
             .run(move || {
-                let stored = service.repository.store_assignment(
+                let stored = service.repositories.assignments.store_assignment(
                     &prepared_worker_id,
                     &prepared_contract,
                     now_ms,
@@ -45,11 +45,14 @@ impl WorkerControlService {
                     now_ms,
                 )?;
                 service.record_run_started(&prepared_contract, now_ms)?;
-                let became_dispatchable = service.repository.mark_assignment_dispatchable(
-                    &prepared_contract.attempt_id,
-                    &prepared_worker_id,
-                    service.clock.now_unix_ms(),
-                )?;
+                let became_dispatchable = service
+                    .repositories
+                    .assignments
+                    .mark_assignment_dispatchable(
+                        &prepared_contract.attempt_id,
+                        &prepared_worker_id,
+                        service.clock.now_unix_ms(),
+                    )?;
                 Ok::<_, EnqueueError>((stored, became_dispatchable))
             })
             .await
@@ -149,7 +152,7 @@ impl WorkerControlService {
         let (reassignment, became_dispatchable) = self
             .persistence
             .run(move || {
-                let reassignment = service.repository.reassign_expired(
+                let reassignment = service.repositories.assignments.reassign_expired(
                     &expired_attempt_id,
                     &prepared_worker_id,
                     &prepared_attempt_id,
@@ -165,11 +168,14 @@ impl WorkerControlService {
                     &reassignment.assignment.contract,
                     service.clock.now_unix_ms(),
                 )?;
-                let became_dispatchable = service.repository.mark_assignment_dispatchable(
-                    &prepared_attempt_id,
-                    &prepared_worker_id,
-                    service.clock.now_unix_ms(),
-                )?;
+                let became_dispatchable = service
+                    .repositories
+                    .assignments
+                    .mark_assignment_dispatchable(
+                        &prepared_attempt_id,
+                        &prepared_worker_id,
+                        service.clock.now_unix_ms(),
+                    )?;
                 Ok::<_, EnqueueError>((reassignment, became_dispatchable))
             })
             .await
@@ -242,7 +248,7 @@ impl WorkerControlService {
         reason: impl Into<String>,
     ) -> Result<CancelOutcome, RepositoryError> {
         let reason = reason.into();
-        let repository = self.repository.clone();
+        let repository = self.repositories.attempts.clone();
         let persisted_attempt_id = attempt_id.to_owned();
         let persisted_reason = reason.clone();
         let now_ms = self.clock.now_unix_ms();

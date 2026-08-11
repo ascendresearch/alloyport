@@ -11,7 +11,7 @@ impl WorkerControlService {
     pub async fn reconcile_preparing_assignments(
         &self,
     ) -> Result<PreparationReconciliationReport, RepositoryError> {
-        let repository = self.repository.clone();
+        let repository = self.repositories.assignments.clone();
         let assignments = self
             .persistence
             .run(move || repository.preparing_assignments(PREPARATION_RECONCILE_BATCH_SIZE))
@@ -34,25 +34,32 @@ impl WorkerControlService {
                         &persisted_assignment.contract,
                         now_ms,
                     ) {
-                        service.repository.defer_assignment_preparation(
-                            &persisted_assignment.contract.attempt_id,
-                            &persisted_assignment.worker_id,
-                            now_ms,
-                        )?;
+                        service
+                            .repositories
+                            .assignments
+                            .defer_assignment_preparation(
+                                &persisted_assignment.contract.attempt_id,
+                                &persisted_assignment.worker_id,
+                                now_ms,
+                            )?;
                         return Ok::<_, RepositoryError>(Err(error.to_string()));
                     }
                     if let Err(error) =
                         service.record_run_started(&persisted_assignment.contract, now_ms)
                     {
-                        service.repository.defer_assignment_preparation(
-                            &persisted_assignment.contract.attempt_id,
-                            &persisted_assignment.worker_id,
-                            now_ms,
-                        )?;
+                        service
+                            .repositories
+                            .assignments
+                            .defer_assignment_preparation(
+                                &persisted_assignment.contract.attempt_id,
+                                &persisted_assignment.worker_id,
+                                now_ms,
+                            )?;
                         return Ok(Err(error.to_string()));
                     }
                     service
-                        .repository
+                        .repositories
+                        .assignments
                         .mark_assignment_dispatchable(
                             &persisted_assignment.contract.attempt_id,
                             &persisted_assignment.worker_id,
@@ -108,7 +115,7 @@ impl WorkerControlService {
     pub async fn reconcile_preparing_assignments_at_startup(
         &self,
     ) -> Result<PreparationReconciliationReport, RepositoryError> {
-        let repository = self.repository.clone();
+        let repository = self.repositories.assignments.clone();
         let count = self
             .persistence
             .run(move || repository.preparing_assignment_count())

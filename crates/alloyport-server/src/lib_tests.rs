@@ -26,6 +26,30 @@ fn worker_acknowledgement_must_be_monotonic_and_not_future() {
     );
 }
 
+#[test]
+fn service_accepts_independently_supplied_repository_ports() -> Result<(), Box<dyn Error>> {
+    let connections: Arc<dyn WorkerConnectionRepository> =
+        Arc::new(SqliteControlRepository::in_memory()?);
+    let assignments: Arc<dyn AssignmentRepository> =
+        Arc::new(SqliteControlRepository::in_memory()?);
+    let attempts: Arc<dyn AttemptLifecycleRepository> =
+        Arc::new(SqliteControlRepository::in_memory()?);
+    let outbox: Arc<dyn ServerOutboxRepository> = Arc::new(SqliteControlRepository::in_memory()?);
+    let interactions: Arc<dyn InteractionStore> = Arc::new(SqliteInteractionStore::in_memory()?);
+
+    let service = WorkerControlService::with_repository_ports(
+        connections,
+        assignments,
+        attempts,
+        outbox,
+        interactions,
+        Arc::new(ManualClock::new(1)),
+    );
+
+    assert_eq!(service.assignment_state("missing-attempt")?, None);
+    Ok(())
+}
+
 #[tokio::test]
 async fn reconciliation_recovers_restart_residue_without_blocking_on_another_attempt()
 -> Result<(), Box<dyn Error>> {

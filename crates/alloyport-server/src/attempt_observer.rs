@@ -67,7 +67,8 @@ impl WorkerControlService {
             .iter()
             .map(|attempt| attempt.attempt_id.clone())
             .collect::<Vec<_>>();
-        self.repository
+        self.repositories
+            .attempts
             .renew_active_leases(worker_id, &active_attempts, now_ms, ATTEMPT_LEASE_MS)
             .map_err(repository_status)
     }
@@ -193,7 +194,8 @@ impl WorkerControlService {
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let attempt_id = AttemptId::try_from(attempt_id)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        self.repository
+        self.repositories
+            .attempts
             .observe_attempt(&ObservedAttempt {
                 assignment_id,
                 attempt_id,

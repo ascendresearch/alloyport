@@ -50,10 +50,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use storage::{
-    AssignmentContract, AssignmentDeliveryPreparation, AttemptObservation,
-    CancellationStoreOutcome, Clock, ConnectionRegistration, ControlRepository,
-    FinishedObservation, ObservationDisposition, ObservedAttempt, RepositoryError, ServerFrameKind,
-    ServerOutboxFrame, StoreAssignmentOutcome, SystemClock,
+    AssignmentContract, AssignmentDeliveryPreparation, AssignmentRepository,
+    AttemptLifecycleRepository, AttemptObservation, CancellationStoreOutcome, Clock,
+    ConnectionRegistration, ControlRepository, FinishedObservation, ObservationDisposition,
+    ObservedAttempt, RepositoryError, ServerFrameKind, ServerOutboxFrame, ServerOutboxRepository,
+    StoreAssignmentOutcome, SystemClock, WorkerConnectionRepository,
 };
 use tokio::sync::{Mutex, mpsc};
 use tonic::Status;
@@ -188,12 +189,37 @@ struct ControlState {
     workers: BTreeMap<String, WorkerRecord>,
 }
 
+/// Capability views over one composed control repository.
+#[derive(Clone, Debug)]
+struct ControlRepositories {
+    connections: Arc<dyn WorkerConnectionRepository>,
+    assignments: Arc<dyn AssignmentRepository>,
+    attempts: Arc<dyn AttemptLifecycleRepository>,
+    outbox: Arc<dyn ServerOutboxRepository>,
+}
+
+impl ControlRepositories {
+    fn new(
+        connections: Arc<dyn WorkerConnectionRepository>,
+        assignments: Arc<dyn AssignmentRepository>,
+        attempts: Arc<dyn AttemptLifecycleRepository>,
+        outbox: Arc<dyn ServerOutboxRepository>,
+    ) -> Self {
+        Self {
+            connections,
+            assignments,
+            attempts,
+            outbox,
+        }
+    }
+}
+
 /// Cloneable implementation of the worker-facing gRPC service.
 #[derive(Clone, Debug)]
 pub struct WorkerControlService {
     state: Arc<Mutex<ControlState>>,
     delivery: Arc<Mutex<()>>,
-    repository: Arc<dyn ControlRepository>,
+    repositories: ControlRepositories,
     clock: Arc<dyn Clock>,
     identity_resolver: Option<Arc<dyn ConnectionIdentityResolver>>,
     artifact_metadata: Option<Arc<dyn ArtifactMetadataStore>>,
@@ -279,10 +305,30 @@ impl WorkerControlService {
         interactions: Arc<dyn InteractionStore>,
         clock: Arc<dyn Clock>,
     ) -> Self {
+        Self::with_repository_ports(
+            repository.clone(),
+            repository.clone(),
+            repository.clone(),
+            repository,
+            interactions,
+            clock,
+        )
+    }
+
+    /// Builds a service from independently composable control-repository capabilities.
+    #[must_use]
+    pub fn with_repository_ports(
+        connections: Arc<dyn WorkerConnectionRepository>,
+        assignments: Arc<dyn AssignmentRepository>,
+        attempts: Arc<dyn AttemptLifecycleRepository>,
+        outbox: Arc<dyn ServerOutboxRepository>,
+        interactions: Arc<dyn InteractionStore>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(ControlState::default())),
             delivery: Arc::new(Mutex::new(())),
-            repository,
+            repositories: ControlRepositories::new(connections, assignments, attempts, outbox),
             clock,
             identity_resolver: None,
             artifact_metadata: None,
@@ -345,7 +391,8 @@ impl WorkerControlService {
         &self,
         attempt_id: &str,
     ) -> Result<Option<AssignmentState>, RepositoryError> {
-        self.repository
+        self.repositories
+            .assignments
             .assignment(attempt_id)
             .map(|record| record.map(|record| record.state))
     }
@@ -356,7 +403,7 @@ impl WorkerControlService {
     ///
     /// Returns a repository error when the lease cannot be read.
     pub fn lease(&self, attempt_id: &str) -> Result<Option<LeaseRecord>, RepositoryError> {
-        self.repository.lease(attempt_id)
+        self.repositories.attempts.lease(attempt_id)
     }
 
     /// Expires every due non-terminal lease according to the injected clock.
@@ -365,7 +412,9 @@ impl WorkerControlService {
     ///
     /// Returns a repository error if expiry cannot be committed atomically.
     pub fn expire_leases(&self) -> Result<Vec<String>, RepositoryError> {
-        self.repository.expire_leases(self.clock.now_unix_ms())
+        self.repositories
+            .attempts
+            .expire_leases(self.clock.now_unix_ms())
     }
 
     /// Runs the periodic durable lease-expiry loop until its task is cancelled.
@@ -379,7 +428,7 @@ impl WorkerControlService {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            let repository = self.repository.clone();
+            let repository = self.repositories.attempts.clone();
             let now_ms = self.clock.now_unix_ms();
             self.persistence
                 .run(move || repository.expire_leases(now_ms))

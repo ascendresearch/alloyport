@@ -211,6 +211,9 @@ segregated into worker-connection, assignment, attempt/lease, and server-outbox 
 service consumes their `ControlRepository` composition. SQLite connection and outbox operations live
 in dedicated implementation modules, as do assignment and attempt/lease operations; the shared
 repository shell now owns only connection creation, migrations, and locking.
+The service internally stores four narrow capability objects rather than one broad repository.
+`with_repository_ports` supports independently composed connection, assignment, attempt, and outbox
+implementations; existing composite constructors remain compatible.
 The public `storage::*` contract is a compatibility facade over separate clock policy,
 transport-independent model, and capability-port/error modules.
 Server and worker durable contracts share `alloyport_core::ExecutionKind`, `NetworkPolicy`,

@@ -35,7 +35,8 @@ impl WorkerControlService {
         now_ms: u64,
     ) -> Result<AppendOutcome, Status> {
         let assignment = self
-            .repository
+            .repositories
+            .assignments
             .assignment(attempt_id)
             .map_err(repository_status)?
             .ok_or_else(|| Status::failed_precondition("started attempt is unknown"))?;
@@ -63,7 +64,8 @@ impl WorkerControlService {
     ) -> Result<(), Status> {
         self.record_command_started(worker_id, &finished.attempt_id, now_ms)?;
         let assignment = self
-            .repository
+            .repositories
+            .assignments
             .assignment(&finished.attempt_id)
             .map_err(repository_status)?
             .ok_or_else(|| Status::failed_precondition("finished attempt is unknown"))?;
@@ -121,7 +123,8 @@ impl WorkerControlService {
         now_ms: u64,
     ) -> Result<(), Status> {
         let assignment = self
-            .repository
+            .repositories
+            .assignments
             .assignment(&output.attempt_id)
             .map_err(repository_status)?
             .ok_or_else(|| Status::failed_precondition("output attempt is unknown"))?;

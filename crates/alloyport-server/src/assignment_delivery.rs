@@ -38,7 +38,7 @@ impl WorkerControlService {
         let lease_id = format!("lease-{lease_number}");
         let now_ms = self.clock.now_unix_ms();
         let message_id = format!("assignment:{attempt_id}");
-        let repository = self.repository.clone();
+        let repository = self.repositories.assignments.clone();
         let persisted_worker_id = worker_id.to_owned();
         let persisted_attempt_id = attempt_id.to_owned();
         let persisted_message_id = message_id.clone();
@@ -123,14 +123,15 @@ impl WorkerControlService {
         };
         let now_ms = self.clock.now_unix_ms();
         let message_id = format!("cancel:{attempt_id}");
-        let repository = self.repository.clone();
+        let outbox = self.repositories.outbox.clone();
+        let connections = self.repositories.connections.clone();
         let persisted_connection_id = connection_id.clone();
         let persisted_message_id = message_id.clone();
         let persisted_worker_id = worker_id.to_owned();
         let persisted_attempt_id = attempt_id.to_owned();
         self.persistence
             .run(move || {
-                repository.record_server_frame(
+                outbox.record_server_frame(
                     &ServerOutboxFrame {
                         connection_id: persisted_connection_id.clone(),
                         sequence,
@@ -141,7 +142,7 @@ impl WorkerControlService {
                     },
                     now_ms,
                 )?;
-                repository.update_connection_sequences(
+                connections.update_connection_sequences(
                     &persisted_connection_id,
                     last_worker_sequence,
                     sequence,
