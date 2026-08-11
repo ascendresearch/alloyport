@@ -159,11 +159,12 @@ services. Replace string errors at plugin boundaries with typed categories.
 
 ### R8 — Persistence implementation isolation (P1, with P0 transaction slices)
 
-Split the five current mixed database modules into model/port/application and SQLite adapter code:
+Migrate the five originally mixed database modules into model/port/application and SQLite adapter
+code. Identity and server control are now separated; three legacy mixed modules remain:
 
-| Current context | Application port | SQLite adapter |
+| Context | Application port | SQLite adapter |
 | --- | --- | --- |
-| server control | `ControlStore` | `adapters/sqlite/control_store.rs` |
+| server control | `ControlRepository` | `adapters/sqlite/control_repository.rs` |
 | worker journal | `AttemptStore` | `adapters/sqlite/attempt_store.rs` |
 | interactions | `InteractionEventStore`, `RunGrantStore` | two SQLite adapters |
 | identity | `IdentityRegistry` | `adapters/sqlite/identity_registry.rs` |
@@ -226,7 +227,9 @@ directories (including their migration and adapter-test files).
 - [x] R1 runtime-aware admission: production defaults reject assignments without a backend;
   admission-only control-plane behavior is explicit.
 - [x] First R8 extraction: Identity registry and mTLS resolver separation.
-- [x] Transitional SQL-location architecture check; four legacy mixed modules remain allowlisted.
+- [x] Server control domain/port separated from `SqliteControlRepository`; `storage.rs` contains no
+  SQL or database-driver types.
+- [x] Transitional SQL-location architecture check; three legacy mixed modules remain allowlisted.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.
 - [ ] Remaining workstreams.

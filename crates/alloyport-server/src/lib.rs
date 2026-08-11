@@ -7,6 +7,7 @@ pub mod interaction;
 pub mod interaction_service;
 pub mod storage;
 
+use adapters::sqlite::SqliteControlRepository;
 use alloyport_artifacts::Sha256Digest;
 use alloyport_artifacts::upload::{
     ArtifactReferenceKind, GrantArtifactReference, SqliteUploadStore,
@@ -41,8 +42,8 @@ use storage::{
     ArtifactIdentity, AssignmentContract, AssignmentDeliveryPreparation, AttemptObservation,
     CancellationStoreOutcome, Clock, ConnectionRegistration, ControlRepository, EnvironmentEntry,
     ExecutionContract, FinishedObservation, ObservationDisposition, ObservedAttempt,
-    RepositoryError, ResourceContract, ServerFrameKind, ServerOutboxFrame, SqliteControlRepository,
-    StoreAssignmentOutcome, SystemClock, WorkerCapabilities, WorkerRegistration,
+    RepositoryError, ResourceContract, ServerFrameKind, ServerOutboxFrame, StoreAssignmentOutcome,
+    SystemClock, WorkerCapabilities, WorkerRegistration,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
