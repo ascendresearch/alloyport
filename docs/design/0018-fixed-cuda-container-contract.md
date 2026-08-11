@@ -81,7 +81,8 @@ container name and attempt/bundle/image labels for later recovery. It selects:
 - one read-only worker-owned bundle mount;
 - size-bounded executable tmpfs filesystems for compilation output and compiler temporary files,
   whose combined capacity equals the assignment disk budget;
-- the locally pinned image and worker-owned Python runner, with no shell.
+- the locally pinned image and worker-owned Python runner, with a locally fixed `python3` entrypoint
+  that bypasses image-authored entrypoint wrappers and no shell.
 
 The engine-neutral supervisor verifies the resolved local image ID before inspecting or creating a
 container. It reconciles the deterministic name through `Created`, `Running`, and `Exited` states,
@@ -125,8 +126,8 @@ matching nonempty environment facts, one device, concurrency one, and Docker. Ab
 retains default-deny admission. The binary always attaches both the input downloader and terminal
 publisher over its authenticated controller endpoint; there is no binary mode that executes CUDA but
 reports unauthoritative digest strings without publication. The log follower enforces early
-output-limit termination but does not emit chunked live previews. The next slice is real GB10
-validation; preview streaming remains a separate runtime integration.
+output-limit termination but does not emit chunked live previews. Real GB10 validation is complete;
+preview streaming remains a separate runtime integration.
 
 ## Evidence and parity
 
@@ -178,6 +179,15 @@ three terminal Artifacts, survives a post-commit cleanup failure, reconnects, re
 outbox, and removes without rerunning. Its worker CAS begins empty, so the same test also proves that
 the controller grant authorizes an exact remote bundle download before supervision. Binary config
 parsing rejects unknown fields, overlapping roots, unpinned identities, and unsafe partial policy.
-An explicitly invoked real-engine GB10 smoke remains. The
-first manual probe compiled and verified 1,048,576 elements on the target, producing the
-deterministic checksum `670562424`. No CI test may silently depend on a GPU or Docker daemon.
+
+An ignored, explicitly configured real-engine test passed on the GB10 on 2026-08-11. It exercised
+outbound loopback gRPC, a remotely granted bundle download into an empty worker CAS, the real Docker
+CLI engine, CUDA compilation and kernel execution, terminal Artifact publication, controller
+acceptance, and post-commit removal. The receipt bound bundle `sha256:04b086...610e`, source
+`sha256:631447...9a95`, manifest `sha256:54b468...584a`, resolved image
+`sha256:79a186...d884`, device `0`, `sm_121`, driver `580.159.03`, and toolkit `13.0`; it recorded
+exit 0, empty stderr, 1,334 ms, and the deterministic checksum `670562424`. A separate direct
+SSH/Docker legacy reference attempt produced the identical single-line stdout and exit. The first
+real run exposed output from the image-authored NVIDIA entrypoint, so the locally derived plan now
+sets `--entrypoint python3` explicitly; the rerun restored exact stdout parity. No normal CI test may
+silently depend on a GPU or Docker daemon.

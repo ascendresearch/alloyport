@@ -1,5 +1,5 @@
 use alloyport_artifacts::upload::{BeginUpload, SqliteUploadStore, UploadQuotas};
-use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest};
+use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, Sha256Digest};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_proto::v1::{
@@ -15,6 +15,7 @@ use alloyport_worker::cuda::{
     CUDA_FIXTURE_BUNDLE_MEDIA_TYPE, CUDA_FIXTURE_FEATURE, CudaFixtureBundle, CudaFixturePolicy,
     CudaResourceCeilings, OCI_IMAGE_MANIFEST_MEDIA_TYPE, VECTOR_ADD_FIXTURE_ID,
 };
+use alloyport_worker::cuda_docker::DockerCliEngine;
 use alloyport_worker::cuda_runtime::{CudaEnvironmentFacts, CudaExecutionRuntime};
 use alloyport_worker::cuda_supervisor::{
     ContainerExit, ContainerIdentity, ContainerLogs, ContainerPhase, ContainerSnapshot,
@@ -22,8 +23,10 @@ use alloyport_worker::cuda_supervisor::{
 };
 use alloyport_worker::{OutboundWorker, StoredFinished};
 use std::error::Error;
+use std::io::Read;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -75,7 +78,7 @@ async fn cuda_runtime_completes_through_outbound_control_and_artifact_planes()
         .await
         .finished_attempt("attempt-1")?
         .expect("CUDA terminal state is durable");
-    assert_terminal_artifacts(&fixture.uploads, &finished)?;
+    assert_terminal_artifacts(&fixture.uploads, &finished, "attempt-1", Some(CUDA_STDOUT))?;
     assert_eq!(fixture.engine.remove_count(), 2);
     assert!(!fixture.engine.has_container());
 
@@ -83,6 +86,236 @@ async fn cuda_runtime_completes_through_outbound_control_and_artifact_planes()
     let _ = second_worker_task.await;
     fixture.shutdown().await?;
     Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires an explicitly configured CUDA host and Docker image"]
+async fn cuda_runtime_completes_through_real_docker_outbound_loopback() -> Result<(), Box<dyn Error>>
+{
+    let image_manifest =
+        Sha256Digest::from_str(&required_env("ALLOYPORT_CUDA_SMOKE_IMAGE_MANIFEST_DIGEST")?)?;
+    let image_reference = required_env("ALLOYPORT_CUDA_SMOKE_IMAGE_REFERENCE")?;
+    let image_id = Sha256Digest::from_str(&required_env("ALLOYPORT_CUDA_SMOKE_IMAGE_ID")?)?;
+    let fixture = RealCudaLoopbackFixture::start(image_manifest, image_reference, image_id).await?;
+    let worker_state = fixture.worker.state();
+    let worker = fixture.worker.clone();
+    let worker_task = tokio::spawn(async move { worker.run_session().await });
+
+    wait_until(|| async {
+        fixture
+            .service
+            .worker_snapshot("cuda-1")
+            .await
+            .is_some_and(|worker| worker.connected)
+    })
+    .await?;
+    let attempt_id = format!(
+        "gb10-{}",
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()
+    );
+    assert_eq!(
+        fixture
+            .service
+            .enqueue_assignment(
+                "cuda-1",
+                cuda_assignment_for(
+                    &attempt_id,
+                    fixture.bundle_digest,
+                    fixture.bundle_size,
+                    image_manifest,
+                    120_000,
+                ),
+            )
+            .await?,
+        EnqueueOutcome::Sent
+    );
+    tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            if fixture.service.assignment_state(&attempt_id).ok().flatten()
+                == Some(AssignmentState::Finished)
+            {
+                return;
+            }
+            assert!(
+                !worker_task.is_finished(),
+                "worker session ended before terminal commit"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await?;
+
+    let finished = worker_state
+        .lock()
+        .await
+        .finished_attempt(&attempt_id)?
+        .expect("real CUDA terminal state is durable");
+    assert_terminal_artifacts(&fixture.uploads, &finished, &attempt_id, Some(CUDA_STDOUT))?;
+    let stdout = read_artifact(&fixture.local_artifacts, finished.stdout.as_ref())?;
+    println!("GB10_OUTBOUND_STDOUT={}", String::from_utf8_lossy(&stdout));
+    assert_eq!(stdout, CUDA_STDOUT);
+    let receipt: serde_json::Value = serde_json::from_slice(&read_artifact(
+        &fixture.local_artifacts,
+        finished.receipt.as_ref(),
+    )?)?;
+    assert_eq!(receipt["bundle_digest"], fixture.bundle_digest.to_string());
+    assert_eq!(receipt["image_manifest_digest"], image_manifest.to_string());
+    assert_eq!(receipt["resolved_image_id"], image_id.to_string());
+    assert_eq!(receipt["device_id"], "0");
+    assert_eq!(receipt["outcome"], "ATTEMPT_OUTCOME_SUCCEEDED");
+    assert!(
+        fixture
+            .engine
+            .inspect(&format!("alloyport-{attempt_id}"))
+            .await?
+            .is_none(),
+        "terminal commit must be followed by container removal"
+    );
+    println!("GB10_OUTBOUND_RECEIPT={receipt}");
+
+    worker_task.abort();
+    let _ = worker_task.await;
+    fixture.shutdown().await?;
+    Ok(())
+}
+
+struct RealCudaLoopbackFixture {
+    _directory: tempfile::TempDir,
+    service: WorkerControlService,
+    uploads: Arc<SqliteUploadStore>,
+    local_artifacts: Arc<FilesystemArtifactStore>,
+    worker: OutboundWorker,
+    engine: Arc<DockerCliEngine>,
+    bundle_digest: Sha256Digest,
+    bundle_size: u64,
+    shutdown: oneshot::Sender<()>,
+    server_task: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+}
+
+impl RealCudaLoopbackFixture {
+    async fn start(
+        image_manifest: Sha256Digest,
+        image_reference: String,
+        image_id: Sha256Digest,
+    ) -> Result<Self, Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let local_artifacts = Arc::new(FilesystemArtifactStore::open(
+            directory.path().join("worker-cas"),
+            8 * 1024 * 1024,
+        )?);
+        let remote_artifacts = Arc::new(FilesystemArtifactStore::open(
+            directory.path().join("server-cas"),
+            8 * 1024 * 1024,
+        )?);
+        let uploads = Arc::new(SqliteUploadStore::open_with_quotas(
+            directory.path().join("uploads.sqlite3"),
+            directory.path().join("upload-data"),
+            8 * 1024 * 1024,
+            1024 * 1024,
+            UploadQuotas::unbounded(),
+        )?);
+        let bundle = CudaFixtureBundle::vector_add(include_str!(
+            "../../../fixtures/cuda-vectoradd-v1/vector_add.cu"
+        ));
+        let bundle_bytes = serde_json::to_vec(&bundle)?;
+        let bundle_digest = Sha256Digest::digest_bytes(&bundle_bytes);
+        let bundle_size = u64::try_from(bundle_bytes.len())?;
+        publish_input_bundle(&uploads, remote_artifacts.as_ref(), &bundle_bytes)?;
+        let service = WorkerControlService::new().with_artifact_metadata(Arc::clone(&uploads));
+        let (endpoint, shutdown, server_task) =
+            start_loopback_services(service.clone(), Arc::clone(&uploads), remote_artifacts)
+                .await?;
+
+        let policy = Arc::new(CudaFixturePolicy::new(
+            VECTOR_ADD_FIXTURE_ID,
+            bundle_digest,
+            image_manifest,
+            image_reference,
+            image_id,
+            "0",
+            directory.path().join("sandboxes"),
+            ceilings(),
+        )?);
+        let engine = Arc::new(DockerCliEngine::new("/usr/bin/docker")?);
+        let engine_trait: Arc<dyn CudaContainerEngine> = engine.clone();
+        let supervisor = Arc::new(CudaContainerSupervisor::new(
+            policy,
+            Arc::clone(&local_artifacts),
+        ));
+        let runtime = Arc::new(CudaExecutionRuntime::new(
+            "cuda-1",
+            Arc::clone(&local_artifacts),
+            supervisor,
+            engine_trait,
+            CudaEnvironmentFacts::new("sm_121", "580.159.03", "13.0")?,
+        )?);
+        let publisher = Arc::new(RemoteArtifactPublisher::new(
+            endpoint.clone(),
+            Arc::clone(&local_artifacts),
+            1024 * 1024,
+            Some(60_000),
+        )?);
+        let downloader = Arc::new(RemoteArtifactDownloader::new(
+            endpoint.clone(),
+            Arc::clone(&local_artifacts),
+            8 * 1024 * 1024,
+        )?);
+        let worker = OutboundWorker::new(endpoint, hello())?
+            .with_cuda_executor(runtime)?
+            .with_artifact_downloader(downloader)
+            .with_artifact_publisher(publisher);
+        Ok(Self {
+            _directory: directory,
+            service,
+            uploads,
+            local_artifacts,
+            worker,
+            engine,
+            bundle_digest,
+            bundle_size,
+            shutdown,
+            server_task,
+        })
+    }
+
+    async fn shutdown(self) -> Result<(), Box<dyn Error>> {
+        let _ = self.shutdown.send(());
+        self.server_task.await??;
+        Ok(())
+    }
+}
+
+async fn start_loopback_services(
+    service: WorkerControlService,
+    uploads: Arc<SqliteUploadStore>,
+    remote_artifacts: Arc<FilesystemArtifactStore>,
+) -> Result<
+    (
+        Endpoint,
+        oneshot::Sender<()>,
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    ),
+    Box<dyn Error>,
+> {
+    let artifact_service = ArtifactServiceImpl::new(
+        uploads,
+        remote_artifacts,
+        Arc::new(FixedArtifactOwner),
+        Arc::new(ManualClock::new(2_000)),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = Endpoint::from_shared(format!("http://{}", listener.local_addr()?))?;
+    let (shutdown, shutdown_receive) = oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        Server::builder()
+            .add_service(WorkerControlServer::new(service))
+            .add_service(ArtifactServiceServer::new(artifact_service))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_receive.await;
+            })
+            .await
+    });
+    Ok((endpoint, shutdown, server_task))
 }
 
 struct CudaLoopbackFixture {
@@ -234,34 +467,48 @@ fn publish_input_bundle(
 fn assert_terminal_artifacts(
     uploads: &SqliteUploadStore,
     finished: &StoredFinished,
+    attempt_id: &str,
+    expected_stdout: Option<&[u8]>,
 ) -> Result<(), Box<dyn Error>> {
     assert_eq!(
         finished.outcome,
         i32::from(alloyport_proto::v1::AttemptOutcome::Succeeded)
     );
-    let expected_stdout = Sha256Digest::digest_bytes(CUDA_STDOUT).to_string();
-    assert_eq!(
-        finished
-            .stdout
-            .as_ref()
-            .map(|artifact| artifact.digest.as_str()),
-        Some(expected_stdout.as_str())
-    );
+    if let Some(expected_stdout) = expected_stdout {
+        let expected_stdout = Sha256Digest::digest_bytes(expected_stdout).to_string();
+        assert_eq!(
+            finished
+                .stdout
+                .as_ref()
+                .map(|artifact| artifact.digest.as_str()),
+            Some(expected_stdout.as_str())
+        );
+    }
     for key in [
-        "output:attempt-1:stdout",
-        "output:attempt-1:stderr",
-        "receipt:attempt-1",
+        format!("output:{attempt_id}:stdout"),
+        format!("output:{attempt_id}:stderr"),
+        format!("receipt:{attempt_id}"),
     ] {
-        assert!(uploads.completed_upload_by_key("cuda-1", key)?.is_some());
-        assert!(uploads.reference("cuda-1", key).is_ok());
+        assert!(uploads.completed_upload_by_key("cuda-1", &key)?.is_some());
+        assert!(uploads.reference("cuda-1", &key).is_ok());
     }
     Ok(())
 }
 
 fn cuda_assignment(bundle: Sha256Digest, bundle_size: u64, image: Sha256Digest) -> Assignment {
+    cuda_assignment_for("attempt-1", bundle, bundle_size, image, 1_000)
+}
+
+fn cuda_assignment_for(
+    attempt_id: &str,
+    bundle: Sha256Digest,
+    bundle_size: u64,
+    image: Sha256Digest,
+    timeout_ms: u64,
+) -> Assignment {
     Assignment {
-        assignment_id: "assignment-1".into(),
-        attempt_id: "attempt-1".into(),
+        assignment_id: format!("assignment-{attempt_id}"),
+        attempt_id: attempt_id.into(),
         attempt_number: 1,
         idempotency_key: VECTOR_ADD_FIXTURE_ID.into(),
         task_id: "task-1".into(),
@@ -271,7 +518,7 @@ fn cuda_assignment(bundle: Sha256Digest, bundle_size: u64, image: Sha256Digest) 
             argv: vec![VECTOR_ADD_FIXTURE_ID.into()],
             working_directory: ".".into(),
             environment: Vec::new(),
-            timeout_ms: 1_000,
+            timeout_ms,
             bundle: Some(ArtifactRef {
                 digest: bundle.to_string(),
                 size_bytes: bundle_size,
@@ -294,6 +541,21 @@ fn cuda_assignment(bundle: Sha256Digest, bundle_size: u64, image: Sha256Digest) 
         }),
         required_features: vec![CUDA_FIXTURE_FEATURE.into()],
     }
+}
+
+fn read_artifact(
+    artifacts: &FilesystemArtifactStore,
+    artifact: Option<&alloyport_worker::journal::StoredArtifact>,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let artifact = artifact.ok_or("terminal Artifact is missing")?;
+    let digest = Sha256Digest::from_str(&artifact.digest)?;
+    let mut bytes = Vec::new();
+    artifacts.open(digest)?.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn required_env(name: &str) -> Result<String, Box<dyn Error>> {
+    std::env::var(name).map_err(|_| format!("ignored CUDA smoke requires {name}").into())
 }
 
 fn hello() -> WorkerHello {

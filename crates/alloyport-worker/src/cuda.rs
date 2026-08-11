@@ -308,8 +308,9 @@ impl CudaFixturePolicy {
                 format!("/tmp:rw,exec,size={CUDA_TEMP_BYTES}"),
                 "--workdir".into(),
                 CONTAINER_WORK_PATH.into(),
-                self.image_reference.clone(),
+                "--entrypoint".into(),
                 "python3".into(),
+                self.image_reference.clone(),
                 format!("{CONTAINER_BUNDLE_PATH}/{RUNNER_FILENAME}"),
             ],
         })
@@ -532,6 +533,18 @@ mod tests {
             plan.argv
                 .windows(2)
                 .any(|pair| pair == ["--gpus", "device=0"])
+        );
+        assert!(
+            plan.argv
+                .windows(2)
+                .any(|pair| pair == ["--entrypoint", "python3"])
+        );
+        assert_eq!(
+            &plan.argv[plan.argv.len() - 2..],
+            [
+                format!("example.invalid/alloyport/cuda@{image_manifest}"),
+                "/alloyport/bundle/run_fixture.py".into(),
+            ]
         );
         assert!(
             plan.argv

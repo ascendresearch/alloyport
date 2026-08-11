@@ -381,9 +381,15 @@ execution in the worker binary yet:
   execution and requires remote stdout/stderr/receipt publication before terminal commit.
 
 The self-contained fixture covers CUDA compilation, allocation/copy, a real kernel launch,
-synchronization, and deterministic device-result verification. An explicit ephemeral smoke on the
-development GB10 produced `PASS` for 1,048,576 elements and checksum `670562424`. The outbound path
-now has fake-engine loopback coverage, but the real GB10 run has not yet used it.
+synchronization, and deterministic device-result verification. On 2026-08-11 the ignored real-engine
+outbound loopback passed on the development GB10 through assignment grant, empty-worker-CAS bundle
+download, real Docker supervision, terminal Artifact upload, controller commit, and container
+removal. It produced exactly `PASS` for 1,048,576 elements and checksum `670562424`, with bundle
+`sha256:04b086...610e`, source `sha256:631447...9a95`, manifest `sha256:54b468...584a`, resolved image
+`sha256:79a186...d884`, empty stderr, exit 0, and a 1,334 ms receipt. A separate direct SSH/Docker
+legacy reference attempt produced the same stdout and exit classification. The locally derived
+Docker plan fixes `--entrypoint python3`; without it, the image-authored NVIDIA entrypoint polluted
+stdout with a license banner even though the kernel passed.
 
 When Artifact metadata is attached to `WorkerControlService`, the controller accepts terminal
 stdout/stderr/receipt only when the reporting stable worker finalized exact owner-scoped upload keys
@@ -447,7 +453,8 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 96 Rust tests. Control-plane coverage includes real loopback gRPC streams and SQLite
+There are 97 Rust tests, one ignored by default because it explicitly requires Docker and a CUDA
+device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -513,7 +520,9 @@ coverage proves publication-before-terminal and terminal-before-removal ordering
 facts, cleanup-failure retention, and cleanup-only terminal replay. A dedicated CUDA control-plane
 test covers CUDA-only outbound admission, Artifact-gated completion, a post-commit cleanup failure,
 session reconnect, durable terminal replay, cleanup without a second execution, and download of the
-granted input bundle into an initially empty worker CAS.
+granted input bundle into an initially empty worker CAS. The ignored real-engine variant exercises
+the same outbound path against Docker/GB10 and verifies exact stdout plus receipt identities; normal
+CI never silently depends on it.
 
 An end-to-end mutual-TLS test creates one CA, a server identity, and three client identities. It
 proves forged worker hello rejection, cross-owner upload/download isolation, termination of an old
@@ -543,6 +552,17 @@ cargo run -p alloyport-worker
 ```
 
 This proves connection/heartbeat only. There is no public scheduling API in the binary yet.
+
+The real GB10 gate is explicit and remains ignored during normal test runs:
+
+```bash
+ALLOYPORT_CUDA_SMOKE_IMAGE_MANIFEST_DIGEST=sha256:54b468554100ecc85701eaad1013cf11d7cde22f30e987f610de71c2cb85584a \
+ALLOYPORT_CUDA_SMOKE_IMAGE_REFERENCE=lmsysorg/sglang@sha256:54b468554100ecc85701eaad1013cf11d7cde22f30e987f610de71c2cb85584a \
+ALLOYPORT_CUDA_SMOKE_IMAGE_ID=sha256:79a186a4a784f1c3b53976e2a712a86ea6067e47faee4aa59829e35ae42dd884 \
+cargo test -p alloyport-server --test cuda_control_plane \
+  cuda_runtime_completes_through_real_docker_outbound_loopback --locked -- \
+  --ignored --exact --nocapture
+```
 
 ## Known gaps: do not claim these are implemented
 
@@ -598,8 +618,9 @@ The typed executor, fixture bundle, local allowlist, Docker create plan, Artifac
 download/grant, durable supervisor, argv-only Docker engine, gated CUDA runtime, environment receipt,
 terminal cleanup ordering, outbound-session integration, and bounded running-log enforcement are
 implemented. The worker binary now wires a schema-validated local policy, verified input downloader,
-Docker runtime, and mandatory remote publisher. Next run the real GB10 outbound loopback smoke and
-add live preview chunk publication. Keep shell execution disabled.
+Docker runtime, and mandatory remote publisher. The real GB10 outbound loopback and separate legacy
+reference attempt now agree on the fixed fixture. Next add live preview chunk publication while
+preserving the terminal CAS bytes as authority. Keep shell execution disabled.
 
 ### 2. Public event replay and subscription
 
@@ -623,10 +644,11 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Implement one fixed CUDA execution vertical slice without reviving the SSH runtime path:
+Add bounded CUDA live previews without weakening the completed execution boundary:
 
-> Read `docs/HANDOFF.md` and Designs 0007, 0011, 0015 through 0018. Generate an explicit schema-1
-> worker policy from the already recorded GB10 bundle/image/device facts, then run the fixed fixture
-> through outbound loopback gRPC using the real Docker engine. Compare its receipt against the legacy
-> parity attempt. Keep generic shell/container execution disabled, and do not treat bounded terminal
-> observations as live previews.
+> Read `docs/HANDOFF.md` and Designs 0010, 0011, 0015, and 0018. Extend the Docker follower/runtime
+> boundary to forward bounded stdout/stderr chunks with independent offsets through the existing
+> ephemeral observation channel while simultaneously spooling the exact terminal bytes. Define
+> slow-consumer behavior and prove previews cannot change output-budget enforcement, receipt digests,
+> terminal Artifact publication, or reconnect recovery. Keep generic shell/container execution
+> disabled.
