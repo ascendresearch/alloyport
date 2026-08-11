@@ -214,6 +214,8 @@ repository shell now owns only connection creation, migrations, and locking.
 Canonical Interaction persistence is capability-segregated into event-write, event-read, and
 run-access ports. Its SQLite schema shell, event/output log, and authorization grants are separate
 implementation modules, alongside independent replay-to-live broadcast and display sanitization.
+The public Interaction gRPC delivery service is separate from its enrolled-certificate and durable
+run-grant authorization policy; live streams revalidate that policy throughout delivery.
 Worker registration, replay reconstruction, inbound stream consumption, identity revalidation, and
 disconnect handling live in a dedicated session-lifecycle module outside the service facade.
 Assignment admission/reassignment/cancellation, durable frame preparation with connection sequence

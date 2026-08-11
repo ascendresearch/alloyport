@@ -271,6 +271,10 @@ directories (including their migration and adapter-test files).
   using a 119-line schema/connection shell, 344-line canonical event/output implementation, and
   116-line authorization implementation; replay-to-live delivery and fail-closed sanitization stay
   separate. Root-level imports remain compatible and CI guards the boundaries.
+- [x] Public Interaction delivery split into a 258-line replay/live gRPC service and a 126-line
+  enrolled-identity/run-grant authorization policy. Its 207-line behavioral suite is external to
+  production metrics, public service imports remain compatible, and CI prevents policy logic
+  returning to the transport module.
 - [x] Artifact upload model separated from `SqliteUploadStore`; `upload.rs` contains no SQL or
   database-driver types.
 - [x] Artifact filesystem CAS moved behind `adapters::filesystem`; the crate root is now a
@@ -308,7 +312,7 @@ directories (including their migration and adapter-test files).
   schema module.
 - [x] Repository-wide production module size gate reached: tests were separated from CUDA Docker,
   CUDA supervisor/runtime, Artifact CAS, and event reducer modules. The largest production Rust
-  module is now 578 lines; no production module exceeds the 800-line review threshold.
+  module is now 557 lines; no production module exceeds the 800-line review threshold.
 - [x] First R6 async-persistence slice: worker control and execution paths use an immutable shared
   state handle and route journal operations through a four-permit bounded blocking adapter. No
   SQLite-backed journal call runs while holding a Tokio state mutex; a slow-operation concurrency

@@ -89,6 +89,11 @@ if assignment_responsibility=$(rg -n \
     crates/alloyport-server/src/assignment_coordinator.rs); then
     violations+=("assignment reconciliation or delivery mechanics returned to the use-case coordinator: ${assignment_responsibility}")
 fi
+if interaction_access_policy=$(rg -n \
+    'pub struct RunAuthorization|pub trait InteractionAccessPolicy|pub struct EnrolledInteractionAccessPolicy' \
+    crates/alloyport-server/src/interaction_service.rs); then
+    violations+=("interaction identity/access policy returned to the gRPC delivery service: ${interaction_access_policy}")
+fi
 if ! rg -q 'pub trait InteractionEventWriter' crates/alloyport-server/src/interaction.rs \
     || ! rg -q 'pub trait InteractionEventReader' crates/alloyport-server/src/interaction.rs \
     || ! rg -q 'pub trait InteractionRunAccessStore' crates/alloyport-server/src/interaction.rs; then
