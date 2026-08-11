@@ -1,7 +1,9 @@
 //! Authorized public replay and live subscription over canonical interaction envelopes.
 
 use crate::identity::{ConnectionIdentityResolver, ResolvedConnectionIdentity};
-use crate::interaction::{InteractionError, InteractionHub, InteractionStore, SubscriptionError};
+use crate::interaction::{
+    InteractionError, InteractionEventReader, InteractionHub, InteractionStore, SubscriptionError,
+};
 use crate::persistence::ServerPersistence;
 use alloyport_events::EventEnvelope;
 use alloyport_proto::interaction_v1::interaction_service_server::InteractionService;
@@ -370,6 +372,7 @@ fn interaction_status(error: &InteractionError) -> Status {
 mod tests {
     use super::*;
     use crate::adapters::sqlite::SqliteInteractionStore;
+    use crate::interaction::{InteractionEventWriter, InteractionRunAccessStore};
     use alloyport_events::{Event, Producer, ProducerEvent};
     use tokio_stream::StreamExt;
     use tonic::Code;

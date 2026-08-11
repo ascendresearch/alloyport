@@ -265,9 +265,12 @@ directories (including their migration and adapter-test files).
   shared transaction helper preserves atomic lifecycle-and-outbox commits, while the 120-line test
   suite remains outside production modules.
 - [x] Interaction responsibilities physically separated from `SqliteInteractionStore`: the
-  225-line domain/error/port module contains no SQL, database-driver, Tokio broadcast, or text
-  sanitizer implementation; replay-to-live delivery is 302 lines and fail-closed worker display
-  sanitization is 138 lines. Root-level imports remain compatible and CI guards the boundary.
+  240-line domain/error/port module contains no SQL, database-driver, Tokio broadcast, or text
+  sanitizer implementation. Its port is capability-segregated into event writer, event reader, and
+  run-access contracts, with `InteractionStore` retained as their composition. SQLite mirrors this
+  using a 119-line schema/connection shell, 344-line canonical event/output implementation, and
+  116-line authorization implementation; replay-to-live delivery and fail-closed sanitization stay
+  separate. Root-level imports remain compatible and CI guards the boundaries.
 - [x] Artifact upload model separated from `SqliteUploadStore`; `upload.rs` contains no SQL or
   database-driver types.
 - [x] Artifact filesystem CAS moved behind `adapters::filesystem`; the crate root is now a

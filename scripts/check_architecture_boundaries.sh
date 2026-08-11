@@ -79,6 +79,16 @@ if server_session_boundary=$(rg -n \
     crates/alloyport-server/src/lib.rs); then
     violations+=("worker connection session lifecycle returned to the server facade: ${server_session_boundary}")
 fi
+if interaction_store_capability=$(rg -n \
+    'impl InteractionEventWriter|impl InteractionEventReader|impl InteractionRunAccessStore' \
+    crates/alloyport-server/src/adapters/sqlite/interaction_store.rs); then
+    violations+=("interaction persistence capability SQL returned to the SQLite composition shell: ${interaction_store_capability}")
+fi
+if ! rg -q 'pub trait InteractionEventWriter' crates/alloyport-server/src/interaction.rs \
+    || ! rg -q 'pub trait InteractionEventReader' crates/alloyport-server/src/interaction.rs \
+    || ! rg -q 'pub trait InteractionRunAccessStore' crates/alloyport-server/src/interaction.rs; then
+    violations+=("interaction persistence capability ports are missing")
+fi
 if ! rg -q 'pub trait AttemptLifecycleStore' crates/alloyport-worker/src/journal.rs \
     || ! rg -q 'pub trait WorkerOutboxStore' crates/alloyport-worker/src/journal.rs; then
     violations+=("worker journal capability ports are missing")

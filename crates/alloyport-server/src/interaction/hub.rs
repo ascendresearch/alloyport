@@ -1,8 +1,8 @@
 //! Durable replay-to-live interaction delivery decorator.
 
 use super::{
-    AppendOutcome, InteractionError, InteractionStore, OutputAppend, RunGrantOutcome,
-    RunRevokeOutcome,
+    AppendOutcome, InteractionError, InteractionEventReader, InteractionEventWriter,
+    InteractionRunAccessStore, InteractionStore, OutputAppend, RunGrantOutcome, RunRevokeOutcome,
 };
 use alloyport_events::{EventEnvelope, ProducerEvent};
 use std::collections::{BTreeMap, VecDeque};
@@ -100,7 +100,7 @@ impl InteractionHub {
     }
 }
 
-impl InteractionStore for InteractionHub {
+impl InteractionEventWriter for InteractionHub {
     fn append(
         &self,
         dedup_key: &str,
@@ -126,7 +126,9 @@ impl InteractionStore for InteractionHub {
         self.publish(&appended.outcome);
         Ok(appended)
     }
+}
 
+impl InteractionEventReader for InteractionHub {
     fn events(&self, run_id: &str) -> Result<Vec<EventEnvelope>, InteractionError> {
         self.store.events(run_id)
     }
@@ -143,7 +145,9 @@ impl InteractionStore for InteractionHub {
     fn latest_sequence(&self, run_id: &str) -> Result<Option<u64>, InteractionError> {
         self.store.latest_sequence(run_id)
     }
+}
 
+impl InteractionRunAccessStore for InteractionHub {
     fn grant_run_access(
         &self,
         run_id: &str,

@@ -9,7 +9,7 @@ use alloyport_proto::v1::{
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use alloyport_server::adapters::sqlite::SqliteControlRepository;
 use alloyport_server::artifact::{ArtifactAccessPolicy, ArtifactServiceImpl};
-use alloyport_server::interaction::InteractionStore;
+use alloyport_server::interaction::InteractionRunAccessStore;
 use alloyport_server::{
     AssignmentState, CancelOutcome, EnqueueOutcome, ManualClock, WorkerControlService,
 };

@@ -211,8 +211,9 @@ segregated into worker-connection, assignment, attempt/lease, and server-outbox 
 service consumes their `ControlRepository` composition. SQLite connection and outbox operations live
 in dedicated implementation modules, as do assignment and attempt/lease operations; the shared
 repository shell now owns only connection creation, migrations, and locking.
-Canonical Interaction persistence contracts, the replay-to-live broadcast decorator, and worker
-display sanitization are also separate modules; SQLite remains confined to its adapter.
+Canonical Interaction persistence is capability-segregated into event-write, event-read, and
+run-access ports. Its SQLite schema shell, event/output log, and authorization grants are separate
+implementation modules, alongside independent replay-to-live broadcast and display sanitization.
 Worker registration, replay reconstruction, inbound stream consumption, identity revalidation, and
 disconnect handling live in a dedicated session-lifecycle module outside the service facade.
 

@@ -23,7 +23,9 @@ use alloyport_server::identity::{
     ConnectionIdentityResolver, IdentityRegistry, MtlsConnectionIdentityResolver,
     certificate_fingerprint_from_pem,
 };
-use alloyport_server::interaction::{InteractionHub, InteractionStore};
+use alloyport_server::interaction::{
+    InteractionEventWriter, InteractionHub, InteractionRunAccessStore, InteractionStore,
+};
 use alloyport_server::interaction_service::{
     EnrolledInteractionAccessPolicy, InteractionServiceImpl,
 };

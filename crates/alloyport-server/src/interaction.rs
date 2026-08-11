@@ -139,7 +139,7 @@ pub enum RunRevokeOutcome {
     Duplicate,
 }
 
-pub trait InteractionStore: Debug + Send + Sync {
+pub trait InteractionEventWriter: Debug + Send + Sync {
     /// Appends or idempotently replays one canonical event.
     ///
     /// # Errors
@@ -165,7 +165,9 @@ pub trait InteractionStore: Debug + Send + Sync {
         payload: &[u8],
         frame: &ProducerEvent,
     ) -> Result<OutputAppend, InteractionError>;
+}
 
+pub trait InteractionEventReader: Debug + Send + Sync {
     /// Returns a run's canonical events in sequence order.
     ///
     /// # Errors
@@ -191,7 +193,9 @@ pub trait InteractionStore: Debug + Send + Sync {
     ///
     /// Returns an error if the durable cursor cannot be read.
     fn latest_sequence(&self, run_id: &str) -> Result<Option<u64>, InteractionError>;
+}
 
+pub trait InteractionRunAccessStore: Debug + Send + Sync {
     /// Grants one stable owner read access to a run. Revoked grant identities cannot be reused.
     ///
     /// # Errors
@@ -222,4 +226,15 @@ pub trait InteractionStore: Debug + Send + Sync {
     ///
     /// Returns an error if authorization state cannot be read.
     fn can_read_run(&self, run_id: &str, owner_id: &str) -> Result<bool, InteractionError>;
+}
+
+/// Compatibility composition for services that need event I/O and run authorization together.
+pub trait InteractionStore:
+    InteractionEventWriter + InteractionEventReader + InteractionRunAccessStore
+{
+}
+
+impl<T> InteractionStore for T where
+    T: InteractionEventWriter + InteractionEventReader + InteractionRunAccessStore + ?Sized
+{
 }
