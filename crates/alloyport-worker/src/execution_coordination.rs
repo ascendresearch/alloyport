@@ -6,9 +6,7 @@ use crate::executor::{
     ArtifactPublisher, CancellationToken, ExecutionObservation, ExecutionStream,
 };
 use crate::journal::LocalAttemptPhase;
-use alloyport_proto::v1::{
-    ExecutorKind, OutputChunk, OutputStream, WorkerToServer, worker_to_server,
-};
+use alloyport_proto::v1::{OutputChunk, OutputStream, WorkerToServer, worker_to_server};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -29,8 +27,7 @@ impl OutboundWorker {
         if attempt.phase == LocalAttemptPhase::Finished {
             return Ok(None);
         }
-        let executor = ExecutorKind::try_from(attempt.assignment.execution.executor_kind)
-            .unwrap_or(ExecutorKind::Unspecified);
+        let executor = attempt.assignment.execution.executor_kind;
         let backend = integration.backends.backend(executor).ok_or_else(|| {
             WorkerError::Execution(format!(
                 "attached runtime does not support executor kind {}",

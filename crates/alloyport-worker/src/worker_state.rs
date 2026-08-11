@@ -9,7 +9,8 @@ use crate::journal::{
     WorkerOutboxMessage, WorkerOutboxPayload,
 };
 use crate::wire_mapping::{assignment_to_stored, lifecycle_identity, now_unix_ms};
-use alloyport_proto::v1::{Assignment, AttemptPhase, ExecutorKind};
+use alloyport_core::ExecutionKind;
+use alloyport_proto::v1::{Assignment, AttemptPhase};
 use alloyport_proto::{v1::ActiveAttempt, validate_assignment};
 use std::path::Path;
 use std::sync::Arc;
@@ -94,19 +95,19 @@ impl WorkerState {
     pub fn admit(&self, assignment: &Assignment) -> Result<AdmissionOutcome, WorkerError> {
         validate_assignment(assignment).map_err(WorkerError::InvalidAssignment)?;
         if let Some(execution) = assignment.execution.as_ref() {
-            let executor = ExecutorKind::try_from(execution.executor_kind)
-                .unwrap_or(ExecutorKind::Unspecified);
-            if self.policy.cuda_fixture_only && executor != ExecutorKind::CudaFixture {
+            let executor = ExecutionKind::try_from(execution.executor_kind)
+                .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+            if self.policy.cuda_fixture_only && executor != ExecutionKind::CudaFixture {
                 return Err(WorkerError::PolicyViolation(
                     "only the CUDA fixture executor is enabled".to_owned(),
                 ));
             }
-            if executor == ExecutorKind::Shell && !self.policy.allow_shell {
+            if executor == ExecutionKind::Shell && !self.policy.allow_shell {
                 return Err(WorkerError::PolicyViolation(
                     "shell executor is disabled".to_owned(),
                 ));
             }
-            if executor == ExecutorKind::CudaFixture && !self.policy.allow_cuda_fixture {
+            if executor == ExecutionKind::CudaFixture && !self.policy.allow_cuda_fixture {
                 return Err(WorkerError::PolicyViolation(
                     "CUDA fixture executor is disabled".to_owned(),
                 ));

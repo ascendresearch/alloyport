@@ -27,9 +27,9 @@ use alloyport_events::{
 };
 use alloyport_proto::v1::{
     Assignment, AssignmentAccepted, AssignmentRejected, CancelAttempt, CancellationAcknowledged,
-    ControlAcknowledgement, ExecutionFinished, ExecutionStarted, ExecutorKind, Heartbeat,
-    OutputChunk, OutputStream as WorkerOutputStream, ServerToWorker, ServerWelcome, WorkerHello,
-    WorkerStatus, WorkerToServer, server_to_worker, worker_to_server,
+    ControlAcknowledgement, ExecutionFinished, ExecutionStarted, Heartbeat, OutputChunk,
+    OutputStream as WorkerOutputStream, ServerToWorker, ServerWelcome, WorkerHello, WorkerStatus,
+    WorkerToServer, server_to_worker, worker_to_server,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR, ValidationError, validate_assignment};
 use control_transport::{

@@ -1,10 +1,13 @@
 //! Unit tests for worker admission, replay, and control semantics.
 
 use super::*;
-use crate::execution_backend::{BackendExecutionFuture, BackendExecutionRequest, ExecutionBackend};
+use crate::execution_backend::{
+    BackendExecutionFuture, BackendExecutionRequest, ExecutionBackend, ExecutionKind,
+};
 use crate::journal::{LocalAttemptPhase, StoredArtifact};
 use alloyport_proto::v1::{
-    ArtifactRef, Assignment, AttemptOutcome, ExecutionSpec, ExecutorKind, ServerToWorker,
+    ArtifactRef, Assignment, AttemptOutcome, ExecutionSpec, ExecutorKind as WireExecutorKind,
+    ServerToWorker,
 };
 
 fn artifact(byte: char) -> ArtifactRef {
@@ -24,7 +27,7 @@ fn assignment(argv: &str) -> Assignment {
         task_id: "task-1".to_owned(),
         candidate_id: "candidate-1".to_owned(),
         execution: Some(ExecutionSpec {
-            executor_kind: ExecutorKind::Container.into(),
+            executor_kind: WireExecutorKind::Container.into(),
             argv: vec![argv.to_owned()],
             working_directory: "source".to_owned(),
             environment: Vec::new(),
@@ -63,8 +66,8 @@ fn execution_backends_are_registered_without_control_state_machine_changes()
 -> Result<(), Box<dyn Error>> {
     let endpoint = Endpoint::from_static("http://127.0.0.1:50051");
     let worker = OutboundWorker::new(endpoint, worker_hello("worker-1"))?
-        .with_execution_backend(Arc::new(ProbeBackend(&[ExecutorKind::Container])))?
-        .with_execution_backend(Arc::new(ProbeBackend(&[ExecutorKind::Process])))?;
+        .with_execution_backend(Arc::new(ProbeBackend(&[ExecutionKind::Container])))?
+        .with_execution_backend(Arc::new(ProbeBackend(&[ExecutionKind::Process])))?;
     assert!(
         worker
             .validate_execution_support(&assignment("true"))
@@ -72,7 +75,7 @@ fn execution_backends_are_registered_without_control_state_machine_changes()
     );
 
     let error = worker
-        .with_execution_backend(Arc::new(ProbeBackend(&[ExecutorKind::Container])))
+        .with_execution_backend(Arc::new(ProbeBackend(&[ExecutionKind::Container])))
         .expect_err("two backends cannot claim the same executor kind");
     assert!(matches!(
         error,
@@ -82,10 +85,10 @@ fn execution_backends_are_registered_without_control_state_machine_changes()
 }
 
 #[derive(Debug)]
-struct ProbeBackend(&'static [ExecutorKind]);
+struct ProbeBackend(&'static [ExecutionKind]);
 
 impl ExecutionBackend for ProbeBackend {
-    fn executor_kinds(&self) -> &'static [ExecutorKind] {
+    fn executor_kinds(&self) -> &'static [ExecutionKind] {
         self.0
     }
 
@@ -122,7 +125,7 @@ fn shell_executor_requires_explicit_local_policy() {
         .execution
         .as_mut()
         .expect("fixture has execution")
-        .executor_kind = ExecutorKind::Shell.into();
+        .executor_kind = WireExecutorKind::Shell.into();
 
     assert!(matches!(
         WorkerState::default().admit(&shell),
@@ -142,7 +145,7 @@ fn cuda_fixture_executor_requires_explicit_local_policy() {
     cuda.execution
         .as_mut()
         .expect("fixture has execution")
-        .executor_kind = ExecutorKind::CudaFixture.into();
+        .executor_kind = WireExecutorKind::CudaFixture.into();
 
     assert!(matches!(
         WorkerState::default().admit(&cuda),

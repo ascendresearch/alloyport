@@ -7,9 +7,9 @@ use crate::executor::{
     ArtifactPublisher, CancellationToken, ExecutionObservation, ExecutionRun,
     ExecutionRuntimeError, FakeExecutionRuntime, FakeExecutor,
 };
-use alloyport_proto::v1::ExecutorKind;
+pub use alloyport_core::ExecutionKind;
 use std::collections::BTreeMap;
-use std::fmt::Debug;
+use std::fmt::{self, Debug, Display, Formatter};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -38,7 +38,7 @@ pub struct BackendExecutionRequest<'a> {
 /// Executor implementation selected through composition rather than the control state machine.
 pub trait ExecutionBackend: Debug + Send + Sync {
     /// Executor kinds owned by this backend.
-    fn executor_kinds(&self) -> &'static [ExecutorKind];
+    fn executor_kinds(&self) -> &'static [ExecutionKind];
 
     /// Executes or recovers one durable attempt.
     fn execute<'a>(&'a self, request: BackendExecutionRequest<'a>) -> BackendExecutionFuture<'a>;
@@ -56,33 +56,53 @@ pub trait ExecutionBackend: Debug + Send + Sync {
 /// Immutable executor-kind lookup built during worker composition.
 #[derive(Debug, Default)]
 pub(crate) struct ExecutionBackendRegistry {
-    backends: BTreeMap<i32, Arc<dyn ExecutionBackend>>,
+    backends: BTreeMap<ExecutionKind, Arc<dyn ExecutionBackend>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExecutionBackendRegistrationError {
+    EmptyCapabilitySet,
+    Duplicate(ExecutionKind),
+}
+
+impl Display for ExecutionBackendRegistrationError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyCapabilitySet => {
+                write!(formatter, "execution backend declares no executor kinds")
+            }
+            Self::Duplicate(kind) => write!(
+                formatter,
+                "execution backend already registered for {}",
+                kind.as_str_name()
+            ),
+        }
+    }
 }
 
 impl ExecutionBackendRegistry {
     pub(crate) fn register(
         &mut self,
         backend: Arc<dyn ExecutionBackend>,
-    ) -> Result<(), ExecutorKind> {
+    ) -> Result<(), ExecutionBackendRegistrationError> {
         let executors = backend.executor_kinds();
         for executor in executors {
-            if self.backends.contains_key(&i32::from(*executor)) {
-                return Err(*executor);
+            if self.backends.contains_key(executor) {
+                return Err(ExecutionBackendRegistrationError::Duplicate(*executor));
             }
         }
         let Some((last, preceding)) = executors.split_last() else {
-            return Err(ExecutorKind::Unspecified);
+            return Err(ExecutionBackendRegistrationError::EmptyCapabilitySet);
         };
         for executor in preceding {
-            self.backends
-                .insert(i32::from(*executor), Arc::clone(&backend));
+            self.backends.insert(*executor, Arc::clone(&backend));
         }
-        self.backends.insert(i32::from(*last), backend);
+        self.backends.insert(*last, backend);
         Ok(())
     }
 
-    pub(crate) fn backend(&self, executor: ExecutorKind) -> Option<Arc<dyn ExecutionBackend>> {
-        self.backends.get(&i32::from(executor)).cloned()
+    pub(crate) fn backend(&self, executor: ExecutionKind) -> Option<Arc<dyn ExecutionBackend>> {
+        self.backends.get(&executor).cloned()
     }
 }
 
@@ -102,11 +122,11 @@ impl FakeExecutionBackend {
 }
 
 impl ExecutionBackend for FakeExecutionBackend {
-    fn executor_kinds(&self) -> &'static [ExecutorKind] {
+    fn executor_kinds(&self) -> &'static [ExecutionKind] {
         &[
-            ExecutorKind::Process,
-            ExecutorKind::Container,
-            ExecutorKind::Shell,
+            ExecutionKind::Process,
+            ExecutionKind::Container,
+            ExecutionKind::Shell,
         ]
     }
 
@@ -151,8 +171,8 @@ impl CudaExecutionBackend {
 }
 
 impl ExecutionBackend for CudaExecutionBackend {
-    fn executor_kinds(&self) -> &'static [ExecutorKind] {
-        &[ExecutorKind::CudaFixture]
+    fn executor_kinds(&self) -> &'static [ExecutionKind] {
+        &[ExecutionKind::CudaFixture]
     }
 
     fn execute<'a>(&'a self, request: BackendExecutionRequest<'a>) -> BackendExecutionFuture<'a> {

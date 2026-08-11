@@ -2,9 +2,8 @@
 
 use super::{OutboundWorker, WorkerError};
 use crate::journal::{LocalAttemptPhase, StoredFinished, WorkerOutboxPayload};
-use alloyport_proto::v1::{
-    Assignment, AttemptOutcome, ExecutorKind, RejectionReason, WorkerToServer,
-};
+use alloyport_core::ExecutionKind;
+use alloyport_proto::v1::{Assignment, AttemptOutcome, RejectionReason, WorkerToServer};
 use alloyport_proto::validate_assignment;
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
@@ -112,8 +111,8 @@ impl OutboundWorker {
         let execution = assignment.execution.as_ref().ok_or_else(|| {
             WorkerError::Protocol("validated assignment lacks execution".to_owned())
         })?;
-        let executor =
-            ExecutorKind::try_from(execution.executor_kind).unwrap_or(ExecutorKind::Unspecified);
+        let executor = ExecutionKind::try_from(execution.executor_kind)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
         let integration = self.execution.as_ref().ok_or_else(|| {
             WorkerError::PolicyViolation(format!(
                 "no execution backend is attached for {}",

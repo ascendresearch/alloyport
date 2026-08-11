@@ -2,7 +2,8 @@
 
 use crate::journal::{StoredAssignment, StoredLimits};
 use alloyport_artifacts::{ArtifactStore, Sha256Digest};
-use alloyport_proto::v1::{ExecutorKind, NetworkPolicy};
+use alloyport_core::ExecutionKind;
+use alloyport_proto::v1::NetworkPolicy;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -138,9 +139,7 @@ impl CudaFixturePolicy {
         assignment: &StoredAssignment,
     ) -> Result<(), CudaContractError> {
         let execution = &assignment.execution;
-        if ExecutorKind::try_from(execution.executor_kind).unwrap_or(ExecutorKind::Unspecified)
-            != ExecutorKind::CudaFixture
-        {
+        if execution.executor_kind != ExecutionKind::CudaFixture {
             return Err(CudaContractError::Assignment(
                 "executor kind is not CUDA fixture",
             ));

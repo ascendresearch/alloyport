@@ -1,5 +1,9 @@
 //! Domain primitives for `AlloyPort`'s verified delivery lifecycle.
 
+mod execution;
+
+pub use execution::{ExecutionKind, ExecutionKindError};
+
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};

@@ -5,6 +5,7 @@ use crate::storage::{
     ObservationDisposition, ObservedAttempt, RepositoryError, ServerOutboxFrame,
     ServerOutboxRepository, StoreAssignmentOutcome, WorkerConnectionRepository, WorkerRegistration,
 };
+use alloyport_core::ExecutionKind;
 use std::error::Error;
 
 #[test]
@@ -515,7 +516,7 @@ fn contract() -> AssignmentContract {
         task_id: "task-1".to_owned(),
         candidate_id: "candidate-1".to_owned(),
         execution: ExecutionContract {
-            executor_kind: 2,
+            executor_kind: ExecutionKind::Container,
             argv: vec!["true".to_owned()],
             working_directory: "source".to_owned(),
             environment: Vec::new(),

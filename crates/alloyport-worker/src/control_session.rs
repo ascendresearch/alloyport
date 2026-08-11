@@ -5,8 +5,7 @@ use crate::journal::LocalAttemptPhase;
 use crate::wire_mapping::expected_server_message_id;
 use alloyport_proto::v1::worker_control_client::WorkerControlClient;
 use alloyport_proto::v1::{
-    ExecutorKind, Heartbeat, ServerToWorker, WorkerHealth, WorkerToServer, server_to_worker,
-    worker_to_server,
+    Heartbeat, ServerToWorker, WorkerHealth, WorkerToServer, server_to_worker, worker_to_server,
 };
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
@@ -38,8 +37,7 @@ impl OutboundWorker {
             .filter(|attempt| attempt.phase == LocalAttemptPhase::Finished)
             .map(|attempt| {
                 (
-                    ExecutorKind::try_from(attempt.assignment.execution.executor_kind)
-                        .unwrap_or(ExecutorKind::Unspecified),
+                    attempt.assignment.execution.executor_kind,
                     attempt.assignment.attempt_id,
                 )
             })

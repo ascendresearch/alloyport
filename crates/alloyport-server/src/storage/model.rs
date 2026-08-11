@@ -1,6 +1,7 @@
 //! Transport-independent control-plane records and lifecycle values.
 
 use super::RepositoryError;
+use alloyport_core::ExecutionKind;
 use serde::{Deserialize, Serialize};
 
 /// Worker registration persisted independently of its current network session.
@@ -49,7 +50,7 @@ pub struct AssignmentContract {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionContract {
-    pub executor_kind: i32,
+    pub executor_kind: ExecutionKind,
     pub argv: Vec<String>,
     pub working_directory: String,
     pub environment: Vec<EnvironmentEntry>,

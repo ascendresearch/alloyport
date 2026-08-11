@@ -214,12 +214,9 @@ struct ExecutionIntegration {
 impl ExecutionIntegration {
     fn with_backend(backend: Arc<dyn ExecutionBackend>) -> Result<Self, WorkerError> {
         let mut backends = ExecutionBackendRegistry::default();
-        backends.register(backend).map_err(|executor| {
-            WorkerError::Execution(format!(
-                "execution backend already registered for {}",
-                executor.as_str_name()
-            ))
-        })?;
+        backends
+            .register(backend)
+            .map_err(|error| WorkerError::Execution(error.to_string()))?;
         Ok(Self {
             backends,
             active: Arc::new(Mutex::new(BTreeMap::new())),
@@ -227,12 +224,9 @@ impl ExecutionIntegration {
     }
 
     fn register(&mut self, backend: Arc<dyn ExecutionBackend>) -> Result<(), WorkerError> {
-        self.backends.register(backend).map_err(|executor| {
-            WorkerError::Execution(format!(
-                "execution backend already registered for {}",
-                executor.as_str_name()
-            ))
-        })
+        self.backends
+            .register(backend)
+            .map_err(|error| WorkerError::Execution(error.to_string()))
     }
 }
 

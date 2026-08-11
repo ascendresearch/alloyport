@@ -2,6 +2,7 @@
 //!
 //! Database drivers, transactions, schema migrations, and SQL belong to outer adapters.
 
+use alloyport_core::ExecutionKind;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -20,7 +21,7 @@ pub struct StoredAssignment {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StoredExecution {
-    pub executor_kind: i32,
+    pub executor_kind: ExecutionKind,
     pub argv: Vec<String>,
     pub working_directory: String,
     pub environment: Vec<StoredEnvironment>,

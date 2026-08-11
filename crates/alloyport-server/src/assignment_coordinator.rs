@@ -2,10 +2,11 @@
 
 use super::{
     ArtifactReferenceKind, Assignment, AssignmentContract, CancelOutcome, CancellationStoreOutcome,
-    EnqueueError, EnqueueOutcome, ExecutorKind, GrantArtifactReference, InteractionError,
-    RepositoryError, RunGrantOutcome, RunRevokeOutcome, Sha256Digest, StoreAssignmentOutcome,
-    WorkerControlService, assignment_to_contract, contract_to_assignment, validate_assignment,
+    EnqueueError, EnqueueOutcome, GrantArtifactReference, InteractionError, RepositoryError,
+    RunGrantOutcome, RunRevokeOutcome, Sha256Digest, StoreAssignmentOutcome, WorkerControlService,
+    assignment_to_contract, contract_to_assignment, validate_assignment,
 };
+use alloyport_core::ExecutionKind;
 use std::str::FromStr;
 
 #[allow(clippy::missing_errors_doc)]
@@ -196,10 +197,7 @@ impl WorkerControlService {
         contract: &AssignmentContract,
         now_ms: u64,
     ) -> Result<(), EnqueueError> {
-        if ExecutorKind::try_from(contract.execution.executor_kind)
-            .unwrap_or(ExecutorKind::Unspecified)
-            != ExecutorKind::CudaFixture
-        {
+        if contract.execution.executor_kind != ExecutionKind::CudaFixture {
             return Ok(());
         }
         let uploads = self.artifact_metadata.as_ref().ok_or_else(|| {

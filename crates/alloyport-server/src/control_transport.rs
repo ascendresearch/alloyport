@@ -6,6 +6,7 @@ use crate::storage::{
     ArtifactIdentity, AssignmentContract, EnvironmentEntry, ExecutionContract, RepositoryError,
     ResourceContract, WorkerCapabilities, WorkerRegistration,
 };
+use alloyport_core::ExecutionKind;
 use alloyport_events::{
     ArtifactRef as EventArtifactRef, Authority, Event, Producer, ProducerEvent, Visibility,
 };
@@ -167,7 +168,8 @@ pub(super) fn assignment_to_contract(assignment: &Assignment) -> AssignmentContr
         task_id: assignment.task_id.clone(),
         candidate_id: assignment.candidate_id.clone(),
         execution: ExecutionContract {
-            executor_kind: execution.executor_kind,
+            executor_kind: ExecutionKind::try_from(execution.executor_kind)
+                .expect("validated assignment contains a known executor kind"),
             argv: execution.argv.clone(),
             working_directory: execution.working_directory.clone(),
             environment: execution
@@ -214,7 +216,7 @@ pub(super) fn contract_to_assignment(contract: &AssignmentContract) -> Assignmen
         task_id: contract.task_id.clone(),
         candidate_id: contract.candidate_id.clone(),
         execution: Some(ExecutionSpec {
-            executor_kind: contract.execution.executor_kind,
+            executor_kind: contract.execution.executor_kind.into(),
             argv: contract.execution.argv.clone(),
             working_directory: contract.execution.working_directory.clone(),
             environment: contract

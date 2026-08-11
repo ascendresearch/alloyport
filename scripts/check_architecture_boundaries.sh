@@ -119,6 +119,19 @@ if ! rg -q '^pub trait ControlRepository' crates/alloyport-server/src/storage/re
     || ! rg -q '^pub trait Clock' crates/alloyport-server/src/storage/clock.rs; then
     violations+=("control storage model/clock/repository layering is incomplete")
 fi
+if raw_executor_kind=$(rg -n 'pub executor_kind: i32' \
+    crates/alloyport-server/src/storage crates/alloyport-worker/src/journal.rs); then
+    violations+=("durable assignment contract regained a raw executor-kind integer: ${raw_executor_kind}")
+fi
+if ! rg -q '^pub enum ExecutionKind' crates/alloyport-core/src/execution.rs \
+    || ! rg -q 'pub executor_kind: ExecutionKind' crates/alloyport-server/src/storage/model.rs \
+    || ! rg -q 'pub executor_kind: ExecutionKind' crates/alloyport-worker/src/journal.rs; then
+    violations+=("shared execution-kind domain vocabulary is not used by both durable contracts")
+fi
+if core_outer_dependency=$(rg -n \
+    'alloyport-proto|rusqlite|tonic|tokio' crates/alloyport-core/Cargo.toml); then
+    violations+=("domain core gained an outer-layer dependency: ${core_outer_dependency}")
+fi
 if interaction_store_capability=$(rg -n \
     'impl InteractionEventWriter|impl InteractionEventReader|impl InteractionRunAccessStore' \
     crates/alloyport-server/src/adapters/sqlite/interaction_store.rs); then

@@ -305,6 +305,11 @@ directories (including their migration and adapter-test files).
 - [x] First R4 execution-backend slice: closed Fake/CUDA dispatch replaced by an executor-kind
   registry and public `ExecutionBackend` composition port, including duplicate-capability and
   third-party probe-backend coverage.
+- [x] First R3 shared-domain slice: `alloyport_core::ExecutionKind` replaces raw executor-kind
+  integers in both server and worker durable assignment contracts and is used by backend
+  registration and application policy. Its serde representation remains the existing numeric JSON,
+  invalid/unspecified wire values cannot enter the domain type, and Protobuf conversion occurs at
+  the transport mapping edges. Outcome, network-policy, and typed-ID migration remain follow-ups.
 - [x] Worker executor responsibilities split: the durable fake execution coordinator is 501 lines
   (down from a 1,395-line mixed module), the shared local-spool/remote-publication boundary is 113
   lines, canonical event projection is 56 lines, and deterministic fake process behavior is 344

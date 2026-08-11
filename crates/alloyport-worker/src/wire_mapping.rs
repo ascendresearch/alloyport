@@ -4,6 +4,7 @@ use crate::journal::{
     StoredArtifact, StoredAssignment, StoredEnvironment, StoredExecution, StoredFinished,
     StoredLimits, WorkerOutboxPayload,
 };
+use alloyport_core::ExecutionKind;
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, CancellationAcknowledged,
     ExecutionFinished, server_to_worker, worker_to_server,
@@ -22,7 +23,8 @@ pub(super) fn assignment_to_stored(assignment: &Assignment) -> StoredAssignment 
         task_id: assignment.task_id.clone(),
         candidate_id: assignment.candidate_id.clone(),
         execution: StoredExecution {
-            executor_kind: execution.executor_kind,
+            executor_kind: ExecutionKind::try_from(execution.executor_kind)
+                .expect("validated assignment contains a known executor kind"),
             argv: execution.argv.clone(),
             working_directory: execution.working_directory.clone(),
             environment: execution

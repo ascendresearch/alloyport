@@ -4,7 +4,10 @@ use super::*;
 use crate::storage::{ArtifactIdentity, AssignmentRepository, ExecutionContract};
 use alloyport_artifacts::upload::BeginUpload;
 use alloyport_artifacts::{FilesystemArtifactStore, SqliteUploadStore};
-use alloyport_proto::v1::{ArtifactRef, ExecutionSpec, ResourceLimits};
+use alloyport_core::ExecutionKind;
+use alloyport_proto::v1::{
+    ArtifactRef, ExecutionSpec, ExecutorKind as WireExecutorKind, ResourceLimits,
+};
 
 #[test]
 fn worker_acknowledgement_must_be_monotonic_and_not_future() {
@@ -32,12 +35,12 @@ async fn reconciliation_recovers_restart_residue_without_blocking_on_another_att
         let repository = SqliteControlRepository::open(&database)?;
         repository.store_assignment(
             "worker-1",
-            &stored_contract("fake-attempt", ExecutorKind::Process),
+            &stored_contract("fake-attempt", ExecutionKind::Process),
             1_000,
         )?;
         repository.store_assignment(
             "worker-1",
-            &stored_contract("cuda-attempt", ExecutorKind::CudaFixture),
+            &stored_contract("cuda-attempt", ExecutionKind::CudaFixture),
             1_001,
         )?;
     }
@@ -136,7 +139,7 @@ async fn cuda_assignment_grants_only_a_published_size_matched_input_bundle()
         task_id: "task-1".into(),
         candidate_id: "candidate-1".into(),
         execution: Some(ExecutionSpec {
-            executor_kind: ExecutorKind::CudaFixture.into(),
+            executor_kind: WireExecutorKind::CudaFixture.into(),
             argv: vec!["cuda-vectoradd-v1".into()],
             working_directory: ".".into(),
             environment: Vec::new(),
@@ -180,7 +183,7 @@ async fn cuda_assignment_grants_only_a_published_size_matched_input_bundle()
     Ok(())
 }
 
-fn stored_contract(attempt_id: &str, executor_kind: ExecutorKind) -> AssignmentContract {
+fn stored_contract(attempt_id: &str, executor_kind: ExecutionKind) -> AssignmentContract {
     AssignmentContract {
         assignment_id: format!("assignment-{attempt_id}"),
         attempt_id: attempt_id.into(),
@@ -189,7 +192,7 @@ fn stored_contract(attempt_id: &str, executor_kind: ExecutorKind) -> AssignmentC
         task_id: format!("task-{attempt_id}"),
         candidate_id: "candidate-1".into(),
         execution: ExecutionContract {
-            executor_kind: executor_kind.into(),
+            executor_kind,
             argv: vec!["fixture".into()],
             working_directory: ".".into(),
             environment: Vec::new(),

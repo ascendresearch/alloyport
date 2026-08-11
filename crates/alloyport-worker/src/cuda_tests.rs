@@ -3,6 +3,7 @@
 use super::*;
 use crate::journal::{StoredArtifact, StoredEnvironment, StoredExecution};
 use alloyport_artifacts::{FilesystemArtifactStore, IngestRequest, Sha256Digest};
+use alloyport_core::ExecutionKind;
 use std::io::Cursor;
 
 #[test]
@@ -170,7 +171,7 @@ fn assignment(
         task_id: "task-1".into(),
         candidate_id: "candidate-1".into(),
         execution: StoredExecution {
-            executor_kind: ExecutorKind::CudaFixture.into(),
+            executor_kind: ExecutionKind::CudaFixture,
             argv: vec![VECTOR_ADD_FIXTURE_ID.into()],
             working_directory: ".".into(),
             environment: Vec::new(),

@@ -5,6 +5,7 @@ use crate::journal::{
     AttemptLifecycleStore, StoreAdmissionOutcome, StoredArtifact, StoredAssignment,
     StoredExecution, WorkerOutboxMessage, WorkerOutboxPayload, WorkerOutboxStore,
 };
+use alloyport_core::ExecutionKind;
 use std::error::Error;
 
 #[test]
@@ -98,7 +99,7 @@ fn stored_assignment() -> StoredAssignment {
         task_id: "task-1".to_owned(),
         candidate_id: "candidate-1".to_owned(),
         execution: StoredExecution {
-            executor_kind: 2,
+            executor_kind: ExecutionKind::Container,
             argv: vec!["true".to_owned()],
             working_directory: "source".to_owned(),
             environment: Vec::new(),
