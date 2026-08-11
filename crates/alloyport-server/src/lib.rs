@@ -12,8 +12,10 @@ mod persistence;
 pub mod storage;
 
 use adapters::sqlite::{SqliteControlRepository, SqliteInteractionStore};
-use alloyport_artifacts::upload::{ArtifactReferenceKind, GrantArtifactReference};
-use alloyport_artifacts::{Sha256Digest, SqliteUploadStore};
+use alloyport_artifacts::Sha256Digest;
+use alloyport_artifacts::upload::{
+    ArtifactMetadataStore, ArtifactReferenceKind, GrantArtifactReference,
+};
 use alloyport_events::{
     Authority, Event, EventEnvelope, OutputStream as EventOutputStream, Producer, ProducerEvent,
     Visibility,
@@ -190,7 +192,7 @@ pub struct WorkerControlService {
     repository: Arc<dyn ControlRepository>,
     clock: Arc<dyn Clock>,
     identity_resolver: Option<Arc<dyn ConnectionIdentityResolver>>,
-    artifact_metadata: Option<Arc<SqliteUploadStore>>,
+    artifact_metadata: Option<Arc<dyn ArtifactMetadataStore>>,
     interactions: Arc<dyn InteractionStore>,
     persistence: persistence::ServerPersistence,
     connection_counter: Arc<AtomicU64>,
@@ -308,8 +310,8 @@ impl WorkerControlService {
 
     /// Requires terminal Artifact identities to match finalized uploads and creates typed roots.
     #[must_use]
-    pub fn with_artifact_metadata(mut self, uploads: Arc<SqliteUploadStore>) -> Self {
-        self.artifact_metadata = Some(uploads);
+    pub fn with_artifact_metadata(mut self, metadata: Arc<dyn ArtifactMetadataStore>) -> Self {
+        self.artifact_metadata = Some(metadata);
         self
     }
 
@@ -537,7 +539,7 @@ impl WorkerControlService {
 }
 
 fn validate_and_grant_finished_artifacts(
-    uploads: &SqliteUploadStore,
+    metadata: &dyn ArtifactMetadataStore,
     worker_id: &str,
     attempt_id: &str,
     finished: &ExecutionFinished,
@@ -570,7 +572,7 @@ fn validate_and_grant_finished_artifacts(
         })?;
         let digest = Sha256Digest::from_str(&artifact.digest)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
-        let uploaded = uploads
+        let uploaded = metadata
             .completed_upload_session_by_key(worker_id, &reference_key)
             .map_err(artifact::upload_status)?
             .ok_or_else(|| {
@@ -591,7 +593,7 @@ fn validate_and_grant_finished_artifacts(
                 "terminal Artifact {reference_key} does not match its finalized upload"
             )));
         }
-        uploads
+        metadata
             .grant_reference(&GrantArtifactReference {
                 owner_id: worker_id.to_owned(),
                 reference_key,

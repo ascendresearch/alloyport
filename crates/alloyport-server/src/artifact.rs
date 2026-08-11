@@ -1,12 +1,12 @@
 //! Artifact gRPC edge over durable upload sessions and the filesystem CAS.
 
-use alloyport_artifacts::SqliteUploadStore;
-
 use crate::identity::ConnectionIdentityResolver;
 use crate::persistence::ServerPersistence;
 use crate::storage::Clock;
-use alloyport_artifacts::upload::{BeginUpload, UploadError, UploadSession};
-use alloyport_artifacts::{ArtifactIdentity, FilesystemArtifactStore, Sha256Digest};
+use alloyport_artifacts::upload::{
+    ArtifactMetadataStore, ArtifactUploadRepository, BeginUpload, UploadError, UploadSession,
+};
+use alloyport_artifacts::{ArtifactIdentity, ArtifactStore, Sha256Digest};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactService;
 use alloyport_proto::artifact_v1::{
     self, BeginUploadRequest, DownloadChunk, DownloadRequest, FinalizeUploadRequest,
@@ -51,13 +51,13 @@ pub trait ArtifactAccessPolicy: Debug + Send + Sync {
 /// Production access policy keyed by the verified mTLS client leaf certificate.
 #[derive(Clone, Debug)]
 pub struct MtlsArtifactAccessPolicy {
-    uploads: Arc<SqliteUploadStore>,
+    metadata: Arc<dyn ArtifactMetadataStore>,
 }
 
 impl MtlsArtifactAccessPolicy {
     #[must_use]
-    pub fn new(uploads: Arc<SqliteUploadStore>) -> Self {
-        Self { uploads }
+    pub fn new(metadata: Arc<dyn ArtifactMetadataStore>) -> Self {
+        Self { metadata }
     }
 }
 
@@ -84,9 +84,9 @@ impl ArtifactAccessPolicy for MtlsArtifactAccessPolicy {
     }
 
     async fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
-        let uploads = Arc::clone(&self.uploads);
+        let metadata = Arc::clone(&self.metadata);
         let owner_id = owner_id.to_owned();
-        run_status_blocking(move || authorize_referenced_artifact(&uploads, &owner_id, digest))
+        run_status_blocking(move || authorize_referenced_artifact(&*metadata, &owner_id, digest))
             .await
     }
 }
@@ -94,18 +94,18 @@ impl ArtifactAccessPolicy for MtlsArtifactAccessPolicy {
 /// Stable-owner policy backed by the durable certificate enrollment registry.
 #[derive(Clone, Debug)]
 pub struct EnrolledArtifactAccessPolicy {
-    uploads: Arc<SqliteUploadStore>,
+    metadata: Arc<dyn ArtifactMetadataStore>,
     identities: Arc<dyn ConnectionIdentityResolver>,
 }
 
 impl EnrolledArtifactAccessPolicy {
     #[must_use]
     pub fn new(
-        uploads: Arc<SqliteUploadStore>,
+        metadata: Arc<dyn ArtifactMetadataStore>,
         identities: Arc<dyn ConnectionIdentityResolver>,
     ) -> Self {
         Self {
-            uploads,
+            metadata,
             identities,
         }
     }
@@ -122,19 +122,19 @@ impl ArtifactAccessPolicy for EnrolledArtifactAccessPolicy {
     }
 
     async fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
-        let uploads = Arc::clone(&self.uploads);
+        let metadata = Arc::clone(&self.metadata);
         let owner_id = owner_id.to_owned();
-        run_status_blocking(move || authorize_referenced_artifact(&uploads, &owner_id, digest))
+        run_status_blocking(move || authorize_referenced_artifact(&*metadata, &owner_id, digest))
             .await
     }
 }
 
 fn authorize_referenced_artifact(
-    uploads: &SqliteUploadStore,
+    metadata: &dyn ArtifactMetadataStore,
     owner_id: &str,
     digest: Sha256Digest,
 ) -> Result<(), Status> {
-    match uploads.can_read_artifact(owner_id, digest) {
+    match metadata.can_read_artifact(owner_id, digest) {
         Ok(true) => Ok(()),
         Ok(false) => Err(Status::permission_denied(
             "artifact is not referenced by this logical owner",
@@ -145,8 +145,8 @@ fn authorize_referenced_artifact(
 
 #[derive(Clone, Debug)]
 pub struct ArtifactServiceImpl {
-    uploads: Arc<SqliteUploadStore>,
-    artifacts: Arc<FilesystemArtifactStore>,
+    uploads: Arc<dyn ArtifactUploadRepository>,
+    artifacts: Arc<dyn ArtifactStore>,
     access: Arc<dyn ArtifactAccessPolicy>,
     clock: Arc<dyn Clock>,
 }
@@ -154,8 +154,8 @@ pub struct ArtifactServiceImpl {
 impl ArtifactServiceImpl {
     #[must_use]
     pub fn new(
-        uploads: Arc<SqliteUploadStore>,
-        artifacts: Arc<FilesystemArtifactStore>,
+        uploads: Arc<dyn ArtifactUploadRepository>,
+        artifacts: Arc<dyn ArtifactStore>,
         access: Arc<dyn ArtifactAccessPolicy>,
         clock: Arc<dyn Clock>,
     ) -> Self {

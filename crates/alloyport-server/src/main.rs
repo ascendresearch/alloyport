@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let artifact = artifact_runtime(&artifact_root, Arc::clone(&identity_resolver))?;
     let (control_service, interaction_hub) =
         WorkerControlService::open_sqlite_with_interaction_hub(database)?;
-    let mut control_service = control_service.with_artifact_metadata(Arc::clone(&artifact.uploads));
+    let mut control_service = control_service.with_artifact_metadata(artifact.uploads.clone());
     if require_enrollment {
         control_service = control_service.require_identity_resolver(Arc::clone(&identity_resolver));
     }
@@ -158,12 +158,12 @@ fn artifact_runtime(
         },
     )?);
     let access = Arc::new(EnrolledArtifactAccessPolicy::new(
-        Arc::clone(&uploads),
+        uploads.clone(),
         identity_resolver,
     ));
     Ok(ArtifactRuntime {
         service: ArtifactServiceImpl::new(
-            Arc::clone(&uploads),
+            uploads.clone(),
             artifacts,
             access,
             Arc::new(SystemClock),

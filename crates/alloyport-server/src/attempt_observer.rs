@@ -399,7 +399,7 @@ impl WorkerControlService {
     ) -> Result<ObservationDisposition, Status> {
         if let Some(uploads) = self.artifact_metadata.as_ref() {
             validate_and_grant_finished_artifacts(
-                uploads,
+                uploads.as_ref(),
                 worker_id,
                 &finished.attempt_id,
                 finished,

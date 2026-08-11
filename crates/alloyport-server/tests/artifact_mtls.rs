@@ -79,10 +79,10 @@ async fn client_certificate_owns_sessions_and_completed_artifacts() -> Result<()
         )),
     );
     let artifact_service = ArtifactServiceImpl::new(
-        Arc::clone(&uploads),
+        uploads.clone(),
         artifacts,
         Arc::new(EnrolledArtifactAccessPolicy::new(
-            Arc::clone(&uploads),
+            uploads.clone(),
             Arc::clone(&identity_resolver),
         )),
         Arc::new(ManualClock::new(1_000)),

@@ -16,8 +16,9 @@ use super::upload_references::{
 };
 use super::upload_schema::{SCHEMA, migrate_quota_schema, migrate_reference_schema};
 use crate::upload::{
-    ArtifactReference, BeginUpload, GarbageCollectionReport, GrantArtifactReference, QuotaScope,
-    UploadError, UploadQuotas, UploadSession, UploadState,
+    ArtifactMetadataStore, ArtifactReference, ArtifactUploadRepository, BeginUpload,
+    GarbageCollectionReport, GrantArtifactReference, QuotaScope, UploadError, UploadQuotas,
+    UploadSession, UploadState,
 };
 use crate::{
     ArtifactIdentity, ArtifactReader, ArtifactStore, FilesystemArtifactStore, IngestRequest,
@@ -367,7 +368,7 @@ impl SqliteUploadStore {
         &self,
         owner_id: &str,
         digest: Sha256Digest,
-        artifacts: &FilesystemArtifactStore,
+        artifacts: &dyn ArtifactStore,
     ) -> Result<ArtifactReader, UploadError> {
         let mut readers = self
             .active_readers
@@ -670,6 +671,71 @@ impl SqliteUploadStore {
             remove_if_present(&self.data_path(&id)?)?;
         }
         Ok(())
+    }
+}
+
+impl ArtifactUploadRepository for SqliteUploadStore {
+    fn begin(&self, request: &BeginUpload) -> Result<UploadSession, UploadError> {
+        Self::begin(self, request)
+    }
+
+    fn status(&self, owner_id: &str, upload_id: &str) -> Result<UploadSession, UploadError> {
+        Self::status(self, owner_id, upload_id)
+    }
+
+    fn append(
+        &self,
+        owner_id: &str,
+        upload_id: &str,
+        offset: u64,
+        bytes: &[u8],
+        now_ms: u64,
+    ) -> Result<u64, UploadError> {
+        Self::append(self, owner_id, upload_id, offset, bytes, now_ms)
+    }
+
+    fn finalize(
+        &self,
+        owner_id: &str,
+        upload_id: &str,
+        artifacts: &dyn ArtifactStore,
+        now_ms: u64,
+    ) -> Result<ArtifactIdentity, UploadError> {
+        Self::finalize(self, owner_id, upload_id, artifacts, now_ms)
+    }
+
+    fn open_referenced_artifact(
+        &self,
+        owner_id: &str,
+        digest: Sha256Digest,
+        artifacts: &dyn ArtifactStore,
+    ) -> Result<ArtifactReader, UploadError> {
+        Self::open_referenced_artifact(self, owner_id, digest, artifacts)
+    }
+}
+
+impl ArtifactMetadataStore for SqliteUploadStore {
+    fn completed_upload_session_by_key(
+        &self,
+        owner_id: &str,
+        upload_key: &str,
+    ) -> Result<Option<UploadSession>, UploadError> {
+        Self::completed_upload_session_by_key(self, owner_id, upload_key)
+    }
+
+    fn can_read_artifact(&self, owner_id: &str, digest: Sha256Digest) -> Result<bool, UploadError> {
+        Self::can_read_artifact(self, owner_id, digest)
+    }
+
+    fn artifact_size_bytes(&self, digest: Sha256Digest) -> Result<Option<u64>, UploadError> {
+        Self::artifact_size_bytes(self, digest)
+    }
+
+    fn grant_reference(
+        &self,
+        request: &GrantArtifactReference,
+    ) -> Result<ArtifactReference, UploadError> {
+        Self::grant_reference(self, request)
     }
 }
 

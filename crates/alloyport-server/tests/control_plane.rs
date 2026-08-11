@@ -624,9 +624,9 @@ async fn fake_execution_resumes_artifact_uploads_before_controller_accepts_termi
     })?;
     uploads.append("cuda-1", &partial.upload_id, 0, &stdout[..3], 1_001)?;
 
-    let service = WorkerControlService::new().with_artifact_metadata(Arc::clone(&uploads));
+    let service = WorkerControlService::new().with_artifact_metadata(uploads.clone());
     let artifact_service = ArtifactServiceImpl::new(
-        Arc::clone(&uploads),
+        uploads.clone(),
         remote_artifacts,
         Arc::new(FixedArtifactOwner),
         Arc::new(ManualClock::new(2_000)),

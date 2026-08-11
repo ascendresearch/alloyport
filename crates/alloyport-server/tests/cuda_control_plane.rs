@@ -225,7 +225,7 @@ impl RealCudaLoopbackFixture {
         let bundle_digest = Sha256Digest::digest_bytes(&bundle_bytes);
         let bundle_size = u64::try_from(bundle_bytes.len())?;
         publish_input_bundle(&uploads, remote_artifacts.as_ref(), &bundle_bytes)?;
-        let service = WorkerControlService::new().with_artifact_metadata(Arc::clone(&uploads));
+        let service = WorkerControlService::new().with_artifact_metadata(uploads.clone());
         let (endpoint, shutdown, server_task) =
             start_loopback_services(service.clone(), Arc::clone(&uploads), remote_artifacts)
                 .await?;
@@ -361,9 +361,9 @@ impl CudaLoopbackFixture {
         let bundle_size = u64::try_from(bundle_bytes.len())?;
         publish_input_bundle(&uploads, remote_artifacts.as_ref(), &bundle_bytes)?;
 
-        let service = WorkerControlService::new().with_artifact_metadata(Arc::clone(&uploads));
+        let service = WorkerControlService::new().with_artifact_metadata(uploads.clone());
         let artifact_service = ArtifactServiceImpl::new(
-            Arc::clone(&uploads),
+            uploads.clone(),
             remote_artifacts,
             Arc::new(FixedArtifactOwner),
             Arc::new(ManualClock::new(2_000)),

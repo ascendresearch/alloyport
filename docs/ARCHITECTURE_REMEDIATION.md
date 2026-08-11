@@ -295,6 +295,11 @@ directories (including their migration and adapter-test files).
   ports are asynchronous contracts. Built-in SQLite-backed policies and service repositories share
   one process-wide eight-permit persistence executor, so adding an RPC surface cannot silently
   create a new unbounded blocking pool.
+- [x] Server R7 Artifact ports: `ArtifactUploadRepository` owns mutable session/staging/finalize
+  operations, `ArtifactMetadataStore` owns published-object references and authorization metadata,
+  and immutable content uses `ArtifactStore`. Server application services contain no
+  `SqliteUploadStore` or `FilesystemArtifactStore` dependency; those types remain only in adapters,
+  tests, and the binary composition root.
 - [x] SQL-location architecture check has no legacy allowlist entries.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.

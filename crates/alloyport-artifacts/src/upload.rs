@@ -1,6 +1,6 @@
 //! Artifact upload session, quota, reference, and garbage-collection model.
 
-use crate::{ArtifactIdentity, ArtifactStoreError, Sha256Digest};
+use crate::{ArtifactIdentity, ArtifactReader, ArtifactStore, ArtifactStoreError, Sha256Digest};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::io;
@@ -130,6 +130,50 @@ pub struct UploadSession {
     pub state: UploadState,
     pub expires_at_ms: u64,
     pub artifact: Option<ArtifactIdentity>,
+}
+
+/// Mutable upload-session and staging operations required by the Artifact application service.
+#[allow(clippy::missing_errors_doc)]
+pub trait ArtifactUploadRepository: Debug + Send + Sync {
+    fn begin(&self, request: &BeginUpload) -> Result<UploadSession, UploadError>;
+    fn status(&self, owner_id: &str, upload_id: &str) -> Result<UploadSession, UploadError>;
+    fn append(
+        &self,
+        owner_id: &str,
+        upload_id: &str,
+        offset: u64,
+        bytes: &[u8],
+        now_ms: u64,
+    ) -> Result<u64, UploadError>;
+    fn finalize(
+        &self,
+        owner_id: &str,
+        upload_id: &str,
+        artifacts: &dyn ArtifactStore,
+        now_ms: u64,
+    ) -> Result<ArtifactIdentity, UploadError>;
+    fn open_referenced_artifact(
+        &self,
+        owner_id: &str,
+        digest: Sha256Digest,
+        artifacts: &dyn ArtifactStore,
+    ) -> Result<ArtifactReader, UploadError>;
+}
+
+/// Published-object metadata and durable reference operations used by authorization/controllers.
+#[allow(clippy::missing_errors_doc)]
+pub trait ArtifactMetadataStore: Debug + Send + Sync {
+    fn completed_upload_session_by_key(
+        &self,
+        owner_id: &str,
+        upload_key: &str,
+    ) -> Result<Option<UploadSession>, UploadError>;
+    fn can_read_artifact(&self, owner_id: &str, digest: Sha256Digest) -> Result<bool, UploadError>;
+    fn artifact_size_bytes(&self, digest: Sha256Digest) -> Result<Option<u64>, UploadError>;
+    fn grant_reference(
+        &self,
+        request: &GrantArtifactReference,
+    ) -> Result<ArtifactReference, UploadError>;
 }
 
 #[derive(Debug)]

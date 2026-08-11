@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::storage::{ArtifactIdentity, ExecutionContract};
-use alloyport_artifacts::FilesystemArtifactStore;
 use alloyport_artifacts::upload::BeginUpload;
+use alloyport_artifacts::{FilesystemArtifactStore, SqliteUploadStore};
 use alloyport_proto::v1::{ArtifactRef, ExecutionSpec, ResourceLimits};
 
 #[test]
@@ -169,7 +169,7 @@ async fn cuda_assignment_grants_only_a_published_size_matched_input_bundle()
             .await,
         Err(EnqueueError::Artifact(_))
     ));
-    let service = WorkerControlService::new().with_artifact_metadata(Arc::clone(&uploads));
+    let service = WorkerControlService::new().with_artifact_metadata(uploads.clone());
     assert_eq!(
         service.enqueue_assignment("cuda-1", assignment).await?,
         EnqueueOutcome::Pending
