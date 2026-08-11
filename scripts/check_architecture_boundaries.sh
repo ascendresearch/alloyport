@@ -50,6 +50,11 @@ if event_responsibility=$(rg -n \
     crates/alloyport-events/src/lib.rs); then
     violations+=("event reducer or rendering responsibility returned to the schema module: ${event_responsibility}")
 fi
+if interaction_runtime=$(rg -n \
+    'pub struct InteractionHub|tokio::sync::broadcast|sanitize_display_text|strip_terminal_sequences' \
+    crates/alloyport-server/src/interaction.rs); then
+    violations+=("interaction live-delivery or sanitization logic returned to the domain port: ${interaction_runtime}")
+fi
 if string_error=$(rg -n 'Future<Output = Result<\(\), String>>' \
     crates/alloyport-worker/src/executor.rs); then
     violations+=("Artifact publisher port regained an untyped String error: ${string_error}")

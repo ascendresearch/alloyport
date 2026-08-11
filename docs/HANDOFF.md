@@ -211,6 +211,8 @@ segregated into worker-connection, assignment, attempt/lease, and server-outbox 
 service consumes their `ControlRepository` composition. SQLite connection and outbox operations live
 in dedicated implementation modules, as do assignment and attempt/lease operations; the shared
 repository shell now owns only connection creation, migrations, and locking.
+Canonical Interaction persistence contracts, the replay-to-live broadcast decorator, and worker
+display sanitization are also separate modules; SQLite remains confined to its adapter.
 
 Current behavior:
 
