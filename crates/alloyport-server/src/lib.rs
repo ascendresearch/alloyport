@@ -8,6 +8,7 @@ mod control_transport;
 pub mod identity;
 pub mod interaction;
 pub mod interaction_service;
+mod persistence;
 pub mod storage;
 
 use adapters::sqlite::{SqliteControlRepository, SqliteInteractionStore};
@@ -185,11 +186,13 @@ struct ControlState {
 #[derive(Clone, Debug)]
 pub struct WorkerControlService {
     state: Arc<Mutex<ControlState>>,
+    delivery: Arc<Mutex<()>>,
     repository: Arc<dyn ControlRepository>,
     clock: Arc<dyn Clock>,
     identity_resolver: Option<Arc<dyn ConnectionIdentityResolver>>,
     artifact_metadata: Option<Arc<SqliteUploadStore>>,
     interactions: Arc<dyn InteractionStore>,
+    persistence: persistence::ServerPersistence,
     connection_counter: Arc<AtomicU64>,
     lease_counter: Arc<AtomicU64>,
 }
@@ -272,11 +275,13 @@ impl WorkerControlService {
     ) -> Self {
         Self {
             state: Arc::new(Mutex::new(ControlState::default())),
+            delivery: Arc::new(Mutex::new(())),
             repository,
             clock,
             identity_resolver: None,
             artifact_metadata: None,
             interactions,
+            persistence: persistence::ServerPersistence::default(),
             connection_counter: Arc::new(AtomicU64::new(unique_seed())),
             lease_counter: Arc::new(AtomicU64::new(unique_seed())),
         }
@@ -611,6 +616,8 @@ fn validate_worker_acknowledgement(
     Ok(())
 }
 
+#[cfg(test)]
+mod persistence_tests;
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;

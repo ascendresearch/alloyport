@@ -333,6 +333,7 @@ async fn worker_restart_replays_durable_finished_result() -> Result<(), Box<dyn 
         service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Accepted)
     })
     .await?;
+    wait_until(|| async { first_state.outbox_len().ok() == Some(0) }).await?;
     first_session.abort();
     let _ = first_session.await;
     wait_until(|| async {

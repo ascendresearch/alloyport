@@ -282,6 +282,11 @@ directories (including their migration and adapter-test files).
   state handle and route journal operations through a four-permit bounded blocking adapter. No
   SQLite-backed journal call runs while holding a Tokio state mutex; a slow-operation concurrency
   test guards both event-loop responsiveness and the independent persistence limit.
+- [x] Server R6 control-stream slice: inbound observation projection and outbound assignment,
+  cancellation, and acknowledgement persistence run behind an eight-permit blocking boundary.
+  Connection-state snapshots are released before repository work, while a dedicated delivery
+  coordinator preserves outbound sequence allocation; slow persistence cannot occupy network
+  executor threads.
 - [x] SQL-location architecture check has no legacy allowlist entries.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.
