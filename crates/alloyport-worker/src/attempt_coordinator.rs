@@ -267,7 +267,7 @@ impl OutboundWorker {
         let cancellation_for_task = cancellation.clone();
         let state = self.state.lock().await.clone();
         let integration = Arc::clone(integration);
-        let artifact_downloader = self.artifact_downloader.clone();
+        let artifact_input = self.artifact_input.clone();
         let artifact_publisher = self.artifact_publisher.clone();
         let updates = self.execution_updates.clone();
         tokio::spawn(async move {
@@ -276,7 +276,7 @@ impl OutboundWorker {
                 &state,
                 &attempt_id,
                 &cancellation_for_task,
-                artifact_downloader.as_deref(),
+                artifact_input.as_deref(),
                 artifact_publisher.as_deref(),
                 &updates,
             )
@@ -477,7 +477,7 @@ async fn run_registered_execution(
     state: &WorkerState,
     attempt_id: &str,
     cancellation: &CancellationToken,
-    downloader: Option<&crate::artifact_download::RemoteArtifactDownloader>,
+    input_provider: Option<&dyn crate::artifact_input::ArtifactInputProvider>,
     publisher: Option<&dyn ArtifactPublisher>,
     updates: &broadcast::Sender<ExecutionUpdate>,
 ) -> Result<crate::executor::ExecutionRun, crate::executor::ExecutionRuntimeError> {
@@ -494,7 +494,7 @@ async fn run_registered_execution(
             state,
             attempt_id,
             cancellation,
-            downloader,
+            input_provider,
             publisher,
             observer,
         })

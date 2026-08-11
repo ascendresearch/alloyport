@@ -1,5 +1,6 @@
 //! Typed executor boundary and deterministic fake runtime.
 
+use crate::artifact_input::ArtifactInputError;
 use crate::journal::{LocalAttemptPhase, StoredArtifact, StoredFinished};
 use crate::{WorkerError, WorkerState};
 use alloyport_artifacts::upload::ArtifactReferenceKind;
@@ -34,6 +35,7 @@ pub use crate::fake_executor::{
 pub enum ExecutionRuntimeError {
     Worker(WorkerError),
     Artifact(ArtifactStoreError),
+    ArtifactInput(ArtifactInputError),
     Serialization(serde_json::Error),
     Executor(String),
     ArtifactPublication(String),
@@ -50,6 +52,7 @@ impl Display for ExecutionRuntimeError {
         match self {
             Self::Worker(error) => Display::fmt(error, formatter),
             Self::Artifact(error) => Display::fmt(error, formatter),
+            Self::ArtifactInput(error) => Display::fmt(error, formatter),
             Self::Serialization(error) => Display::fmt(error, formatter),
             Self::Executor(detail) => write!(formatter, "executor failed: {detail}"),
             Self::ArtifactPublication(detail) => {
@@ -81,6 +84,7 @@ impl Error for ExecutionRuntimeError {
         match self {
             Self::Worker(error) => Some(error),
             Self::Artifact(error) => Some(error),
+            Self::ArtifactInput(error) => Some(error),
             Self::Serialization(error) => Some(error),
             Self::TaskJoin(error) => Some(error),
             Self::ArtifactPublication(_)
@@ -103,6 +107,12 @@ impl From<WorkerError> for ExecutionRuntimeError {
 impl From<ArtifactStoreError> for ExecutionRuntimeError {
     fn from(error: ArtifactStoreError) -> Self {
         Self::Artifact(error)
+    }
+}
+
+impl From<ArtifactInputError> for ExecutionRuntimeError {
+    fn from(error: ArtifactInputError) -> Self {
+        Self::ArtifactInput(error)
     }
 }
 

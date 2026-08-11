@@ -2,6 +2,7 @@
 
 pub mod adapters;
 pub mod artifact_download;
+pub mod artifact_input;
 pub mod artifact_upload;
 mod attempt_coordinator;
 mod control_session;
@@ -19,6 +20,7 @@ mod worker_state;
 use alloyport_proto::v1::{Backend, WorkerHello};
 use alloyport_proto::{ValidationError, validate_worker_hello};
 use artifact_download::RemoteArtifactDownloader;
+use artifact_input::ArtifactInputProvider;
 use cuda::CUDA_FIXTURE_FEATURE;
 use cuda_runtime::CudaExecutionRuntime;
 use execution_backend::{
@@ -179,7 +181,7 @@ pub struct OutboundWorker {
     state: Arc<Mutex<WorkerState>>,
     execution: Option<Arc<ExecutionIntegration>>,
     admission_only: bool,
-    artifact_downloader: Option<Arc<RemoteArtifactDownloader>>,
+    artifact_input: Option<Arc<dyn ArtifactInputProvider>>,
     artifact_publisher: Option<Arc<dyn ArtifactPublisher>>,
     execution_updates: broadcast::Sender<ExecutionUpdate>,
 }
@@ -268,7 +270,7 @@ impl OutboundWorker {
             state: Arc::new(Mutex::new(state)),
             execution: None,
             admission_only: false,
-            artifact_downloader: None,
+            artifact_input: None,
             artifact_publisher: None,
             execution_updates,
         })
@@ -384,7 +386,17 @@ impl OutboundWorker {
     /// Downloads assignment inputs into the verified worker-local CAS before CUDA execution.
     #[must_use]
     pub fn with_artifact_downloader(mut self, downloader: Arc<RemoteArtifactDownloader>) -> Self {
-        self.artifact_downloader = Some(downloader);
+        self.artifact_input = Some(downloader);
+        self
+    }
+
+    /// Supplies an implementation-independent assignment-input materializer to execution backends.
+    #[must_use]
+    pub fn with_artifact_input_provider(
+        mut self,
+        provider: Arc<dyn ArtifactInputProvider>,
+    ) -> Self {
+        self.artifact_input = Some(provider);
         self
     }
 

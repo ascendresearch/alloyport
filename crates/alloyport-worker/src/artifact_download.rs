@@ -1,5 +1,6 @@
 //! Bounded, digest-verified assignment input download from the Artifact service.
 
+use crate::artifact_input::{ArtifactInputError, ArtifactInputFuture, ArtifactInputProvider};
 use crate::journal::StoredArtifact;
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
 use alloyport_proto::artifact_v1::DownloadRequest;
@@ -133,6 +134,17 @@ impl RemoteArtifactDownloader {
     }
 }
 
+impl ArtifactInputProvider for RemoteArtifactDownloader {
+    fn materialize<'a>(&'a self, artifact: &'a StoredArtifact) -> ArtifactInputFuture<'a> {
+        Box::pin(async move {
+            self.download(artifact)
+                .await
+                .map(|_| ())
+                .map_err(ArtifactInputError::from)
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum ArtifactDownloadError {
     InvalidConfiguration(&'static str),
@@ -188,5 +200,50 @@ impl From<tonic::transport::Error> for ArtifactDownloadError {
 impl From<tonic::Status> for ArtifactDownloadError {
     fn from(error: tonic::Status) -> Self {
         Self::Rpc(error)
+    }
+}
+
+impl From<ArtifactDownloadError> for ArtifactInputError {
+    fn from(error: ArtifactDownloadError) -> Self {
+        let detail = error.to_string();
+        match error {
+            ArtifactDownloadError::InvalidConfiguration(_) => Self::Invalid(detail),
+            ArtifactDownloadError::SizeLimitExceeded { .. } => Self::Policy(detail),
+            ArtifactDownloadError::Protocol(_) => Self::Integrity(detail),
+            ArtifactDownloadError::Transport(_) | ArtifactDownloadError::Rpc(_) => {
+                Self::Unavailable(detail)
+            }
+            ArtifactDownloadError::Local(_) | ArtifactDownloadError::Join(_) => {
+                Self::Internal(detail)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adapter_errors_map_to_stable_input_categories() {
+        assert!(matches!(
+            ArtifactInputError::from(ArtifactDownloadError::InvalidConfiguration("bad")),
+            ArtifactInputError::Invalid(_)
+        ));
+        assert!(matches!(
+            ArtifactInputError::from(ArtifactDownloadError::SizeLimitExceeded {
+                limit: 1,
+                declared: 2,
+            }),
+            ArtifactInputError::Policy(_)
+        ));
+        assert!(matches!(
+            ArtifactInputError::from(ArtifactDownloadError::Protocol("gap".into())),
+            ArtifactInputError::Integrity(_)
+        ));
+        assert!(matches!(
+            ArtifactInputError::from(ArtifactDownloadError::Local("disk".into())),
+            ArtifactInputError::Internal(_)
+        ));
     }
 }

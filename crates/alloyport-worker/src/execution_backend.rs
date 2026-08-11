@@ -1,7 +1,7 @@
 //! Pluggable execution-backend port and built-in runtime adapters.
 
 use crate::WorkerState;
-use crate::artifact_download::RemoteArtifactDownloader;
+use crate::artifact_input::ArtifactInputProvider;
 use crate::cuda_runtime::CudaExecutionRuntime;
 use crate::executor::{
     ArtifactPublisher, CancellationToken, ExecutionObservation, ExecutionRun,
@@ -30,7 +30,7 @@ pub struct BackendExecutionRequest<'a> {
     pub state: &'a WorkerState,
     pub attempt_id: &'a str,
     pub cancellation: &'a CancellationToken,
-    pub downloader: Option<&'a RemoteArtifactDownloader>,
+    pub input_provider: Option<&'a dyn ArtifactInputProvider>,
     pub publisher: Option<&'a dyn ArtifactPublisher>,
     pub observer: ExecutionObserver,
 }
@@ -157,14 +157,13 @@ impl ExecutionBackend for CudaExecutionBackend {
 
     fn execute<'a>(&'a self, request: BackendExecutionRequest<'a>) -> BackendExecutionFuture<'a> {
         Box::pin(async move {
-            if let Some(downloader) = request.downloader {
+            if let Some(input_provider) = request.input_provider {
                 let attempt = request.state.attempt(request.attempt_id)?.ok_or_else(|| {
                     ExecutionRuntimeError::MissingAttempt(request.attempt_id.into())
                 })?;
-                downloader
-                    .download(&attempt.assignment.execution.bundle)
-                    .await
-                    .map_err(|error| ExecutionRuntimeError::Executor(error.to_string()))?;
+                input_provider
+                    .materialize(&attempt.assignment.execution.bundle)
+                    .await?;
             }
             let observer = request.observer;
             if let Some(publisher) = request.publisher {

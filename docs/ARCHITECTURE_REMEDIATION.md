@@ -131,9 +131,8 @@ Implemented in the first R4 slice:
 - Fake and CUDA are built-in adapters behind the same port, and a probe backend test demonstrates
   that adding an implementation does not edit the control-session or attempt state machine.
 
-The remaining R4/R7 follow-up is to replace the concrete Artifact downloader in
-`BackendExecutionRequest` with input/materialization ports and refine backend errors into explicit
-retryable, terminal, policy, and integrity categories.
+The remaining R4 follow-up is to refine all backend failures into explicit retryable, terminal,
+policy, and integrity categories; Artifact input failures now already preserve these broad classes.
 
 ### R5 — Split oversized coordinators by use case (P1)
 
@@ -169,6 +168,12 @@ Acceptance:
 Separate immutable CAS, mutable upload staging, metadata/references, authorization, and GC ports.
 Remove concrete `FilesystemArtifactStore` and `SqliteUploadStore` dependencies from application
 services. Replace string errors at plugin boundaries with typed categories.
+
+The worker execution context now consumes `ArtifactInputProvider` rather than
+`RemoteArtifactDownloader`. The remote gRPC downloader is an adapter behind that port and maps its
+configuration, quota, transport, integrity, and local failures to stable typed input categories.
+Artifact output was already exposed through `ArtifactPublisher`; remaining R7 work is to remove
+concrete stores from server application services and separate upload staging from metadata ports.
 
 ### R8 — Persistence implementation isolation (P1, with P0 transaction slices)
 
@@ -267,6 +272,9 @@ directories (including their migration and adapter-test files).
   (down from a 1,395-line mixed module), deterministic fake process behavior is 344 lines, and its
   460-line behavioral suite is isolated from production code. Existing `executor::*` imports remain
   source-compatible through explicit re-exports.
+- [x] Worker Artifact input port: execution backends depend on `ArtifactInputProvider`, while the
+  remote downloader maps adapter-specific failures into typed Invalid/Policy/Unavailable/Integrity/
+  Internal categories.
 - [x] SQL-location architecture check has no legacy allowlist entries.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.
