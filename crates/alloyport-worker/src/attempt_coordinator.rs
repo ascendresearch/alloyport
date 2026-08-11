@@ -2,8 +2,8 @@
 
 use super::{OutboundWorker, WorkerError};
 use crate::journal::{LocalAttemptPhase, StoredFinished, WorkerOutboxPayload};
-use alloyport_core::ExecutionKind;
-use alloyport_proto::v1::{Assignment, AttemptOutcome, RejectionReason, WorkerToServer};
+use alloyport_core::{AttemptOutcome, ExecutionKind};
+use alloyport_proto::v1::{Assignment, RejectionReason, WorkerToServer};
 use alloyport_proto::validate_assignment;
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
@@ -179,7 +179,7 @@ impl OutboundWorker {
                     .mark_finished_async(
                         cancel.attempt_id.clone(),
                         StoredFinished {
-                            outcome: AttemptOutcome::Cancelled.into(),
+                            outcome: AttemptOutcome::Cancelled,
                             exit_code: None,
                             elapsed_ms: 0,
                             receipt: None,

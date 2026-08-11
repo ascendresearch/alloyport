@@ -474,10 +474,7 @@ fn assert_terminal_artifacts(
     attempt_id: &str,
     expected_stdout: Option<&[u8]>,
 ) -> Result<(), Box<dyn Error>> {
-    assert_eq!(
-        finished.outcome,
-        i32::from(alloyport_proto::v1::AttemptOutcome::Succeeded)
-    );
+    assert_eq!(finished.outcome, alloyport_core::AttemptOutcome::Succeeded);
     if let Some(expected_stdout) = expected_stdout {
         let expected_stdout = Sha256Digest::digest_bytes(expected_stdout).to_string();
         assert_eq!(

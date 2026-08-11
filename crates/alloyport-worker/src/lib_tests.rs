@@ -5,9 +5,9 @@ use crate::execution_backend::{
     BackendExecutionFuture, BackendExecutionRequest, ExecutionBackend, ExecutionKind,
 };
 use crate::journal::{LocalAttemptPhase, StoredArtifact};
+use alloyport_core::AttemptOutcome;
 use alloyport_proto::v1::{
-    ArtifactRef, Assignment, AttemptOutcome, ExecutionSpec, ExecutorKind as WireExecutorKind,
-    ServerToWorker,
+    ArtifactRef, Assignment, ExecutionSpec, ExecutorKind as WireExecutorKind, ServerToWorker,
 };
 
 fn artifact(byte: char) -> ArtifactRef {
@@ -164,7 +164,7 @@ fn sqlite_journal_restores_finished_attempt_and_rejects_conflict() -> Result<(),
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("worker.sqlite3");
     let finished = StoredFinished {
-        outcome: alloyport_proto::v1::AttemptOutcome::Succeeded.into(),
+        outcome: AttemptOutcome::Succeeded,
         exit_code: Some(0),
         elapsed_ms: 25,
         receipt: Some(StoredArtifact {
@@ -260,7 +260,7 @@ async fn pending_legacy_terminal_is_published_before_control_replay() -> Result<
     state.mark_finished(
         "attempt-1",
         &StoredFinished {
-            outcome: AttemptOutcome::Succeeded.into(),
+            outcome: AttemptOutcome::Succeeded,
             exit_code: Some(0),
             elapsed_ms: 1,
             receipt: Some(artifact.clone()),

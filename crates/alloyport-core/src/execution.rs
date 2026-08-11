@@ -107,6 +107,68 @@ impl Display for NetworkPolicyError {
 
 impl Error for NetworkPolicyError {}
 
+/// Terminal classification of one execution attempt.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[repr(i32)]
+#[serde(try_from = "i32", into = "i32")]
+pub enum AttemptOutcome {
+    Succeeded = 1,
+    CandidateFailed = 2,
+    TimedOut = 3,
+    Cancelled = 4,
+    InfraError = 5,
+    IntegrityViolation = 6,
+}
+
+impl AttemptOutcome {
+    /// Stable diagnostic name matching the corresponding wire enum constant.
+    #[must_use]
+    pub const fn as_str_name(self) -> &'static str {
+        match self {
+            Self::Succeeded => "ATTEMPT_OUTCOME_SUCCEEDED",
+            Self::CandidateFailed => "ATTEMPT_OUTCOME_CANDIDATE_FAILED",
+            Self::TimedOut => "ATTEMPT_OUTCOME_TIMED_OUT",
+            Self::Cancelled => "ATTEMPT_OUTCOME_CANCELLED",
+            Self::InfraError => "ATTEMPT_OUTCOME_INFRA_ERROR",
+            Self::IntegrityViolation => "ATTEMPT_OUTCOME_INTEGRITY_VIOLATION",
+        }
+    }
+}
+
+impl From<AttemptOutcome> for i32 {
+    fn from(outcome: AttemptOutcome) -> Self {
+        outcome as Self
+    }
+}
+
+impl TryFrom<i32> for AttemptOutcome {
+    type Error = AttemptOutcomeError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Succeeded),
+            2 => Ok(Self::CandidateFailed),
+            3 => Ok(Self::TimedOut),
+            4 => Ok(Self::Cancelled),
+            5 => Ok(Self::InfraError),
+            6 => Ok(Self::IntegrityViolation),
+            _ => Err(AttemptOutcomeError(value)),
+        }
+    }
+}
+
+/// A wire or persisted terminal-outcome number is not part of the domain vocabulary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AttemptOutcomeError(pub i32);
+
+impl Display for AttemptOutcomeError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        write!(formatter, "invalid attempt outcome {}", self.0)
+    }
+}
+
+impl Error for AttemptOutcomeError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +191,12 @@ mod tests {
             serde_json::from_str::<NetworkPolicy>("0")?,
             NetworkPolicy::Unspecified
         );
+        assert_eq!(serde_json::to_string(&AttemptOutcome::TimedOut)?, "3");
+        assert_eq!(
+            serde_json::from_str::<AttemptOutcome>("6")?,
+            AttemptOutcome::IntegrityViolation
+        );
+        assert!(serde_json::from_str::<AttemptOutcome>("0").is_err());
         Ok(())
     }
 }

@@ -16,8 +16,8 @@ use crate::artifact_input::ArtifactInputError;
 use crate::journal::{LocalAttemptPhase, StoredArtifact, StoredFinished};
 use crate::{WorkerError, WorkerState};
 use alloyport_artifacts::{ArtifactStore, ArtifactStoreError};
+use alloyport_core::AttemptOutcome;
 use alloyport_events::{Event, ProducerEvent};
-use alloyport_proto::v1::AttemptOutcome;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -391,7 +391,7 @@ impl FakeExecutionRuntime {
         )
         .await?;
         let finished = StoredFinished {
-            outcome: result.outcome.into(),
+            outcome: result.outcome,
             exit_code: result.exit_code,
             elapsed_ms: result.elapsed_ms,
             receipt: Some(receipt.clone()),
@@ -432,7 +432,7 @@ impl FakeExecutionRuntime {
             Event::CommandCompleted {
                 exit_code: persisted.finished.exit_code.unwrap_or(-1),
                 elapsed_ms: persisted.finished.elapsed_ms,
-                timed_out: persisted.finished.outcome == i32::from(AttemptOutcome::TimedOut),
+                timed_out: persisted.finished.outcome == AttemptOutcome::TimedOut,
                 output_artifact: Some(event_artifact(&persisted.stdout, "stdout")),
             },
         ));

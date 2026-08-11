@@ -1,10 +1,10 @@
 use alloyport_artifacts::upload::{ArtifactReferenceKind, BeginUpload, UploadQuotas};
 use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest, SqliteUploadStore};
+use alloyport_core::AttemptOutcome;
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_proto::v1::{
-    ArtifactRef, Assignment, AttemptOutcome, Backend, ExecutionSpec, ExecutorKind,
-    WorkerCapabilities, WorkerHello,
+    ArtifactRef, Assignment, Backend, ExecutionSpec, ExecutorKind, WorkerCapabilities, WorkerHello,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use alloyport_server::adapters::sqlite::SqliteControlRepository;
@@ -346,7 +346,7 @@ async fn worker_restart_replays_durable_finished_result() -> Result<(), Box<dyn 
     first_state.mark_finished(
         "attempt-1",
         &StoredFinished {
-            outcome: AttemptOutcome::Succeeded.into(),
+            outcome: AttemptOutcome::Succeeded,
             exit_code: Some(0),
             elapsed_ms: 10,
             receipt: None,
@@ -497,7 +497,7 @@ async fn fake_execution_survives_stream_disconnect_and_replays_one_terminal_resu
     let finished = worker_state
         .finished_attempt("attempt-1")?
         .expect("fake runtime must commit a terminal result while disconnected");
-    assert_eq!(finished.outcome, i32::from(AttemptOutcome::Succeeded));
+    assert_eq!(finished.outcome, AttemptOutcome::Succeeded);
     assert!(finished.receipt.is_some());
     assert!(finished.stdout.is_some());
     assert!(finished.stderr.is_some());
@@ -574,7 +574,7 @@ async fn fake_execution_cancellation_acknowledges_before_terminal_completion()
     let finished = worker_state
         .finished_attempt("attempt-1")?
         .expect("cancelled fake execution must persist its receipt and terminal result");
-    assert_eq!(finished.outcome, i32::from(AttemptOutcome::Cancelled));
+    assert_eq!(finished.outcome, AttemptOutcome::Cancelled);
     assert!(finished.receipt.is_some());
     assert_eq!(
         service.cancel_attempt("attempt-1", "duplicate").await?,
@@ -906,7 +906,7 @@ async fn expired_attempt_is_reassigned_with_a_new_identity_and_old_result_stays_
     worker_state.mark_finished(
         "attempt-1",
         &StoredFinished {
-            outcome: AttemptOutcome::Succeeded.into(),
+            outcome: AttemptOutcome::Succeeded,
             exit_code: Some(0),
             elapsed_ms: 30_001,
             receipt: None,

@@ -4,7 +4,7 @@ use super::*;
 use crate::storage::{ArtifactIdentity, AssignmentRepository, ExecutionContract};
 use alloyport_artifacts::upload::BeginUpload;
 use alloyport_artifacts::{FilesystemArtifactStore, SqliteUploadStore};
-use alloyport_core::ExecutionKind;
+use alloyport_core::{AttemptOutcome, ExecutionKind};
 use alloyport_proto::v1::{
     ArtifactRef, ExecutionSpec, ExecutorKind as WireExecutorKind, ResourceLimits,
 };
@@ -91,7 +91,7 @@ fn terminal_artifacts_must_be_finalized_by_the_reporting_worker() -> Result<(), 
         &ExecutionFinished {
             assignment_id: "assignment-1".into(),
             attempt_id: "attempt-1".into(),
-            outcome: alloyport_proto::v1::AttemptOutcome::Succeeded.into(),
+            outcome: AttemptOutcome::Succeeded.into(),
             exit_code: Some(0),
             elapsed_ms: 1,
             receipt: Some(artifact.clone()),

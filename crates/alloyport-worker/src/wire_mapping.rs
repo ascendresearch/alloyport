@@ -87,7 +87,7 @@ fn stored_to_finished(
     ExecutionFinished {
         assignment_id: assignment_id.to_owned(),
         attempt_id: attempt_id.to_owned(),
-        outcome: finished.outcome,
+        outcome: finished.outcome.into(),
         exit_code: finished.exit_code,
         elapsed_ms: finished.elapsed_ms,
         receipt: finished.receipt.as_ref().map(stored_to_artifact),

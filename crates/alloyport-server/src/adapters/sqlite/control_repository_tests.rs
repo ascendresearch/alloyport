@@ -5,7 +5,7 @@ use crate::storage::{
     ObservationDisposition, ObservedAttempt, RepositoryError, ServerOutboxFrame,
     ServerOutboxRepository, StoreAssignmentOutcome, WorkerConnectionRepository, WorkerRegistration,
 };
-use alloyport_core::ExecutionKind;
+use alloyport_core::{AttemptOutcome, ExecutionKind};
 use std::error::Error;
 
 #[test]
@@ -206,7 +206,7 @@ fn lease_expiry_retains_a_late_result_as_stale() -> Result<(), Box<dyn Error>> {
     let disposition = repository.observe_attempt(&observation(
         1_101,
         AttemptObservation::Finished(FinishedObservation {
-            outcome: 1,
+            outcome: AttemptOutcome::Succeeded,
             exit_code: Some(0),
             elapsed_ms: 90,
             receipt: Some(artifact('c')),
@@ -270,7 +270,7 @@ fn expired_attempt_reassignment_creates_a_fresh_linked_contract() -> Result<(), 
         repository.observe_attempt(&observation(
             1_103,
             AttemptObservation::Finished(FinishedObservation {
-                outcome: 1,
+                outcome: AttemptOutcome::Succeeded,
                 exit_code: Some(0),
                 elapsed_ms: 100,
                 receipt: None,

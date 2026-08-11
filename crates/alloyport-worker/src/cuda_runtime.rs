@@ -302,7 +302,7 @@ impl CudaExecutionRuntime {
             store_artifact(Arc::clone(&self.artifacts), receipt, RECEIPT_MEDIA_TYPE).await?;
         Ok(CudaPersistedExecution {
             finished: StoredFinished {
-                outcome: outcome.into(),
+                outcome,
                 exit_code,
                 elapsed_ms,
                 receipt: Some(receipt.clone()),
@@ -386,8 +386,7 @@ fn append_terminal_events(
         Event::CommandCompleted {
             exit_code: persisted.finished.exit_code.unwrap_or(-1),
             elapsed_ms: persisted.finished.elapsed_ms,
-            timed_out: persisted.finished.outcome
-                == i32::from(alloyport_proto::v1::AttemptOutcome::TimedOut),
+            timed_out: persisted.finished.outcome == alloyport_core::AttemptOutcome::TimedOut,
             output_artifact: Some(event_artifact(&persisted.stdout, "stdout")),
         },
     ));

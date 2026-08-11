@@ -1,7 +1,7 @@
 //! Transport-independent control-plane records and lifecycle values.
 
 use super::RepositoryError;
-use alloyport_core::{ExecutionKind, NetworkPolicy};
+use alloyport_core::{AttemptOutcome, ExecutionKind, NetworkPolicy};
 use serde::{Deserialize, Serialize};
 
 /// Worker registration persisted independently of its current network session.
@@ -175,7 +175,7 @@ impl AttemptObservation {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FinishedObservation {
-    pub outcome: i32,
+    pub outcome: AttemptOutcome,
     pub exit_code: Option<i32>,
     pub elapsed_ms: u64,
     pub receipt: Option<ArtifactIdentity>,

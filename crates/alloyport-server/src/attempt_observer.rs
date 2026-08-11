@@ -7,6 +7,7 @@ use super::{
     artifact_to_identity, repository_status, validate_and_grant_finished_artifacts,
     worker_to_server,
 };
+use alloyport_core::AttemptOutcome;
 
 impl WorkerControlService {
     pub(super) fn observe_message(
@@ -142,7 +143,8 @@ impl WorkerControlService {
             )?;
         }
         let observation = FinishedObservation {
-            outcome: finished.outcome,
+            outcome: AttemptOutcome::try_from(finished.outcome)
+                .map_err(|error| Status::invalid_argument(error.to_string()))?,
             exit_code: finished.exit_code,
             elapsed_ms: finished.elapsed_ms,
             receipt: finished.receipt.as_ref().map(artifact_to_identity),

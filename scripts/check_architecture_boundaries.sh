@@ -119,17 +119,20 @@ if ! rg -q '^pub trait ControlRepository' crates/alloyport-server/src/storage/re
     || ! rg -q '^pub trait Clock' crates/alloyport-server/src/storage/clock.rs; then
     violations+=("control storage model/clock/repository layering is incomplete")
 fi
-if raw_execution_enum=$(rg -n 'pub (executor_kind|network): i32' \
+if raw_execution_enum=$(rg -n 'pub (executor_kind|network|outcome): i32' \
     crates/alloyport-server/src/storage crates/alloyport-worker/src/journal.rs); then
     violations+=("durable assignment contract regained a raw execution enum integer: ${raw_execution_enum}")
 fi
 if ! rg -q '^pub enum ExecutionKind' crates/alloyport-core/src/execution.rs \
     || ! rg -q '^pub enum NetworkPolicy' crates/alloyport-core/src/execution.rs \
+    || ! rg -q '^pub enum AttemptOutcome' crates/alloyport-core/src/execution.rs \
     || ! rg -q 'pub executor_kind: ExecutionKind' crates/alloyport-server/src/storage/model.rs \
     || ! rg -q 'pub network: NetworkPolicy' crates/alloyport-server/src/storage/model.rs \
+    || ! rg -q 'pub outcome: AttemptOutcome' crates/alloyport-server/src/storage/model.rs \
     || ! rg -q 'pub executor_kind: ExecutionKind' crates/alloyport-worker/src/journal.rs \
-    || ! rg -q 'pub network: NetworkPolicy' crates/alloyport-worker/src/journal.rs; then
-    violations+=("shared execution-kind/network-policy vocabulary is not used by both durable contracts")
+    || ! rg -q 'pub network: NetworkPolicy' crates/alloyport-worker/src/journal.rs \
+    || ! rg -q 'pub outcome: AttemptOutcome' crates/alloyport-worker/src/journal.rs; then
+    violations+=("shared execution kind/network policy/outcome vocabulary is not used by both durable contracts")
 fi
 if core_outer_dependency=$(rg -n \
     'alloyport-proto|rusqlite|tonic|tokio' crates/alloyport-core/Cargo.toml); then

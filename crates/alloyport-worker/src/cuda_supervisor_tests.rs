@@ -7,8 +7,7 @@ use crate::cuda::{
 };
 use crate::journal::{StoredArtifact, StoredExecution, StoredLimits};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
-use alloyport_core::{ExecutionKind, NetworkPolicy};
-use alloyport_proto::v1::AttemptOutcome;
+use alloyport_core::{AttemptOutcome, ExecutionKind, NetworkPolicy};
 use std::io::Cursor;
 use std::sync::Mutex;
 

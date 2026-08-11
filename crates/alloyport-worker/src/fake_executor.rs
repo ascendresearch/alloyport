@@ -1,7 +1,7 @@
 //! Deterministic executor contract, cancellation, output limits, and fake process behavior.
 
 use crate::journal::StoredAssignment;
-use alloyport_proto::v1::AttemptOutcome;
+use alloyport_core::AttemptOutcome;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::time::Duration;

@@ -7,6 +7,7 @@ use alloyport_artifacts::{
     ArtifactIdentity, ArtifactReader, ArtifactStoreError, FilesystemArtifactStore,
     IngestDisposition, IngestRequest, IngestResult, Sha256Digest,
 };
+use alloyport_core::AttemptOutcome;
 use alloyport_events::{Event, OutputStream as EventOutputStream};
 use alloyport_proto::v1::{ArtifactRef, ExecutionSpec, ExecutorKind, ResourceLimits};
 use std::collections::BTreeMap;
@@ -220,7 +221,7 @@ async fn runtime_spools_artifacts_events_and_exactly_one_terminal_result()
         )
         .await?;
     assert!(!run.replayed_terminal);
-    assert_eq!(run.finished.outcome, i32::from(AttemptOutcome::Succeeded));
+    assert_eq!(run.finished.outcome, AttemptOutcome::Succeeded);
     assert_live_observations(&observations);
     assert_eq!(state.outbox_len()?, 3);
     assert_eq!(run.reference_intents.len(), 3);
@@ -321,7 +322,7 @@ async fn running_fake_attempt_recovers_deterministically_after_restart()
         .run(&state, "attempt-1", &executor, &CancellationToken::new())
         .await?;
     assert_eq!(run.finished.elapsed_ms, 7);
-    assert_eq!(run.finished.outcome, i32::from(AttemptOutcome::Succeeded));
+    assert_eq!(run.finished.outcome, AttemptOutcome::Succeeded);
     assert_eq!(state.outbox_len()?, 3);
     Ok(())
 }
@@ -363,10 +364,7 @@ async fn runtime_rejects_two_executors_for_one_attempt() -> Result<(), Box<dyn E
     ));
     cancellation.cancel();
     let finished = first.await??;
-    assert_eq!(
-        finished.finished.outcome,
-        i32::from(AttemptOutcome::Cancelled)
-    );
+    assert_eq!(finished.finished.outcome, AttemptOutcome::Cancelled);
     Ok(())
 }
 
@@ -420,7 +418,7 @@ async fn artifact_publication_gates_terminal_commit_and_retries_idempotently()
             |_| {},
         )
         .await?;
-    assert_eq!(retry.finished.outcome, i32::from(AttemptOutcome::Succeeded));
+    assert_eq!(retry.finished.outcome, AttemptOutcome::Succeeded);
     assert_eq!(state.outbox_len()?, 3);
     assert_eq!(
         *published.lock().expect("publication fixture lock"),

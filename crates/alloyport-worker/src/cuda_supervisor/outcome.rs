@@ -3,7 +3,7 @@
 use super::engine::{ContainerExit, ContainerLogs};
 use crate::cuda::VECTOR_ADD_FIXTURE_ID;
 use crate::executor::ExecutorResult;
-use alloyport_proto::v1::AttemptOutcome;
+use alloyport_core::AttemptOutcome;
 
 #[derive(Clone, Copy)]
 pub(super) enum Termination {

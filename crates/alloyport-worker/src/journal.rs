@@ -2,7 +2,7 @@
 //!
 //! Database drivers, transactions, schema migrations, and SQL belong to outer adapters.
 
-use alloyport_core::{ExecutionKind, NetworkPolicy};
+use alloyport_core::{AttemptOutcome, ExecutionKind, NetworkPolicy};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -78,7 +78,7 @@ impl LocalAttemptPhase {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StoredFinished {
-    pub outcome: i32,
+    pub outcome: AttemptOutcome,
     pub exit_code: Option<i32>,
     pub elapsed_ms: u64,
     pub receipt: Option<StoredArtifact>,
