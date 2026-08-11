@@ -2,7 +2,8 @@
 
 use super::RepositoryError;
 use alloyport_core::{
-    AssignmentId, AttemptId, AttemptOutcome, ExecutionKind, NetworkPolicy, RejectionReason, TaskId,
+    AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind, NetworkPolicy,
+    RejectionReason, TaskId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +46,7 @@ pub struct AssignmentContract {
     pub attempt_number: u32,
     pub idempotency_key: String,
     pub task_id: TaskId,
-    pub candidate_id: String,
+    pub candidate_id: CandidateId,
     pub execution: ExecutionContract,
     pub required_features: Vec<String>,
 }

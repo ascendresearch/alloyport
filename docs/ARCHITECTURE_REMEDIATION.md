@@ -311,15 +311,16 @@ directories (including their migration and adapter-test files).
   admission rejection. Their serde representations remain the existing numeric JSON; unspecified
   or unknown executor/outcome/rejection values and unknown network-policy values cannot enter the
   domain, while network unspecified remains the protocol-compatible default subject to backend
-  policy. Protobuf conversion occurs at transport mapping edges. Typed-ID and complete immutable-
-  contract migration remain.
+  policy. Protobuf conversion occurs at transport mapping edges. Artifact descriptor/digest and
+  broader lifecycle-model migration remain.
 - [x] First R3 typed-identity slices: validated, transparent `alloyport_core::{AttemptId,
-  AssignmentId, TaskId}` are used by server and worker immutable assignment contracts while
-  retaining the existing JSON string and SQLite text representation. A private core macro keeps
-  identity validation/serde/display behavior consistent without collapsing the public types.
-  Wire/event/path edges convert explicitly, whitespace-only IDs fail construction, and lease-expiry
-  replacement reports typed `InvalidIdentity` rather than admitting invalid state. `CandidateId`
-  remains a string until its currently optional/empty protocol semantics are decided. Worker
+  AssignmentId, TaskId, CandidateId}` are used by server and worker immutable assignment contracts
+  while retaining the existing JSON string and SQLite text representation. Core task, candidate,
+  verdict, and release-manifest models use the same nominal task/candidate identities. A private core
+  macro keeps identity validation/serde/display behavior consistent without collapsing the public
+  types. Wire/event/path edges convert explicitly, whitespace-only IDs fail construction,
+  `candidate_id` is now required by assignment validation, and lease-expiry replacement reports
+  typed `InvalidIdentity` rather than admitting invalid state. Worker
   durable outbox accepted/started/finished/cancellation payloads retain typed assignment/attempt
   identities through SQLite and convert only at the Protobuf edge; rejection payloads intentionally
   preserve raw text so malformed wire identities can still be reported. Server observation ingress

@@ -108,6 +108,13 @@ validated_id!(
     "task"
 );
 
+validated_id!(
+    /// Stable identity of one immutable implementation candidate.
+    CandidateId,
+    CandidateIdError,
+    "candidate"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +136,10 @@ mod tests {
         let task_id = TaskId::try_from("task-1")?;
         assert_eq!(serde_json::to_string(&task_id)?, r#""task-1""#);
         assert!(TaskId::try_from("\t").is_err());
+
+        let candidate_id = CandidateId::try_from("candidate-1")?;
+        assert_eq!(serde_json::to_string(&candidate_id)?, r#""candidate-1""#);
+        assert!(CandidateId::try_from("  ").is_err());
         Ok(())
     }
 }

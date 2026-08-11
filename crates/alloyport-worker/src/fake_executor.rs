@@ -34,7 +34,7 @@ impl From<&StoredAssignment> for ExecutorInput {
             assignment_id: assignment.assignment_id.to_string(),
             attempt_id: assignment.attempt_id.to_string(),
             task_id: assignment.task_id.to_string(),
-            candidate_id: assignment.candidate_id.clone(),
+            candidate_id: assignment.candidate_id.to_string(),
             argv: assignment.execution.argv.clone(),
             working_directory: assignment.execution.working_directory.clone(),
             environment: assignment

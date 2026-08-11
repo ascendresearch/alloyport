@@ -3,7 +3,8 @@
 //! Database drivers, transactions, schema migrations, and SQL belong to outer adapters.
 
 use alloyport_core::{
-    AssignmentId, AttemptId, AttemptOutcome, ExecutionKind, NetworkPolicy, RejectionReason, TaskId,
+    AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind, NetworkPolicy,
+    RejectionReason, TaskId,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -16,7 +17,7 @@ pub struct StoredAssignment {
     pub attempt_number: u32,
     pub idempotency_key: String,
     pub task_id: TaskId,
-    pub candidate_id: String,
+    pub candidate_id: CandidateId,
     pub execution: StoredExecution,
     pub required_features: Vec<String>,
 }

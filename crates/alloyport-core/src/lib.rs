@@ -8,7 +8,8 @@ pub use execution::{
     NetworkPolicyError, RejectionReason, RejectionReasonError,
 };
 pub use identity::{
-    AssignmentId, AssignmentIdError, AttemptId, AttemptIdError, TaskId, TaskIdError,
+    AssignmentId, AssignmentIdError, AttemptId, AttemptIdError, CandidateId, CandidateIdError,
+    TaskId, TaskIdError,
 };
 
 use std::collections::BTreeSet;
@@ -69,7 +70,7 @@ impl TaskState {
 /// A porting task with explicit lifecycle and selected route.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Task {
-    pub id: String,
+    pub id: TaskId,
     pub source_revision: String,
     pub target: TargetBackend,
     pub state: TaskState,
@@ -97,10 +98,10 @@ impl Task {
 /// An immutable implementation candidate and its lineage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Candidate {
-    pub id: String,
-    pub task_id: String,
+    pub id: CandidateId,
+    pub task_id: TaskId,
     pub route: Route,
-    pub parent_id: Option<String>,
+    pub parent_id: Option<CandidateId>,
     pub source_digest: String,
     pub artifact_digest: Option<String>,
 }
@@ -128,7 +129,7 @@ impl Gate {
 /// Independent decision for one candidate at one gate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Verdict {
-    pub candidate_id: String,
+    pub candidate_id: CandidateId,
     pub gate: Gate,
     pub passed: bool,
     pub receipt_digests: Vec<String>,
@@ -137,7 +138,7 @@ pub struct Verdict {
 /// Immutable release description presented to integration and deployment tooling.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReleaseManifest {
-    pub candidate_id: String,
+    pub candidate_id: CandidateId,
     pub supported_domain: String,
     pub dispatch_guard: String,
     pub fallback: String,
@@ -151,13 +152,12 @@ impl ReleaseManifest {
     ///
     /// Returns [`ReleaseError`] for missing, failed, duplicate, or evidence-free gate verdicts.
     pub fn from_verdicts(
-        candidate_id: impl Into<String>,
+        candidate_id: CandidateId,
         supported_domain: impl Into<String>,
         dispatch_guard: impl Into<String>,
         fallback: impl Into<String>,
         verdicts: &[Verdict],
     ) -> Result<Self, ReleaseError> {
-        let candidate_id = candidate_id.into();
         let mut passed = BTreeSet::new();
         let mut evidence_digests = BTreeSet::new();
 
@@ -238,11 +238,11 @@ impl Error for ReleaseError {}
 mod tests {
     use super::*;
 
-    fn passing_verdicts(candidate_id: &str) -> Vec<Verdict> {
+    fn passing_verdicts(candidate_id: &CandidateId) -> Vec<Verdict> {
         Gate::ALL
             .into_iter()
             .map(|gate| Verdict {
-                candidate_id: candidate_id.to_owned(),
+                candidate_id: candidate_id.clone(),
                 gate,
                 passed: true,
                 receipt_digests: vec![format!("sha256:{gate:?}")],
@@ -258,11 +258,12 @@ mod tests {
 
     #[test]
     fn release_requires_every_gate() {
-        let mut verdicts = passing_verdicts("candidate-1");
+        let candidate_id = CandidateId::try_from("candidate-1").expect("valid candidate ID");
+        let mut verdicts = passing_verdicts(&candidate_id);
         verdicts.retain(|verdict| verdict.gate != Gate::Performance);
 
         let error = ReleaseManifest::from_verdicts(
-            "candidate-1",
+            candidate_id,
             "M,N,K divisible by 16",
             "shape_guard_v1",
             "torch_reference",
@@ -275,9 +276,10 @@ mod tests {
 
     #[test]
     fn release_collects_content_addressed_evidence() {
-        let verdicts = passing_verdicts("candidate-1");
+        let candidate_id = CandidateId::try_from("candidate-1").expect("valid candidate ID");
+        let verdicts = passing_verdicts(&candidate_id);
         let manifest = ReleaseManifest::from_verdicts(
-            "candidate-1",
+            candidate_id,
             "all tested shapes",
             "always",
             "torch_reference",

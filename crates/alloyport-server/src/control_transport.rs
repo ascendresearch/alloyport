@@ -6,7 +6,7 @@ use crate::storage::{
     ArtifactIdentity, AssignmentContract, EnvironmentEntry, ExecutionContract, RepositoryError,
     ResourceContract, WorkerCapabilities, WorkerRegistration,
 };
-use alloyport_core::{AssignmentId, AttemptId, ExecutionKind, NetworkPolicy, TaskId};
+use alloyport_core::{AssignmentId, AttemptId, CandidateId, ExecutionKind, NetworkPolicy, TaskId};
 use alloyport_events::{
     ArtifactRef as EventArtifactRef, Authority, Event, Producer, ProducerEvent, Visibility,
 };
@@ -170,7 +170,8 @@ pub(super) fn assignment_to_contract(assignment: &Assignment) -> AssignmentContr
         idempotency_key: assignment.idempotency_key.clone(),
         task_id: TaskId::try_from(assignment.task_id.clone())
             .expect("validated assignment contains a non-empty task ID"),
-        candidate_id: assignment.candidate_id.clone(),
+        candidate_id: CandidateId::try_from(assignment.candidate_id.clone())
+            .expect("validated assignment contains a non-empty candidate ID"),
         execution: ExecutionContract {
             executor_kind: ExecutionKind::try_from(execution.executor_kind)
                 .expect("validated assignment contains a known executor kind"),
@@ -219,7 +220,7 @@ pub(super) fn contract_to_assignment(contract: &AssignmentContract) -> Assignmen
         attempt_number: contract.attempt_number,
         idempotency_key: contract.idempotency_key.clone(),
         task_id: contract.task_id.to_string(),
-        candidate_id: contract.candidate_id.clone(),
+        candidate_id: contract.candidate_id.to_string(),
         execution: Some(ExecutionSpec {
             executor_kind: contract.execution.executor_kind.into(),
             argv: contract.execution.argv.clone(),

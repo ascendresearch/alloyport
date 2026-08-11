@@ -5,7 +5,7 @@ use crate::storage::{
     ObservationDisposition, ObservedAttempt, RepositoryError, ServerOutboxFrame,
     ServerOutboxRepository, StoreAssignmentOutcome, WorkerConnectionRepository, WorkerRegistration,
 };
-use alloyport_core::{AssignmentId, AttemptId, AttemptOutcome, ExecutionKind, TaskId};
+use alloyport_core::{AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind, TaskId};
 use std::error::Error;
 
 #[test]
@@ -527,7 +527,7 @@ fn contract() -> AssignmentContract {
         attempt_number: 1,
         idempotency_key: "task-1:build".to_owned(),
         task_id: TaskId::try_from("task-1").expect("valid fixture task ID"),
-        candidate_id: "candidate-1".to_owned(),
+        candidate_id: CandidateId::try_from("candidate-1").expect("valid fixture candidate ID"),
         execution: ExecutionContract {
             executor_kind: ExecutionKind::Container,
             argv: vec!["true".to_owned()],

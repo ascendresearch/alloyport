@@ -121,6 +121,7 @@ pub fn validate_assignment(assignment: &v1::Assignment) -> Result<(), Validation
     require_text("assignment.attempt_id", &assignment.attempt_id)?;
     require_text("assignment.idempotency_key", &assignment.idempotency_key)?;
     require_text("assignment.task_id", &assignment.task_id)?;
+    require_text("assignment.candidate_id", &assignment.candidate_id)?;
 
     let execution = assignment
         .execution
@@ -232,6 +233,15 @@ mod tests {
     #[test]
     fn accepts_typed_sandboxed_assignment() {
         assert_eq!(validate_assignment(&assignment()), Ok(()));
+    }
+
+    #[test]
+    fn rejects_assignment_without_candidate_identity() {
+        let mut assignment = assignment();
+        assignment.candidate_id = "  ".to_owned();
+
+        let error = validate_assignment(&assignment).expect_err("candidate identity is required");
+        assert_eq!(error.field(), "assignment.candidate_id");
     }
 
     #[test]

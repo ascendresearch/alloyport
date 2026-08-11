@@ -146,24 +146,39 @@ fi
 if ! rg -q 'AttemptId,' crates/alloyport-core/src/identity.rs \
     || ! rg -q 'AssignmentId,' crates/alloyport-core/src/identity.rs \
     || ! rg -q 'TaskId,' crates/alloyport-core/src/identity.rs \
+    || ! rg -q 'CandidateId,' crates/alloyport-core/src/identity.rs \
     || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub attempt_id: AttemptId' \
         crates/alloyport-server/src/storage/model.rs \
     || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub assignment_id: AssignmentId' \
         crates/alloyport-server/src/storage/model.rs \
     || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub task_id: TaskId' \
         crates/alloyport-server/src/storage/model.rs \
+    || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub candidate_id: CandidateId' \
+        crates/alloyport-server/src/storage/model.rs \
     || ! rg -q -U 'pub struct StoredAssignment \{[^}]*pub attempt_id: AttemptId' \
         crates/alloyport-worker/src/journal.rs \
     || ! rg -q -U 'pub struct StoredAssignment \{[^}]*pub assignment_id: AssignmentId' \
         crates/alloyport-worker/src/journal.rs \
     || ! rg -q -U 'pub struct StoredAssignment \{[^}]*pub task_id: TaskId' \
+        crates/alloyport-worker/src/journal.rs \
+    || ! rg -q -U 'pub struct StoredAssignment \{[^}]*pub candidate_id: CandidateId' \
         crates/alloyport-worker/src/journal.rs; then
-    violations+=("validated AttemptId/AssignmentId/TaskId are not used by both immutable assignment contracts")
+    violations+=("validated AttemptId/AssignmentId/TaskId/CandidateId are not used by both immutable assignment contracts")
 fi
 if raw_contract_identity=$(rg -n -U \
-    'pub struct (AssignmentContract|StoredAssignment) \{[^}]*(pub attempt_id: String|pub assignment_id: String|pub task_id: String)' \
+    'pub struct (AssignmentContract|StoredAssignment) \{[^}]*(pub attempt_id: String|pub assignment_id: String|pub task_id: String|pub candidate_id: String)' \
     crates/alloyport-server/src/storage/model.rs crates/alloyport-worker/src/journal.rs); then
-    violations+=("immutable assignment contract regained a raw attempt/assignment/task ID: ${raw_contract_identity}")
+    violations+=("immutable assignment contract regained a raw stable ID: ${raw_contract_identity}")
+fi
+if ! rg -q 'require_text\("assignment.candidate_id"' crates/alloyport-proto/src/lib.rs \
+    || ! rg -q -U 'pub struct Task \{[^}]*pub id: TaskId' crates/alloyport-core/src/lib.rs \
+    || ! rg -q -U 'pub struct Candidate \{[^}]*pub id: CandidateId[^}]*pub task_id: TaskId[^}]*pub parent_id: Option<CandidateId>' \
+        crates/alloyport-core/src/lib.rs \
+    || ! rg -q -U 'pub struct Verdict \{[^}]*pub candidate_id: CandidateId' \
+        crates/alloyport-core/src/lib.rs \
+    || ! rg -q -U 'pub struct ReleaseManifest \{[^}]*pub candidate_id: CandidateId' \
+        crates/alloyport-core/src/lib.rs; then
+    violations+=("core task/candidate release models or wire validation regained raw candidate identity semantics")
 fi
 for trusted_outbox_variant in AssignmentAccepted ExecutionStarted ExecutionFinished CancellationAcknowledged; do
     if ! rg -q -U "${trusted_outbox_variant} \\{[^}]*(assignment_id: AssignmentId[^}]*attempt_id: AttemptId|attempt_id: AttemptId[^}]*assignment_id: AssignmentId)" \

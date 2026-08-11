@@ -3,7 +3,7 @@
 use super::*;
 use crate::journal::{StoredArtifact, StoredEnvironment, StoredExecution};
 use alloyport_artifacts::{FilesystemArtifactStore, IngestRequest, Sha256Digest};
-use alloyport_core::{AssignmentId, AttemptId, ExecutionKind, TaskId};
+use alloyport_core::{AssignmentId, AttemptId, CandidateId, ExecutionKind, TaskId};
 use std::io::Cursor;
 
 #[test]
@@ -169,7 +169,7 @@ fn assignment(
         attempt_number: 1,
         idempotency_key: "cuda-vectoradd-v1".into(),
         task_id: TaskId::try_from("task-1").expect("valid fixture task ID"),
-        candidate_id: "candidate-1".into(),
+        candidate_id: CandidateId::try_from("candidate-1").expect("valid fixture candidate ID"),
         execution: StoredExecution {
             executor_kind: ExecutionKind::CudaFixture,
             argv: vec![VECTOR_ADD_FIXTURE_ID.into()],
