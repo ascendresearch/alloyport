@@ -69,6 +69,11 @@ if executor_artifact_boundary=$(rg -n \
     crates/alloyport-worker/src/executor.rs); then
     violations+=("Artifact publication or event projection returned to the fake runtime coordinator: ${executor_artifact_boundary}")
 fi
+if docker_process_boundary=$(rg -n \
+    'struct SystemDockerCommandRunner|trait DockerCommandRunner|^fn follow_command|^fn read_bounded|struct DockerCommandOutput' \
+    crates/alloyport-worker/src/cuda_docker.rs); then
+    violations+=("Docker process or bounded-I/O implementation returned to the engine adapter: ${docker_process_boundary}")
+fi
 if ! rg -q 'pub trait AttemptLifecycleStore' crates/alloyport-worker/src/journal.rs \
     || ! rg -q 'pub trait WorkerOutboxStore' crates/alloyport-worker/src/journal.rs; then
     violations+=("worker journal capability ports are missing")

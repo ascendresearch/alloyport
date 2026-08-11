@@ -2,10 +2,12 @@
 
 use super::*;
 use crate::cuda_docker::protocol::elapsed_ms;
-use crate::cuda_supervisor::ContainerPhase;
+use crate::cuda_supervisor::{ContainerLogChunk, ContainerLogStream, ContainerPhase};
 use std::collections::VecDeque;
-use std::io::Cursor;
-use std::sync::Mutex;
+use std::io::{self, Cursor};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, mpsc};
 
 #[test]
 fn adapter_failures_map_to_stable_engine_categories() {
