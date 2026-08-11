@@ -4,6 +4,7 @@ pub mod artifact_download;
 pub mod artifact_upload;
 pub mod cuda;
 pub mod cuda_docker;
+pub mod cuda_runtime;
 pub mod cuda_supervisor;
 pub mod executor;
 pub mod journal;

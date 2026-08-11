@@ -48,6 +48,22 @@ pub struct ContainerLogs {
     pub output_limit_exceeded: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CudaExecutionFacts {
+    pub container_name: String,
+    pub bundle_digest: String,
+    pub source_digest: String,
+    pub image_manifest_digest: String,
+    pub image_id: String,
+    pub device_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupervisedCudaExecution {
+    pub result: ExecutorResult,
+    pub facts: CudaExecutionFacts,
+}
+
 /// Local container operations. Implementations must use argv, never a shell string.
 pub trait CudaContainerEngine: Debug + Send + Sync {
     fn resolve_image_id<'a>(&'a self, plan: &'a DockerCreatePlan) -> EngineFuture<'a, String>;
@@ -94,9 +110,27 @@ impl CudaContainerSupervisor {
         engine: &dyn CudaContainerEngine,
         cancellation: &CancellationToken,
     ) -> Result<ExecutorResult, CudaSupervisorError> {
+        Ok(self
+            .run_with_facts(assignment, engine, cancellation)
+            .await?
+            .result)
+    }
+
+    /// Runs the same reconciliation while retaining immutable receipt facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::run`].
+    pub async fn run_with_facts(
+        &self,
+        assignment: &StoredAssignment,
+        engine: &dyn CudaContainerEngine,
+        cancellation: &CancellationToken,
+    ) -> Result<SupervisedCudaExecution, CudaSupervisorError> {
         let sandbox = self
             .policy
             .materialize_bundle(assignment, self.artifacts.as_ref())?;
+        let source_digest = sandbox.source_digest().to_owned();
         let plan = self.policy.docker_create_plan(assignment, &sandbox)?;
         let identity = ContainerIdentity {
             name: plan.container_name.clone(),
@@ -159,11 +193,21 @@ impl CudaContainerSupervisor {
             .logs(&identity.name, output_limit)
             .await
             .map_err(CudaSupervisorError::Engine)?;
-        Ok(classify(
-            termination,
-            enforce_output_limit(logs, output_limit),
-            assignment.execution.timeout_ms,
-        ))
+        Ok(SupervisedCudaExecution {
+            result: classify(
+                termination,
+                enforce_output_limit(logs, output_limit),
+                assignment.execution.timeout_ms,
+            ),
+            facts: CudaExecutionFacts {
+                container_name: identity.name,
+                bundle_digest: identity.bundle_digest,
+                source_digest,
+                image_manifest_digest: identity.image_manifest_digest,
+                image_id: identity.image_id,
+                device_id: plan.device_id,
+            },
+        })
     }
 }
 

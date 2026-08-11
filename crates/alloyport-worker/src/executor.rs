@@ -23,9 +23,9 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, sleep_until};
 
-const STDOUT_MEDIA_TYPE: &str = "application/vnd.alloyport.stdout";
-const STDERR_MEDIA_TYPE: &str = "application/vnd.alloyport.stderr";
-const RECEIPT_MEDIA_TYPE: &str = "application/vnd.alloyport.run-receipt+json";
+pub(crate) const STDOUT_MEDIA_TYPE: &str = "application/vnd.alloyport.stdout";
+pub(crate) const STDERR_MEDIA_TYPE: &str = "application/vnd.alloyport.stderr";
+pub(crate) const RECEIPT_MEDIA_TYPE: &str = "application/vnd.alloyport.run-receipt+json";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -367,7 +367,9 @@ pub enum ExecutionRuntimeError {
     Worker(WorkerError),
     Artifact(ArtifactStoreError),
     Serialization(serde_json::Error),
+    Executor(String),
     ArtifactPublication(String),
+    CleanupAfterCommit(String),
     InvalidConfiguration(&'static str),
     AttemptAlreadyRunning(String),
     MissingAttempt(String),
@@ -381,11 +383,18 @@ impl Display for ExecutionRuntimeError {
             Self::Worker(error) => Display::fmt(error, formatter),
             Self::Artifact(error) => Display::fmt(error, formatter),
             Self::Serialization(error) => Display::fmt(error, formatter),
+            Self::Executor(detail) => write!(formatter, "executor failed: {detail}"),
             Self::ArtifactPublication(detail) => {
                 write!(formatter, "execution Artifact publication failed: {detail}")
             }
+            Self::CleanupAfterCommit(detail) => {
+                write!(
+                    formatter,
+                    "terminal execution committed but cleanup failed: {detail}"
+                )
+            }
             Self::InvalidConfiguration(detail) => {
-                write!(formatter, "invalid fake executor configuration: {detail}")
+                write!(formatter, "invalid executor configuration: {detail}")
             }
             Self::AttemptAlreadyRunning(attempt) => {
                 write!(formatter, "attempt {attempt} already has an executor")
@@ -407,6 +416,8 @@ impl Error for ExecutionRuntimeError {
             Self::Serialization(error) => Some(error),
             Self::TaskJoin(error) => Some(error),
             Self::ArtifactPublication(_)
+            | Self::CleanupAfterCommit(_)
+            | Self::Executor(_)
             | Self::AttemptAlreadyRunning(_)
             | Self::InvalidConfiguration(_)
             | Self::MissingAttempt(_)
@@ -819,7 +830,7 @@ struct FakeRunReceipt<'a> {
     detail: &'a str,
 }
 
-async fn store_artifact(
+pub(crate) async fn store_artifact(
     artifacts: Arc<FilesystemArtifactStore>,
     bytes: Vec<u8>,
     media_type: &'static str,
@@ -837,7 +848,11 @@ async fn store_artifact(
     })
 }
 
-fn producer_event(worker_id: &str, input: &ExecutorInput, event: Event) -> ProducerEvent {
+pub(crate) fn producer_event(
+    worker_id: &str,
+    input: &ExecutorInput,
+    event: Event,
+) -> ProducerEvent {
     let mut frame = ProducerEvent::new(
         input.task_id.clone(),
         Producer::new("alloyport-worker", worker_id),
@@ -850,7 +865,11 @@ fn producer_event(worker_id: &str, input: &ExecutorInput, event: Event) -> Produ
     frame
 }
 
-fn output_event(worker_id: &str, input: &ExecutorInput, chunk: &ExecutionChunk) -> ProducerEvent {
+pub(crate) fn output_event(
+    worker_id: &str,
+    input: &ExecutorInput,
+    chunk: &ExecutionChunk,
+) -> ProducerEvent {
     let text = String::from_utf8_lossy(&chunk.bytes);
     let display_sanitized = matches!(text, std::borrow::Cow::Owned(_));
     producer_event(
@@ -868,7 +887,7 @@ fn output_event(worker_id: &str, input: &ExecutorInput, chunk: &ExecutionChunk) 
     )
 }
 
-fn event_artifact(artifact: &StoredArtifact, reference: &str) -> EventArtifactRef {
+pub(crate) fn event_artifact(artifact: &StoredArtifact, reference: &str) -> EventArtifactRef {
     EventArtifactRef {
         digest: artifact.digest.clone(),
         media_type: artifact.media_type.clone(),

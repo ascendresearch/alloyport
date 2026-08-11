@@ -246,7 +246,14 @@ impl CudaContainerEngine for DockerCliEngine {
                     METADATA_OUTPUT_LIMIT,
                 )
                 .await?;
-            require_success("remove container", &output)
+            if output.success {
+                return require_success("remove container", &output);
+            }
+            if self.inspect_detail(name).await?.is_none() {
+                Ok(())
+            } else {
+                Err(command_failure("remove container", &output))
+            }
         })
     }
 }
@@ -607,6 +614,29 @@ mod tests {
                 METADATA_OUTPUT_LIMIT,
                 success(b"alloyport-attempt-1\n", b"", false),
             ),
+            expected(
+                &["container", "rm", "alloyport-attempt-1"],
+                METADATA_OUTPUT_LIMIT,
+                failure(b"Error: No such container"),
+            ),
+            expected(
+                &["container", "inspect", "alloyport-attempt-1"],
+                METADATA_OUTPUT_LIMIT,
+                failure(b"Error: No such container"),
+            ),
+            expected(
+                &[
+                    "container",
+                    "list",
+                    "--all",
+                    "--filter",
+                    "name=^/alloyport-attempt-1$",
+                    "--format",
+                    "{{.Names}}",
+                ],
+                METADATA_OUTPUT_LIMIT,
+                success(b"", b"", false),
+            ),
         ]));
         let engine = DockerCliEngine {
             runner: runner.clone(),
@@ -617,6 +647,7 @@ mod tests {
         let logs = engine.logs("alloyport-attempt-1", 5).await?;
         assert_eq!(logs.stdout, b"abcde");
         assert!(logs.output_limit_exceeded);
+        engine.remove("alloyport-attempt-1").await?;
         engine.remove("alloyport-attempt-1").await?;
         runner.assert_exhausted();
         Ok(())

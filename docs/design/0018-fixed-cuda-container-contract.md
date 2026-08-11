@@ -98,12 +98,19 @@ failure is considered absence only when a second exact-name `container list` suc
 container. `docker wait` is cross-checked against the inspected exit code, while inspected RFC 3339
 start/finish timestamps recover elapsed time after restart. Stdout and stderr pipes are drained
 concurrently, retain only bounded bytes, and preserve an exhaustion flag for terminal
-classification. Removal is a separate operation so a future runtime can call it only after Artifact
-publication and the terminal journal commit.
+classification. Removal is a separate idempotent operation.
 
-The CLI engine is not attached to `OutboundWorker` or the worker binary yet. The next slice must add
-the CUDA execution runtime, live previews and early output-limit termination, environment receipts,
-terminal retention/cleanup ordering, and the explicit real-worker configuration.
+`CudaExecutionRuntime` marks `Running` before supervision, spools stdout/stderr and a typed receipt to
+the local CAS, optionally publishes all three objects, and only then commits terminal journal/outbox
+state. The receipt binds bundle/source/manifest/resolved-image/device identity plus configured worker
+architecture, driver, and toolkit observations. Container removal occurs after the terminal commit;
+if removal fails, the terminal result stays durable and a terminal replay retries cleanup without
+rerunning the fixture. Supervisor or publication failures instead leave the attempt `Running` and
+retain the identified container for safe reconciliation.
+
+The CUDA runtime is not attached to `OutboundWorker` or the worker binary yet. The next slice must
+add outbound-session selection/cancellation, live previews and early output-limit termination, and
+the explicit real-worker configuration.
 
 ## Evidence and parity
 
@@ -145,7 +152,9 @@ create/start, running reattach, cancellation and timeout stop/wait, exact-identi
 resolved-image mismatch, output exhaustion, nonzero exit, and exit zero without the fixture marker.
 Docker-adapter tests cover exact inspect identity/timestamp parsing, unsupported-state rejection,
 bounded pipe draining, exact command argv, missing-container discrimination, log-exhaustion
-propagation, and explicit terminal removal without contacting a daemon. An explicitly invoked
+propagation, and idempotent terminal removal without contacting a daemon. Runtime coverage proves
+that publication observes `Running`, terminal commit precedes removal, a cleanup failure preserves
+the terminal receipt/container, and replay retries only cleanup. An explicitly invoked
 outbound-worker GB10 smoke remains. The first manual probe compiled and verified 1,048,576 elements
 on the target, producing the deterministic checksum `670562424`. No CI test may silently depend on a
 GPU or Docker daemon.

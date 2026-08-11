@@ -228,7 +228,10 @@ impl CudaFixturePolicy {
         fs::create_dir_all(&directory)?;
         write_once(&directory.join(SOURCE_FILENAME), bundle.source.as_bytes())?;
         write_once(&directory.join(RUNNER_FILENAME), RUNNER.as_bytes())?;
-        Ok(CudaSandbox { directory })
+        Ok(CudaSandbox {
+            directory,
+            source_digest,
+        })
     }
 
     /// Produces the exact Docker CLI argv for a new durable attempt container.
@@ -263,6 +266,7 @@ impl CudaFixturePolicy {
             container_name: container_name.clone(),
             image_reference: self.image_reference.clone(),
             expected_image_id: self.image_id,
+            device_id: self.device_id.clone(),
             argv: vec![
                 "create".into(),
                 "--name".into(),
@@ -315,12 +319,18 @@ impl CudaFixturePolicy {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CudaSandbox {
     directory: PathBuf,
+    source_digest: String,
 }
 
 impl CudaSandbox {
     #[must_use]
     pub fn directory(&self) -> &Path {
         &self.directory
+    }
+
+    #[must_use]
+    pub fn source_digest(&self) -> &str {
+        &self.source_digest
     }
 }
 
@@ -329,6 +339,7 @@ pub struct DockerCreatePlan {
     pub container_name: String,
     pub image_reference: String,
     pub expected_image_id: Sha256Digest,
+    pub device_id: String,
     pub argv: Vec<String>,
 }
 
