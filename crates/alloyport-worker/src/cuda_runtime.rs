@@ -106,6 +106,11 @@ impl CudaExecutionRuntime {
         &self.worker_id
     }
 
+    #[must_use]
+    pub const fn environment(&self) -> &CudaEnvironmentFacts {
+        &self.environment
+    }
+
     /// Runs one CUDA attempt without a remote Artifact publisher.
     ///
     /// # Errors
@@ -438,10 +443,11 @@ mod tests {
         EngineFuture,
     };
     use crate::executor::CancellationToken;
-    use crate::{AdmissionOutcome, AdmissionPolicy};
+    use crate::{AdmissionOutcome, AdmissionPolicy, OutboundWorker, WorkerError};
     use alloyport_artifacts::{ArtifactStore, IngestRequest, Sha256Digest};
     use alloyport_proto::v1::{
-        ArtifactRef, Assignment, ExecutionSpec, ExecutorKind, NetworkPolicy, ResourceLimits,
+        ArtifactRef, Assignment, Backend, ExecutionSpec, ExecutorKind, NetworkPolicy,
+        ResourceLimits, WorkerCapabilities, WorkerHello,
     };
     use std::io::{Cursor, Read};
     use std::str::FromStr;
@@ -490,13 +496,13 @@ mod tests {
         let engine = Arc::new(RecordingEngine::new(state.clone(), image_id.to_string()));
         let engine_trait: Arc<dyn CudaContainerEngine> = engine.clone();
         let supervisor = Arc::new(CudaContainerSupervisor::new(policy, Arc::clone(&artifacts)));
-        let runtime = CudaExecutionRuntime::new(
+        let runtime = Arc::new(CudaExecutionRuntime::new(
             "cuda-worker-1",
             Arc::clone(&artifacts),
             supervisor,
             engine_trait,
             CudaEnvironmentFacts::new("sm_121", "580.159.03", "13.0")?,
-        )?;
+        )?);
         let publisher = OrderingPublisher::new(state.clone());
 
         assert!(matches!(
@@ -533,7 +539,68 @@ mod tests {
         assert_eq!(receipt["resolved_image_id"], image_id.to_string());
         assert_eq!(receipt["device_id"], "0");
         assert_eq!(receipt["environment"]["driver_version"], "580.159.03");
+
+        assert_outbound_cuda_only(
+            runtime,
+            stored.artifact.digest,
+            stored.artifact.size_bytes,
+            image_manifest,
+        )
+        .await?;
         Ok(())
+    }
+
+    async fn assert_outbound_cuda_only(
+        runtime: Arc<CudaExecutionRuntime>,
+        bundle: Sha256Digest,
+        bundle_size: u64,
+        image: Sha256Digest,
+    ) -> Result<(), WorkerError> {
+        let worker = OutboundWorker::new(
+            tonic::transport::Endpoint::from_static("http://127.0.0.1:50051"),
+            worker_hello(),
+        )?
+        .with_cuda_executor(runtime)?;
+        let worker_state = worker.state();
+        let worker_state = worker_state.lock().await;
+        assert_eq!(
+            worker_state.admit(&assignment(bundle, bundle_size, image))?,
+            AdmissionOutcome::New
+        );
+        let mut generic = assignment(bundle, bundle_size, image);
+        generic.assignment_id = "assignment-2".into();
+        generic.attempt_id = "attempt-2".into();
+        let execution = generic.execution.as_mut().expect("execution exists");
+        execution.executor_kind = ExecutorKind::Container.into();
+        execution.argv = vec!["true".into()];
+        execution.working_directory = "source".into();
+        generic.required_features.clear();
+        assert!(matches!(
+            worker_state.admit(&generic),
+            Err(WorkerError::PolicyViolation(_))
+        ));
+        Ok(())
+    }
+
+    fn worker_hello() -> WorkerHello {
+        WorkerHello {
+            protocol_major: alloyport_proto::PROTOCOL_MAJOR,
+            protocol_minor: alloyport_proto::PROTOCOL_MINOR,
+            worker_id: "cuda-worker-1".into(),
+            instance_id: "cuda-worker-1-test".into(),
+            worker_version: "test".into(),
+            features: Vec::new(),
+            capabilities: Some(WorkerCapabilities {
+                backend: Backend::Cuda.into(),
+                architecture: "sm_121".into(),
+                device_count: 1,
+                max_concurrency: 1,
+                driver_version: "580.159.03".into(),
+                toolkit_version: "13.0".into(),
+                container_runtime: "docker".into(),
+            }),
+            active_attempts: Vec::new(),
+        }
     }
 
     fn assignment(bundle: Sha256Digest, bundle_size: u64, image: Sha256Digest) -> Assignment {

@@ -12,11 +12,13 @@ pub mod journal;
 use alloyport_proto::v1::worker_control_client::WorkerControlClient;
 use alloyport_proto::v1::{
     ActiveAttempt, ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, AttemptOutcome,
-    AttemptPhase, CancellationAcknowledged, ExecutionFinished, ExecutorKind, Heartbeat,
+    AttemptPhase, Backend, CancellationAcknowledged, ExecutionFinished, ExecutorKind, Heartbeat,
     OutputChunk, OutputStream, RejectionReason, ServerToWorker, WorkerHealth, WorkerHello,
     WorkerToServer, server_to_worker, worker_to_server,
 };
 use alloyport_proto::{ValidationError, validate_assignment, validate_worker_hello};
+use cuda::CUDA_FIXTURE_FEATURE;
+use cuda_runtime::CudaExecutionRuntime;
 use executor::{
     ArtifactPublisher, CancellationToken, ExecutionObservation, ExecutionStream,
     FakeExecutionRuntime, FakeExecutor, terminal_reference_intents,
@@ -131,6 +133,7 @@ impl From<AttemptStoreError> for WorkerError {
 pub struct AdmissionPolicy {
     allow_shell: bool,
     allow_cuda_fixture: bool,
+    cuda_fixture_only: bool,
 }
 
 impl AdmissionPolicy {
@@ -145,6 +148,14 @@ impl AdmissionPolicy {
     #[must_use]
     pub const fn allowing_cuda_fixture(mut self) -> Self {
         self.allow_cuda_fixture = true;
+        self
+    }
+
+    /// Returns a policy that permits only the locally constrained CUDA fixture executor.
+    #[must_use]
+    pub const fn cuda_fixture_only(mut self) -> Self {
+        self.allow_cuda_fixture = true;
+        self.cuda_fixture_only = true;
         self
     }
 }
@@ -205,6 +216,11 @@ impl WorkerState {
         if let Some(execution) = assignment.execution.as_ref() {
             let executor = ExecutorKind::try_from(execution.executor_kind)
                 .unwrap_or(ExecutorKind::Unspecified);
+            if self.policy.cuda_fixture_only && executor != ExecutorKind::CudaFixture {
+                return Err(WorkerError::PolicyViolation(
+                    "only the CUDA fixture executor is enabled".to_owned(),
+                ));
+            }
             if executor == ExecutorKind::Shell && !self.policy.allow_shell {
                 return Err(WorkerError::PolicyViolation(
                     "shell executor is disabled".to_owned(),
@@ -372,16 +388,33 @@ pub struct OutboundWorker {
     endpoint: Endpoint,
     hello: WorkerHello,
     state: Arc<Mutex<WorkerState>>,
-    execution: Option<Arc<FakeExecutionIntegration>>,
+    execution: Option<Arc<ExecutionIntegration>>,
     artifact_publisher: Option<Arc<dyn ArtifactPublisher>>,
     execution_updates: broadcast::Sender<ExecutionUpdate>,
 }
 
 #[derive(Debug)]
-struct FakeExecutionIntegration {
-    runtime: Arc<FakeExecutionRuntime>,
-    executor: Arc<FakeExecutor>,
+struct ExecutionIntegration {
+    attached: AttachedRuntime,
     active: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
+}
+
+#[derive(Debug)]
+enum AttachedRuntime {
+    Fake {
+        runtime: Arc<FakeExecutionRuntime>,
+        executor: Arc<FakeExecutor>,
+    },
+    Cuda(Arc<CudaExecutionRuntime>),
+}
+
+impl AttachedRuntime {
+    fn supports(&self, executor: ExecutorKind) -> bool {
+        match self {
+            Self::Fake { .. } => executor != ExecutorKind::CudaFixture,
+            Self::Cuda(_) => executor == ExecutorKind::CudaFixture,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -454,6 +487,11 @@ impl OutboundWorker {
         runtime: Arc<FakeExecutionRuntime>,
         executor: Arc<FakeExecutor>,
     ) -> Result<Self, WorkerError> {
+        if self.execution.is_some() {
+            return Err(WorkerError::Execution(
+                "an execution runtime is already attached".into(),
+            ));
+        }
         if runtime.worker_id() != self.hello.worker_id {
             return Err(WorkerError::Execution(format!(
                 "fake runtime identity {} does not match worker {}",
@@ -461,9 +499,70 @@ impl OutboundWorker {
                 self.hello.worker_id
             )));
         }
-        self.execution = Some(Arc::new(FakeExecutionIntegration {
-            runtime,
-            executor,
+        self.execution = Some(Arc::new(ExecutionIntegration {
+            attached: AttachedRuntime::Fake { runtime, executor },
+            active: Arc::new(Mutex::new(BTreeMap::new())),
+        }));
+        Ok(self)
+    }
+
+    /// Attaches the policy-bound CUDA runtime and restricts admission to its executor kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a worker/runtime identity mismatch, non-CUDA capabilities, mismatched
+    /// environment facts, or a state handle already shared before runtime configuration.
+    pub fn with_cuda_executor(
+        mut self,
+        runtime: Arc<CudaExecutionRuntime>,
+    ) -> Result<Self, WorkerError> {
+        if self.execution.is_some() {
+            return Err(WorkerError::Execution(
+                "an execution runtime is already attached".into(),
+            ));
+        }
+        if runtime.worker_id() != self.hello.worker_id {
+            return Err(WorkerError::Execution(format!(
+                "CUDA runtime identity {} does not match worker {}",
+                runtime.worker_id(),
+                self.hello.worker_id
+            )));
+        }
+        let capabilities =
+            self.hello.capabilities.as_ref().ok_or_else(|| {
+                WorkerError::Execution("CUDA worker capabilities are missing".into())
+            })?;
+        if Backend::try_from(capabilities.backend).unwrap_or(Backend::Unspecified) != Backend::Cuda
+        {
+            return Err(WorkerError::Execution(
+                "CUDA runtime requires CUDA worker capabilities".into(),
+            ));
+        }
+        let environment = runtime.environment();
+        if capabilities.architecture != environment.architecture
+            || capabilities.driver_version != environment.driver_version
+            || capabilities.toolkit_version != environment.toolkit_version
+        {
+            return Err(WorkerError::Execution(
+                "CUDA runtime environment facts do not match worker capabilities".into(),
+            ));
+        }
+        if !self
+            .hello
+            .features
+            .iter()
+            .any(|feature| feature == CUDA_FIXTURE_FEATURE)
+        {
+            self.hello.features.push(CUDA_FIXTURE_FEATURE.into());
+        }
+        let state = Arc::get_mut(&mut self.state).ok_or_else(|| {
+            WorkerError::Execution(
+                "CUDA runtime must be attached before sharing the worker state".into(),
+            )
+        })?;
+        state.get_mut().policy = state.get_mut().policy.cuda_fixture_only();
+        self.execution = Some(Arc::new(ExecutionIntegration {
+            attached: AttachedRuntime::Cuda(runtime),
             active: Arc::new(Mutex::new(BTreeMap::new())),
         }));
         Ok(self)
@@ -489,7 +588,38 @@ impl OutboundWorker {
     /// may reconnect this same value; its in-process attempt map is retained.
     pub async fn run_session(&self) -> Result<(), WorkerError> {
         self.publish_pending_terminal_artifacts().await?;
+        self.retry_terminal_cuda_cleanup().await?;
         self.run_control_session().await
+    }
+
+    async fn retry_terminal_cuda_cleanup(&self) -> Result<(), WorkerError> {
+        let Some(integration) = self.execution.as_ref() else {
+            return Ok(());
+        };
+        let AttachedRuntime::Cuda(runtime) = &integration.attached else {
+            return Ok(());
+        };
+        let state = self.state.lock().await.clone();
+        let terminal_attempts = state
+            .store
+            .attempts()?
+            .into_iter()
+            .filter(|attempt| {
+                attempt.phase == LocalAttemptPhase::Finished
+                    && ExecutorKind::try_from(attempt.assignment.execution.executor_kind)
+                        .unwrap_or(ExecutorKind::Unspecified)
+                        == ExecutorKind::CudaFixture
+            })
+            .map(|attempt| attempt.assignment.attempt_id)
+            .collect::<Vec<_>>();
+        for attempt_id in terminal_attempts {
+            // Cleanup is deliberately best effort here: a stale container cannot prevent durable
+            // terminal outbox delivery. A later session retries the same idempotent removal.
+            let _ = runtime
+                .run(&state, &attempt_id, &CancellationToken::new())
+                .await;
+        }
+        Ok(())
     }
 
     async fn run_control_session(&self) -> Result<(), WorkerError> {
@@ -900,6 +1030,14 @@ impl OutboundWorker {
         if attempt.phase == LocalAttemptPhase::Finished {
             return Ok(None);
         }
+        let executor = ExecutorKind::try_from(attempt.assignment.execution.executor_kind)
+            .unwrap_or(ExecutorKind::Unspecified);
+        if !integration.attached.supports(executor) {
+            return Err(WorkerError::Execution(format!(
+                "attached runtime does not support executor kind {}",
+                executor.as_str_name()
+            )));
+        }
 
         let mut active = integration.active.lock().await;
         if let Some(cancellation) = active.get(attempt_id) {
@@ -1117,7 +1255,7 @@ impl OutboundWorker {
 }
 
 async fn run_registered_execution(
-    integration: &FakeExecutionIntegration,
+    integration: &ExecutionIntegration,
     state: &WorkerState,
     attempt_id: &str,
     cancellation: &CancellationToken,
@@ -1132,29 +1270,36 @@ async fn run_registered_execution(
             observation,
         });
     };
-    if let Some(publisher) = publisher {
-        integration
-            .runtime
-            .run_observed_and_publish(
-                state,
-                attempt_id,
-                &integration.executor,
-                cancellation,
-                publisher,
-                observer,
-            )
-            .await
-    } else {
-        integration
-            .runtime
-            .run_observed(
-                state,
-                attempt_id,
-                &integration.executor,
-                cancellation,
-                observer,
-            )
-            .await
+    match &integration.attached {
+        AttachedRuntime::Fake { runtime, executor } => {
+            if let Some(publisher) = publisher {
+                runtime
+                    .run_observed_and_publish(
+                        state,
+                        attempt_id,
+                        executor,
+                        cancellation,
+                        publisher,
+                        observer,
+                    )
+                    .await
+            } else {
+                runtime
+                    .run_observed(state, attempt_id, executor, cancellation, observer)
+                    .await
+            }
+        }
+        AttachedRuntime::Cuda(runtime) => {
+            if let Some(publisher) = publisher {
+                runtime
+                    .run_observed_and_publish(state, attempt_id, cancellation, publisher, observer)
+                    .await
+            } else {
+                runtime
+                    .run_observed(state, attempt_id, cancellation, observer)
+                    .await
+            }
+        }
     }
 }
 

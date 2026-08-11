@@ -108,9 +108,13 @@ if removal fails, the terminal result stays durable and a terminal replay retrie
 rerunning the fixture. Supervisor or publication failures instead leave the attempt `Running` and
 retain the identified container for safe reconciliation.
 
-The CUDA runtime is not attached to `OutboundWorker` or the worker binary yet. The next slice must
-add outbound-session selection/cancellation, live previews and early output-limit termination, and
-the explicit real-worker configuration.
+`OutboundWorker::with_cuda_executor` explicitly attaches this runtime, changes local admission to
+CUDA-fixture-only, verifies worker/runtime identity plus CUDA architecture/driver/toolkit facts, and
+uses the same active-attempt cancellation registry as the fake runtime. Session startup retries
+idempotent cleanup for terminal CUDA attempts without allowing cleanup failure to block durable
+terminal outbox delivery. The worker binary does not construct this stack yet. The next slice must
+add live previews and early output-limit termination, explicit binary configuration, and the real
+GB10 validation.
 
 ## Evidence and parity
 
@@ -154,7 +158,9 @@ Docker-adapter tests cover exact inspect identity/timestamp parsing, unsupported
 bounded pipe draining, exact command argv, missing-container discrimination, log-exhaustion
 propagation, and idempotent terminal removal without contacting a daemon. Runtime coverage proves
 that publication observes `Running`, terminal commit precedes removal, a cleanup failure preserves
-the terminal receipt/container, and replay retries only cleanup. An explicitly invoked
-outbound-worker GB10 smoke remains. The first manual probe compiled and verified 1,048,576 elements
-on the target, producing the deterministic checksum `670562424`. No CI test may silently depend on a
-GPU or Docker daemon.
+the terminal receipt/container, and replay retries only cleanup. A loopback gRPC test sends a real
+typed CUDA assignment through the controller, runs it with a fake container engine, publishes all
+three terminal Artifacts, survives a post-commit cleanup failure, reconnects, reports the terminal
+outbox, and removes without rerunning. An explicitly invoked real-engine GB10 smoke remains. The
+first manual probe compiled and verified 1,048,576 elements on the target, producing the
+deterministic checksum `670562424`. No CI test may silently depend on a GPU or Docker daemon.
