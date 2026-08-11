@@ -8,6 +8,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+alloyport-artifacts = { path = "../alloyport-artifacts" }
+alloyport-events = { path = "../alloyport-events" }
 alloyport-proto = { path = "../alloyport-proto" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }

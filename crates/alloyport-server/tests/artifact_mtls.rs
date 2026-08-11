@@ -1,5 +1,7 @@
-use alloyport_artifacts::FilesystemArtifactStore;
-use alloyport_artifacts::upload::SqliteUploadStore;
+use alloyport_artifacts::upload::{
+    ArtifactReferenceKind, GrantArtifactReference, SqliteUploadStore,
+};
+use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest};
 use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient;
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::artifact_v1::{
@@ -22,6 +24,7 @@ use rcgen::{
     KeyUsagePurpose,
 };
 use std::error::Error;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -59,7 +62,7 @@ async fn client_certificate_owns_sessions_and_completed_artifacts() -> Result<()
         Arc::clone(&uploads),
         artifacts,
         Arc::new(EnrolledArtifactAccessPolicy::new(
-            uploads,
+            Arc::clone(&uploads),
             artifact_resolver,
         )),
         Arc::new(ManualClock::new(1_000)),
@@ -123,6 +126,8 @@ async fn client_certificate_owns_sessions_and_completed_artifacts() -> Result<()
     assert_download_denied(&mut client_b, digest).await?;
     assert_eq!(download_bytes(&mut client_a, digest).await?, b"hello world");
 
+    assert_controller_grant_and_revoke(&uploads, &mut client_b, digest).await?;
+
     identities.rotate("worker-a", fingerprint_a, fingerprint_c, 2)?;
     assert_rotated_worker_stream_closes(&mut active_worker).await?;
     assert_download_denied(&mut client_a, digest).await?;
@@ -134,6 +139,30 @@ async fn client_certificate_owns_sessions_and_completed_artifacts() -> Result<()
     let _ = shutdown_send.send(());
     server_task.await??;
     Ok(())
+}
+
+async fn assert_controller_grant_and_revoke(
+    uploads: &SqliteUploadStore,
+    client: &mut ArtifactServiceClient<Channel>,
+    digest: &str,
+) -> Result<(), Box<dyn Error>> {
+    let assignment_reference = GrantArtifactReference {
+        owner_id: "worker-b".into(),
+        reference_key: "assignment:attempt-2:input".into(),
+        digest: Sha256Digest::from_str(digest)?,
+        kind: ArtifactReferenceKind::AssignmentInput,
+        purpose: "controller-granted assignment input".into(),
+        now_ms: 1_001,
+        retained_until_ms: None,
+    };
+    uploads.grant_reference(&assignment_reference)?;
+    assert_eq!(download_bytes(client, digest).await?, b"hello world");
+    uploads.revoke_reference(
+        &assignment_reference.owner_id,
+        &assignment_reference.reference_key,
+        1_002,
+    )?;
+    assert_download_denied(client, digest).await
 }
 
 async fn artifact_client(

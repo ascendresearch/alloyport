@@ -3,7 +3,7 @@
 use crate::identity::ConnectionIdentityResolver;
 use crate::storage::Clock;
 use alloyport_artifacts::upload::{BeginUpload, SqliteUploadStore, UploadError, UploadSession};
-use alloyport_artifacts::{ArtifactIdentity, ArtifactStore, FilesystemArtifactStore, Sha256Digest};
+use alloyport_artifacts::{ArtifactIdentity, FilesystemArtifactStore, Sha256Digest};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactService;
 use alloyport_proto::artifact_v1::{
     self, BeginUploadRequest, DownloadChunk, DownloadRequest, FinalizeUploadRequest,
@@ -79,7 +79,7 @@ impl ArtifactAccessPolicy for MtlsArtifactAccessPolicy {
     }
 
     fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
-        authorize_completed_artifact(&self.uploads, owner_id, digest)
+        authorize_referenced_artifact(&self.uploads, owner_id, digest)
     }
 }
 
@@ -113,16 +113,16 @@ impl ArtifactAccessPolicy for EnrolledArtifactAccessPolicy {
     }
 
     fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
-        authorize_completed_artifact(&self.uploads, owner_id, digest)
+        authorize_referenced_artifact(&self.uploads, owner_id, digest)
     }
 }
 
-fn authorize_completed_artifact(
+fn authorize_referenced_artifact(
     uploads: &SqliteUploadStore,
     owner_id: &str,
     digest: Sha256Digest,
 ) -> Result<(), Status> {
-    match uploads.owns_completed_artifact(owner_id, digest) {
+    match uploads.can_read_artifact(owner_id, digest) {
         Ok(true) => Ok(()),
         Ok(false) => Err(Status::permission_denied(
             "artifact is not referenced by this logical owner",
@@ -261,17 +261,18 @@ impl ArtifactService for ArtifactServiceImpl {
         let request = request.into_inner();
         let digest = parse_digest(&request.digest)?;
         let access = Arc::clone(&self.access);
-        run_status_blocking(move || access.authorize_download(&owner_id, digest)).await?;
+        let authorization_owner = owner_id.clone();
+        run_status_blocking(move || access.authorize_download(&authorization_owner, digest))
+            .await?;
+        let uploads = Arc::clone(&self.uploads);
         let artifacts = Arc::clone(&self.artifacts);
+        let reader = run_blocking(move || {
+            uploads.open_referenced_artifact(&owner_id, digest, artifacts.as_ref())
+        })
+        .await?;
         let (sender, receiver) = mpsc::channel(8);
         tokio::task::spawn_blocking(move || {
-            stream_download(
-                artifacts.as_ref(),
-                digest,
-                request.offset,
-                request.max_bytes,
-                &sender,
-            );
+            stream_download(reader, request.offset, request.max_bytes, &sender);
         });
         Ok(Response::new(Box::pin(ReceiverStream::new(receiver))))
     }
@@ -299,16 +300,12 @@ where
 }
 
 fn stream_download(
-    artifacts: &FilesystemArtifactStore,
-    digest: Sha256Digest,
+    mut reader: alloyport_artifacts::ArtifactReader,
     offset: u64,
     max_bytes: u64,
     sender: &mpsc::Sender<Result<DownloadChunk, Status>>,
 ) {
     let result = (|| {
-        let mut reader = artifacts
-            .open(digest)
-            .map_err(|error| artifact_status(&error))?;
         if offset > reader.identity().size_bytes {
             return Err(Status::out_of_range(
                 "download offset exceeds artifact size",
@@ -399,12 +396,14 @@ fn upload_status(error: UploadError) -> Status {
         UploadError::ChunkTooLarge { .. }
         | UploadError::SizeLimitExceeded { .. }
         | UploadError::QuotaExceeded { .. } => Status::resource_exhausted(error.to_string()),
-        UploadError::InvalidRequest(_) | UploadError::ConflictingUploadKey => {
-            Status::invalid_argument(error.to_string())
-        }
-        UploadError::Expired | UploadError::Incomplete { .. } | UploadError::InvalidState(_) => {
-            Status::failed_precondition(error.to_string())
-        }
+        UploadError::InvalidRequest(_)
+        | UploadError::ConflictingUploadKey
+        | UploadError::ConflictingReferenceKey => Status::invalid_argument(error.to_string()),
+        UploadError::ReferenceRevoked
+        | UploadError::GarbageCollectionPending(_)
+        | UploadError::Expired
+        | UploadError::Incomplete { .. }
+        | UploadError::InvalidState(_) => Status::failed_precondition(error.to_string()),
         UploadError::Artifact(error) => artifact_status(&error),
         UploadError::Sqlite(_) | UploadError::Io { .. } | UploadError::Corrupt(_) => {
             Status::internal(error.to_string())

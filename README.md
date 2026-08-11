@@ -41,8 +41,8 @@ automation, and replay; an agent's narrative remains distinct from verified migr
 
 ## Workspace
 
-- `alloyport-artifacts`: content-addressed artifact interfaces and the crash-recoverable filesystem
-  SHA-256 store.
+- `alloyport-artifacts`: content-addressed artifact interfaces, the crash-recoverable filesystem
+  SHA-256 store, durable typed references, quotas, and conservative garbage collection.
 - `alloyport-core`: dependency-light domain model and lifecycle invariants.
 - `alloyport-events`: versioned producer/canonical events, lifecycle reduction, JSONL, and plain
   rendering shared with the Python executor bridge.
@@ -50,8 +50,8 @@ automation, and replay; an agent's narrative remains distinct from verified migr
   validation.
 - `alloyport-server`: worker connection registry, SQLite control repository, attempt leases, and gRPC
   control service, plus the mTLS-authorized Artifact service and filesystem CAS.
-- `alloyport-worker`: outbound worker client, local assignment admission, reconnect, and heartbeat
-  runtime.
+- `alloyport-worker`: outbound worker client, local assignment admission, reconnect/heartbeat, and a
+  typed deterministic fake executor with worker-local Artifact spooling.
 - `alloyport-cli`: command-line entry point; orchestration will grow here only until service
   boundaries become justified by measurements.
 - `docs/design/`: numbered architecture decisions, including the trust boundary, verification

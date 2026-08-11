@@ -1,5 +1,6 @@
 //! Outbound worker client and local assignment admission state.
 
+pub mod executor;
 pub mod journal;
 
 use alloyport_proto::v1::worker_control_client::WorkerControlClient;

@@ -320,6 +320,36 @@ impl FilesystemArtifactStore {
         self.objects.join(&hexadecimal[..2]).join(hexadecimal)
     }
 
+    /// Removes one object selected by the metadata layer as unreachable.
+    ///
+    /// This operation does not decide reachability. Callers must serialize it with publication and
+    /// active readers, then durably remove the corresponding metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the object or its fanout directory cannot be updated safely.
+    pub fn remove_unreachable(&self, digest: Sha256Digest) -> Result<bool, ArtifactStoreError> {
+        let path = self.object_path(digest);
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                let parent = path.parent().ok_or_else(|| ArtifactStoreError::Io {
+                    operation: "resolve artifact fanout directory",
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "content-addressed path has no parent",
+                    ),
+                })?;
+                sync_directory(parent, "sync artifact deletion")?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(source) => Err(ArtifactStoreError::Io {
+                operation: "remove unreachable artifact",
+                source,
+            }),
+        }
+    }
+
     fn create_staging_file(&self) -> Result<(PathBuf, File), ArtifactStoreError> {
         for _ in 0..32 {
             let sequence = self.upload_counter.fetch_add(1, Ordering::Relaxed);

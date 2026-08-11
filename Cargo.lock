@@ -75,6 +75,8 @@ dependencies = [
 name = "alloyport-worker"
 version = "0.1.0"
 dependencies = [
+ "alloyport-artifacts",
+ "alloyport-events",
  "alloyport-proto",
  "rusqlite",
  "serde",

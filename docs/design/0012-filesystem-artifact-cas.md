@@ -51,9 +51,10 @@ canonical artifact inputs.
 ## Deliberate limits
 
 The original CAS decision did not define the network Artifact service or resumable upload sessions;
-the implemented follow-ups are recorded below. General reference metadata, garbage collection,
-remote object-store adapters, and replication remain out of scope. Durable certificate enrollment
-and rotation are defined separately by Design 0013. Bulk bytes stay off the worker control stream.
+the implemented follow-ups are recorded below. Durable certificate enrollment and rotation are
+defined by Design 0013, and general reference metadata plus conservative garbage collection by
+Design 0014. Remote object-store adapters and replication remain out of scope. Bulk bytes stay off
+the worker control stream.
 
 The filesystem implementation assumes hard-link support within one storage root. A future object
 store adapter must provide an equivalent create-if-absent publication primitive and integrity check,
@@ -106,6 +107,19 @@ These are logical limits over objects and sessions managed through this upload d
 replace filesystem free-space monitoring, and externally inserted CAS files are not discovered by
 scanning the object tree.
 
+## Reference and garbage-collection follow-up
+
+Typed owner-scoped references now represent completed uploads, assignment inputs and outputs,
+receipts, retention roots, and other controller purposes. Active references grant reads; revocation
+removes access while an optional retention deadline can continue protecting physical bytes. Owner
+quota counts each actively referenced digest once and is released after the last reference is
+revoked. Global usage is released only when explicit conservative GC removes the unreachable CAS
+object.
+
+GC excludes active references, unexpired retention, live upload sessions, and active in-process
+readers. A durable pending marker recovers deletion interrupted between the filesystem and SQLite.
+Design 0014 defines the concurrency, crash, authorization, and deliberate-limit details.
+
 ## Verification
 
 Tests cover canonical digest parsing, bounded streaming read/write, declared digest mismatch,
@@ -119,3 +133,5 @@ and revocation removes access.
 Quota tests cover restart recovery, idempotent and concurrent begin, per-owner isolation, terminal
 failure and expiry release, duplicate-digest completion, old-schema backfill, and RPC
 `ResourceExhausted` mapping.
+Reference and collection tests cover concurrent idempotent grants, typed conflicts, revocation,
+retention, cross-owner mTLS access, reader leases, quota release, and restart recovery.

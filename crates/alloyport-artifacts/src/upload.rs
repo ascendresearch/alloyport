@@ -1,15 +1,19 @@
 //! Durable resumable-upload sessions layered over an immutable artifact store.
 
-use crate::{ArtifactIdentity, ArtifactStore, ArtifactStoreError, IngestRequest, Sha256Digest};
+use crate::{
+    ArtifactIdentity, ArtifactReader, ArtifactStore, ArtifactStoreError, FilesystemArtifactStore,
+    IngestRequest, Sha256Digest,
+};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SCHEMA: &str = r"
@@ -43,6 +47,28 @@ CREATE TABLE IF NOT EXISTS artifact_owner_references (
     size_bytes INTEGER NOT NULL,
     PRIMARY KEY(owner_id, digest),
     FOREIGN KEY(digest) REFERENCES artifact_objects(digest)
+);
+CREATE TABLE IF NOT EXISTS artifact_references (
+    owner_id TEXT NOT NULL,
+    reference_key TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    kind INTEGER NOT NULL,
+    purpose TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    retained_until_ms INTEGER,
+    revoked_at_ms INTEGER,
+    PRIMARY KEY(owner_id, reference_key)
+);
+CREATE INDEX IF NOT EXISTS artifact_references_digest
+    ON artifact_references(digest);
+CREATE INDEX IF NOT EXISTS artifact_references_active_owner_digest
+    ON artifact_references(owner_id, digest) WHERE revoked_at_ms IS NULL;
+CREATE TABLE IF NOT EXISTS artifact_gc_pending (
+    digest TEXT PRIMARY KEY,
+    marked_at_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS artifact_schema_migrations (
+    name TEXT PRIMARY KEY
 );
 COMMIT;
 ";
@@ -89,6 +115,63 @@ pub enum QuotaScope {
     Owner,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(i64)]
+pub enum ArtifactReferenceKind {
+    Upload = 1,
+    AssignmentInput = 2,
+    AssignmentOutput = 3,
+    Receipt = 4,
+    RetentionRoot = 5,
+    Other = 6,
+}
+
+impl ArtifactReferenceKind {
+    fn from_i64(value: i64) -> Result<Self, UploadError> {
+        match value {
+            1 => Ok(Self::Upload),
+            2 => Ok(Self::AssignmentInput),
+            3 => Ok(Self::AssignmentOutput),
+            4 => Ok(Self::Receipt),
+            5 => Ok(Self::RetentionRoot),
+            6 => Ok(Self::Other),
+            _ => Err(UploadError::Corrupt(format!(
+                "unknown artifact reference kind {value}"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GrantArtifactReference {
+    pub owner_id: String,
+    pub reference_key: String,
+    pub digest: Sha256Digest,
+    pub kind: ArtifactReferenceKind,
+    pub purpose: String,
+    pub now_ms: u64,
+    pub retained_until_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArtifactReference {
+    pub owner_id: String,
+    pub reference_key: String,
+    pub digest: Sha256Digest,
+    pub kind: ArtifactReferenceKind,
+    pub purpose: String,
+    pub created_at_ms: u64,
+    pub retained_until_ms: Option<u64>,
+    pub revoked_at_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GarbageCollectionReport {
+    pub collected_objects: u64,
+    pub reclaimed_bytes: u64,
+    pub skipped_active_readers: u64,
+}
+
 impl UploadState {
     fn from_i64(value: i64) -> Result<Self, UploadError> {
         match value {
@@ -128,6 +211,9 @@ pub enum UploadError {
     NotFound(String),
     OwnerMismatch,
     ConflictingUploadKey,
+    ConflictingReferenceKey,
+    ReferenceRevoked,
+    GarbageCollectionPending(Sha256Digest),
     InvalidRequest(&'static str),
     OffsetConflict {
         expected: u64,
@@ -166,6 +252,16 @@ impl Display for UploadError {
             Self::OwnerMismatch => write!(formatter, "upload session owner does not match"),
             Self::ConflictingUploadKey => {
                 write!(formatter, "upload key was reused with other metadata")
+            }
+            Self::ConflictingReferenceKey => {
+                write!(
+                    formatter,
+                    "artifact reference key was reused with other metadata"
+                )
+            }
+            Self::ReferenceRevoked => write!(formatter, "artifact reference is revoked"),
+            Self::GarbageCollectionPending(digest) => {
+                write!(formatter, "artifact {digest} is pending garbage collection")
             }
             Self::InvalidRequest(detail) => write!(formatter, "invalid upload request: {detail}"),
             Self::OffsetConflict { expected, received } => write!(
@@ -231,9 +327,37 @@ impl From<ArtifactStoreError> for UploadError {
     }
 }
 
+struct LeasedArtifactReader {
+    reader: ArtifactReader,
+    digest: Sha256Digest,
+    active_readers: Arc<Mutex<BTreeMap<Sha256Digest, u64>>>,
+}
+
+impl Read for LeasedArtifactReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.reader.read(buffer)
+    }
+}
+
+impl Drop for LeasedArtifactReader {
+    fn drop(&mut self) {
+        let Ok(mut readers) = self.active_readers.lock() else {
+            return;
+        };
+        let Some(count) = readers.get_mut(&self.digest) else {
+            return;
+        };
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            readers.remove(&self.digest);
+        }
+    }
+}
+
 pub struct SqliteUploadStore {
     connection: Mutex<Connection>,
     finalize_lock: Mutex<()>,
+    active_readers: Arc<Mutex<BTreeMap<Sha256Digest, u64>>>,
     upload_root: PathBuf,
     max_upload_bytes: u64,
     max_chunk_bytes: usize,
@@ -288,9 +412,11 @@ impl SqliteUploadStore {
         let mut connection = Connection::open(database)?;
         connection.execute_batch(SCHEMA)?;
         migrate_quota_schema(&mut connection)?;
+        migrate_reference_schema(&mut connection)?;
         let store = Self {
             connection: Mutex::new(connection),
             finalize_lock: Mutex::new(()),
+            active_readers: Arc::new(Mutex::new(BTreeMap::new())),
             upload_root: upload_root.as_ref().to_path_buf(),
             max_upload_bytes,
             max_chunk_bytes,
@@ -303,6 +429,7 @@ impl SqliteUploadStore {
 
     pub fn begin(&self, request: &BeginUpload) -> Result<UploadSession, UploadError> {
         validate_begin(request, self.max_upload_bytes)?;
+        let _artifact_guard = self.artifact_guard()?;
         let mut database = self.connection()?;
         let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(existing) =
@@ -318,6 +445,10 @@ impl SqliteUploadStore {
             return Ok(existing);
         }
         reserve_quota(&transaction, request, self.quotas)?;
+        transaction.execute(
+            "DELETE FROM artifact_gc_pending WHERE digest = ?1",
+            [request.expected_digest.to_string()],
+        )?;
         let upload_id = self.next_upload_id(&transaction)?;
         transaction.execute(
             "INSERT INTO upload_sessions(upload_id, owner_id, upload_key, expected_digest,
@@ -365,6 +496,206 @@ impl SqliteUploadStore {
             |row| row.get(0),
         )?;
         Ok(found)
+    }
+
+    pub fn can_read_artifact(
+        &self,
+        owner_id: &str,
+        digest: Sha256Digest,
+    ) -> Result<bool, UploadError> {
+        self.owns_completed_artifact(owner_id, digest)
+    }
+
+    pub fn grant_reference(
+        &self,
+        request: &GrantArtifactReference,
+    ) -> Result<ArtifactReference, UploadError> {
+        validate_reference_grant(request)?;
+        let _artifact_guard = self.artifact_guard()?;
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) =
+            reference_by_key(&transaction, &request.owner_id, &request.reference_key)?
+        {
+            if reference_matches_grant(&existing, request) {
+                transaction.commit()?;
+                return Ok(existing);
+            }
+            return Err(if existing.revoked_at_ms.is_some() {
+                UploadError::ReferenceRevoked
+            } else {
+                UploadError::ConflictingReferenceKey
+            });
+        }
+        if garbage_collection_pending(&transaction, request.digest)? {
+            return Err(UploadError::GarbageCollectionPending(request.digest));
+        }
+        let size_bytes = artifact_size(&transaction, request.digest)?
+            .ok_or_else(|| UploadError::NotFound(request.digest.to_string()))?;
+        let creates_owner_usage =
+            !has_active_owner_reference(&transaction, &request.owner_id, request.digest)?;
+        if creates_owner_usage {
+            let used = owner_stored_bytes(&transaction, &request.owner_id)?.saturating_add(
+                owner_reserved_bytes(&transaction, &request.owner_id, request.now_ms)?,
+            );
+            enforce_quota(
+                QuotaScope::Owner,
+                self.quotas.per_owner_bytes,
+                used,
+                size_bytes,
+            )?;
+        }
+        insert_reference(&transaction, request, request.kind)?;
+        if creates_owner_usage {
+            transaction.execute(
+                "INSERT INTO artifact_owner_references(owner_id, digest, size_bytes)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    request.owner_id,
+                    request.digest.to_string(),
+                    to_i64(size_bytes)?
+                ],
+            )?;
+        }
+        let reference = reference_by_key(&transaction, &request.owner_id, &request.reference_key)?
+            .ok_or_else(|| {
+                UploadError::Corrupt("inserted artifact reference disappeared".into())
+            })?;
+        transaction.commit()?;
+        Ok(reference)
+    }
+
+    pub fn revoke_reference(
+        &self,
+        owner_id: &str,
+        reference_key: &str,
+        now_ms: u64,
+    ) -> Result<ArtifactReference, UploadError> {
+        validate_reference_identity(owner_id, reference_key)?;
+        let _artifact_guard = self.artifact_guard()?;
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let reference = reference_by_key(&transaction, owner_id, reference_key)?
+            .ok_or_else(|| UploadError::NotFound(reference_key.to_owned()))?;
+        if reference.revoked_at_ms.is_some() {
+            transaction.commit()?;
+            return Ok(reference);
+        }
+        transaction.execute(
+            "UPDATE artifact_references SET revoked_at_ms = ?3
+             WHERE owner_id = ?1 AND reference_key = ?2",
+            params![owner_id, reference_key, to_i64(now_ms)?],
+        )?;
+        if !has_other_active_owner_reference(
+            &transaction,
+            owner_id,
+            reference.digest,
+            reference_key,
+        )? {
+            transaction.execute(
+                "DELETE FROM artifact_owner_references WHERE owner_id = ?1 AND digest = ?2",
+                params![owner_id, reference.digest.to_string()],
+            )?;
+        }
+        let revoked = reference_by_key(&transaction, owner_id, reference_key)?
+            .ok_or_else(|| UploadError::Corrupt("revoked artifact reference disappeared".into()))?;
+        transaction.commit()?;
+        Ok(revoked)
+    }
+
+    pub fn reference(
+        &self,
+        owner_id: &str,
+        reference_key: &str,
+    ) -> Result<ArtifactReference, UploadError> {
+        let database = self.connection()?;
+        reference_by_key(&database, owner_id, reference_key)?
+            .ok_or_else(|| UploadError::NotFound(reference_key.to_owned()))
+    }
+
+    pub fn open_referenced_artifact(
+        &self,
+        owner_id: &str,
+        digest: Sha256Digest,
+        artifacts: &FilesystemArtifactStore,
+    ) -> Result<ArtifactReader, UploadError> {
+        let mut readers = self
+            .active_readers
+            .lock()
+            .map_err(|_| UploadError::Corrupt("artifact reader lock poisoned".into()))?;
+        if !self.can_read_artifact(owner_id, digest)? {
+            return Err(UploadError::OwnerMismatch);
+        }
+        let reader = artifacts.open(digest)?;
+        let count = readers.entry(digest).or_default();
+        *count = count.saturating_add(1);
+        let identity = reader.identity();
+        Ok(ArtifactReader::new(
+            identity,
+            LeasedArtifactReader {
+                reader,
+                digest,
+                active_readers: Arc::clone(&self.active_readers),
+            },
+        ))
+    }
+
+    pub fn collect_garbage(
+        &self,
+        artifacts: &FilesystemArtifactStore,
+        now_ms: u64,
+        limit: usize,
+    ) -> Result<GarbageCollectionReport, UploadError> {
+        if limit == 0 {
+            return Err(UploadError::InvalidRequest(
+                "garbage collection limit must be positive",
+            ));
+        }
+        let _artifact_guard = self.artifact_guard()?;
+        let readers = self
+            .active_readers
+            .lock()
+            .map_err(|_| UploadError::Corrupt("artifact reader lock poisoned".into()))?;
+        let mut database = self.connection()?;
+        stage_garbage_candidates(&mut database, now_ms, limit)?;
+        let candidates = pending_garbage(&database, limit)?;
+        let mut report = GarbageCollectionReport::default();
+        for (digest, size_bytes) in candidates {
+            if readers.get(&digest).copied().unwrap_or_default() != 0 {
+                database.execute(
+                    "DELETE FROM artifact_gc_pending WHERE digest = ?1",
+                    [digest.to_string()],
+                )?;
+                report.skipped_active_readers = report.skipped_active_readers.saturating_add(1);
+                continue;
+            }
+            let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if artifact_is_reachable(&transaction, digest, now_ms)? {
+                transaction.execute(
+                    "DELETE FROM artifact_gc_pending WHERE digest = ?1",
+                    [digest.to_string()],
+                )?;
+                transaction.commit()?;
+                continue;
+            }
+            artifacts.remove_unreachable(digest)?;
+            transaction.execute(
+                "DELETE FROM artifact_owner_references WHERE digest = ?1",
+                [digest.to_string()],
+            )?;
+            transaction.execute(
+                "DELETE FROM artifact_objects WHERE digest = ?1",
+                [digest.to_string()],
+            )?;
+            transaction.execute(
+                "DELETE FROM artifact_gc_pending WHERE digest = ?1",
+                [digest.to_string()],
+            )?;
+            transaction.commit()?;
+            report.collected_objects = report.collected_objects.saturating_add(1);
+            report.reclaimed_bytes = report.reclaimed_bytes.saturating_add(size_bytes);
+        }
+        Ok(report)
     }
 
     pub fn append(
@@ -474,7 +805,7 @@ impl SqliteUploadStore {
         };
         let mut database = self.connection()?;
         let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        record_completed_artifact(&transaction, &session.owner_id, artifact)?;
+        record_completed_artifact(&transaction, &session.owner_id, upload_id, artifact, now_ms)?;
         transaction.execute(
             "UPDATE upload_sessions
              SET state = ?2, artifact_digest = ?3, updated_at_ms = ?4, quota_reserved_bytes = 0
@@ -492,6 +823,7 @@ impl SqliteUploadStore {
     }
 
     pub fn prune_expired(&self, now_ms: u64) -> Result<usize, UploadError> {
+        let _artifact_guard = self.artifact_guard()?;
         let mut database = self.connection()?;
         let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let ids = {
@@ -519,6 +851,12 @@ impl SqliteUploadStore {
         self.connection
             .lock()
             .map_err(|_| UploadError::Corrupt("database lock poisoned".to_owned()))
+    }
+
+    fn artifact_guard(&self) -> Result<std::sync::MutexGuard<'_, ()>, UploadError> {
+        self.finalize_lock
+            .lock()
+            .map_err(|_| UploadError::Corrupt("artifact lifecycle lock poisoned".into()))
     }
 
     fn next_upload_id(
@@ -598,18 +936,21 @@ fn migrate_quota_schema(connection: &mut Connection) -> Result<(), UploadError> 
             params![UploadState::Open as i64, UploadState::Finalizing as i64],
         )?;
     }
-    transaction.execute(
-        "INSERT OR IGNORE INTO artifact_objects(digest, size_bytes)
-         SELECT artifact_digest, expected_size_bytes FROM upload_sessions
-         WHERE state = ?1 AND artifact_digest IS NOT NULL",
-        [UploadState::Completed as i64],
-    )?;
-    transaction.execute(
-        "INSERT OR IGNORE INTO artifact_owner_references(owner_id, digest, size_bytes)
-         SELECT owner_id, artifact_digest, expected_size_bytes FROM upload_sessions
-         WHERE state = ?1 AND artifact_digest IS NOT NULL",
-        [UploadState::Completed as i64],
-    )?;
+    if !migration_applied(&transaction, "artifact-accounting-v1")? {
+        transaction.execute(
+            "INSERT OR IGNORE INTO artifact_objects(digest, size_bytes)
+             SELECT artifact_digest, expected_size_bytes FROM upload_sessions
+             WHERE state = ?1 AND artifact_digest IS NOT NULL",
+            [UploadState::Completed as i64],
+        )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO artifact_owner_references(owner_id, digest, size_bytes)
+             SELECT owner_id, artifact_digest, expected_size_bytes FROM upload_sessions
+             WHERE state = ?1 AND artifact_digest IS NOT NULL",
+            [UploadState::Completed as i64],
+        )?;
+        mark_migration(&transaction, "artifact-accounting-v1")?;
+    }
     let conflicting_object = transaction
         .query_row(
             "SELECT upload_id FROM upload_sessions AS session
@@ -642,6 +983,63 @@ fn migrate_quota_schema(connection: &mut Connection) -> Result<(), UploadError> 
         )));
     }
     transaction.commit()?;
+    Ok(())
+}
+
+fn migrate_reference_schema(connection: &mut Connection) -> Result<(), UploadError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if migration_applied(&transaction, "artifact-references-v1")? {
+        transaction.commit()?;
+        return Ok(());
+    }
+    transaction.execute(
+        "INSERT OR IGNORE INTO artifact_references(
+            owner_id, reference_key, digest, kind, purpose, created_at_ms,
+            retained_until_ms, revoked_at_ms
+         )
+         SELECT owner_id, 'upload:' || upload_id, artifact_digest, ?2,
+                'completed upload', updated_at_ms, NULL, NULL
+         FROM upload_sessions
+         WHERE state = ?1 AND artifact_digest IS NOT NULL",
+        params![
+            UploadState::Completed as i64,
+            ArtifactReferenceKind::Upload as i64
+        ],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO artifact_references(
+            owner_id, reference_key, digest, kind, purpose, created_at_ms,
+            retained_until_ms, revoked_at_ms
+         )
+         SELECT owner_id, 'legacy-upload:' || digest, digest, ?1,
+                'migrated completed upload', 0, NULL, NULL
+         FROM artifact_owner_references AS owner_reference
+         WHERE NOT EXISTS (
+            SELECT 1 FROM artifact_references AS reference
+            WHERE reference.owner_id = owner_reference.owner_id
+              AND reference.digest = owner_reference.digest
+              AND reference.revoked_at_ms IS NULL
+         )",
+        [ArtifactReferenceKind::Upload as i64],
+    )?;
+    mark_migration(&transaction, "artifact-references-v1")?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn migration_applied(connection: &Connection, name: &str) -> Result<bool, UploadError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM artifact_schema_migrations WHERE name = ?1)",
+        [name],
+        |row| row.get(0),
+    )?)
+}
+
+fn mark_migration(connection: &Connection, name: &str) -> Result<(), UploadError> {
+    connection.execute(
+        "INSERT OR IGNORE INTO artifact_schema_migrations(name) VALUES (?1)",
+        [name],
+    )?;
     Ok(())
 }
 
@@ -743,10 +1141,296 @@ fn enforce_quota(
     }
 }
 
+fn owner_stored_bytes(connection: &Connection, owner_id: &str) -> Result<u64, UploadError> {
+    query_bytes(
+        connection,
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM artifact_owner_references
+         WHERE owner_id = ?1",
+        [owner_id],
+    )
+}
+
+fn owner_reserved_bytes(
+    connection: &Connection,
+    owner_id: &str,
+    now_ms: u64,
+) -> Result<u64, UploadError> {
+    query_bytes(
+        connection,
+        "SELECT COALESCE(SUM(quota_reserved_bytes), 0) FROM upload_sessions
+         WHERE owner_id = ?1 AND state IN (?2, ?3) AND expires_at_ms > ?4",
+        params![
+            owner_id,
+            UploadState::Open as i64,
+            UploadState::Finalizing as i64,
+            to_i64(now_ms)?
+        ],
+    )
+}
+
+fn artifact_size(
+    connection: &Connection,
+    digest: Sha256Digest,
+) -> Result<Option<u64>, UploadError> {
+    connection
+        .query_row(
+            "SELECT size_bytes FROM artifact_objects WHERE digest = ?1",
+            [digest.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(from_i64)
+        .transpose()
+}
+
+fn garbage_collection_pending(
+    connection: &Connection,
+    digest: Sha256Digest,
+) -> Result<bool, UploadError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM artifact_gc_pending WHERE digest = ?1)",
+        [digest.to_string()],
+        |row| row.get(0),
+    )?)
+}
+
+fn has_active_owner_reference(
+    connection: &Connection,
+    owner_id: &str,
+    digest: Sha256Digest,
+) -> Result<bool, UploadError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM artifact_references
+            WHERE owner_id = ?1 AND digest = ?2 AND revoked_at_ms IS NULL
+        )",
+        params![owner_id, digest.to_string()],
+        |row| row.get(0),
+    )?)
+}
+
+fn has_other_active_owner_reference(
+    connection: &Connection,
+    owner_id: &str,
+    digest: Sha256Digest,
+    excluded_key: &str,
+) -> Result<bool, UploadError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM artifact_references
+            WHERE owner_id = ?1 AND digest = ?2 AND reference_key != ?3
+              AND revoked_at_ms IS NULL
+        )",
+        params![owner_id, digest.to_string(), excluded_key],
+        |row| row.get(0),
+    )?)
+}
+
+fn validate_reference_identity(owner_id: &str, reference_key: &str) -> Result<(), UploadError> {
+    if owner_id.trim().is_empty() {
+        return Err(UploadError::InvalidRequest("reference owner is missing"));
+    }
+    if reference_key.trim().is_empty() {
+        return Err(UploadError::InvalidRequest("reference key is missing"));
+    }
+    Ok(())
+}
+
+fn validate_reference_grant(request: &GrantArtifactReference) -> Result<(), UploadError> {
+    validate_reference_identity(&request.owner_id, &request.reference_key)?;
+    if request.kind == ArtifactReferenceKind::Upload {
+        return Err(UploadError::InvalidRequest(
+            "upload references are created only by finalization",
+        ));
+    }
+    if request.purpose.trim().is_empty() {
+        return Err(UploadError::InvalidRequest("reference purpose is missing"));
+    }
+    if request
+        .retained_until_ms
+        .is_some_and(|retained_until_ms| retained_until_ms <= request.now_ms)
+    {
+        return Err(UploadError::InvalidRequest(
+            "reference retention must end in the future",
+        ));
+    }
+    Ok(())
+}
+
+fn reference_matches_grant(
+    reference: &ArtifactReference,
+    request: &GrantArtifactReference,
+) -> bool {
+    reference.digest == request.digest
+        && reference.kind == request.kind
+        && reference.purpose == request.purpose
+        && reference.retained_until_ms == request.retained_until_ms
+        && reference.revoked_at_ms.is_none()
+}
+
+fn insert_reference(
+    transaction: &rusqlite::Transaction<'_>,
+    request: &GrantArtifactReference,
+    kind: ArtifactReferenceKind,
+) -> Result<(), UploadError> {
+    transaction.execute(
+        "INSERT INTO artifact_references(
+            owner_id, reference_key, digest, kind, purpose, created_at_ms,
+            retained_until_ms, revoked_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+        params![
+            request.owner_id,
+            request.reference_key,
+            request.digest.to_string(),
+            kind as i64,
+            request.purpose,
+            to_i64(request.now_ms)?,
+            request.retained_until_ms.map(to_i64).transpose()?
+        ],
+    )?;
+    Ok(())
+}
+
+fn reference_by_key(
+    connection: &Connection,
+    owner_id: &str,
+    reference_key: &str,
+) -> Result<Option<ArtifactReference>, UploadError> {
+    let row = connection
+        .query_row(
+            "SELECT owner_id, reference_key, digest, kind, purpose, created_at_ms,
+                    retained_until_ms, revoked_at_ms
+             FROM artifact_references WHERE owner_id = ?1 AND reference_key = ?2",
+            params![owner_id, reference_key],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(|row| {
+        Ok(ArtifactReference {
+            owner_id: row.0,
+            reference_key: row.1,
+            digest: Sha256Digest::from_str(&row.2)
+                .map_err(|error| UploadError::Corrupt(error.to_string()))?,
+            kind: ArtifactReferenceKind::from_i64(row.3)?,
+            purpose: row.4,
+            created_at_ms: from_i64(row.5)?,
+            retained_until_ms: row.6.map(from_i64).transpose()?,
+            revoked_at_ms: row.7.map(from_i64).transpose()?,
+        })
+    })
+    .transpose()
+}
+
+fn stage_garbage_candidates(
+    connection: &mut Connection,
+    now_ms: u64,
+    limit: usize,
+) -> Result<(), UploadError> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO artifact_gc_pending(digest, marked_at_ms)
+         SELECT object.digest, ?1 FROM artifact_objects AS object
+         WHERE NOT EXISTS (
+             SELECT 1 FROM artifact_references AS reference
+             WHERE reference.digest = object.digest AND reference.revoked_at_ms IS NULL
+         )
+         AND NOT EXISTS (
+             SELECT 1 FROM artifact_references AS reference
+             WHERE reference.digest = object.digest
+               AND reference.retained_until_ms IS NOT NULL
+               AND reference.retained_until_ms > ?1
+         )
+         AND NOT EXISTS (
+             SELECT 1 FROM upload_sessions AS session
+             WHERE session.expected_digest = object.digest
+               AND session.state IN (?2, ?3) AND session.expires_at_ms > ?1
+         )
+         LIMIT ?4",
+        params![
+            to_i64(now_ms)?,
+            UploadState::Open as i64,
+            UploadState::Finalizing as i64,
+            i64::try_from(limit).map_err(|_| UploadError::InvalidRequest(
+                "garbage collection limit is too large"
+            ))?
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn pending_garbage(
+    connection: &Connection,
+    limit: usize,
+) -> Result<Vec<(Sha256Digest, u64)>, UploadError> {
+    let mut statement = connection.prepare(
+        "SELECT pending.digest, object.size_bytes
+         FROM artifact_gc_pending AS pending
+         JOIN artifact_objects AS object ON object.digest = pending.digest
+         ORDER BY pending.marked_at_ms, pending.digest LIMIT ?1",
+    )?;
+    let rows = statement
+        .query_map(
+            [i64::try_from(limit).map_err(|_| {
+                UploadError::InvalidRequest("garbage collection limit is too large")
+            })?],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(digest, size)| {
+            Ok((
+                Sha256Digest::from_str(&digest)
+                    .map_err(|error| UploadError::Corrupt(error.to_string()))?,
+                from_i64(size)?,
+            ))
+        })
+        .collect()
+}
+
+fn artifact_is_reachable(
+    connection: &Connection,
+    digest: Sha256Digest,
+    now_ms: u64,
+) -> Result<bool, UploadError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM artifact_references
+             WHERE digest = ?1 AND (
+                 revoked_at_ms IS NULL OR
+                 (retained_until_ms IS NOT NULL AND retained_until_ms > ?2)
+             )
+         ) OR EXISTS(
+             SELECT 1 FROM upload_sessions
+             WHERE expected_digest = ?1 AND state IN (?3, ?4) AND expires_at_ms > ?2
+         )",
+        params![
+            digest.to_string(),
+            to_i64(now_ms)?,
+            UploadState::Open as i64,
+            UploadState::Finalizing as i64
+        ],
+        |row| row.get(0),
+    )?)
+}
+
 fn record_completed_artifact(
     transaction: &rusqlite::Transaction<'_>,
     owner_id: &str,
+    upload_id: &str,
     artifact: ArtifactIdentity,
+    now_ms: u64,
 ) -> Result<(), UploadError> {
     let digest = artifact.digest.to_string();
     let size = to_i64(artifact.size_bytes)?;
@@ -764,6 +1448,23 @@ fn record_completed_artifact(
             "artifact {digest} has conflicting recorded sizes"
         )));
     }
+    transaction.execute(
+        "DELETE FROM artifact_gc_pending WHERE digest = ?1",
+        [&digest],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO artifact_references(
+            owner_id, reference_key, digest, kind, purpose, created_at_ms,
+            retained_until_ms, revoked_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, 'completed upload', ?5, NULL, NULL)",
+        params![
+            owner_id,
+            format!("upload:{upload_id}"),
+            digest,
+            ArtifactReferenceKind::Upload as i64,
+            to_i64(now_ms)?
+        ],
+    )?;
     transaction.execute(
         "INSERT OR IGNORE INTO artifact_owner_references(owner_id, digest, size_bytes)
          VALUES (?1, ?2, ?3)",
@@ -1352,6 +2053,229 @@ mod tests {
             })
         ));
         Ok(())
+    }
+
+    #[test]
+    fn controller_references_are_idempotent_typed_and_revocable() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let uploads = Arc::new(SqliteUploadStore::open_with_quotas(
+            directory.path().join("uploads.sqlite3"),
+            directory.path().join("uploads"),
+            100,
+            100,
+            UploadQuotas {
+                total_bytes: 10,
+                per_owner_bytes: 5,
+            },
+        )?);
+        let cas = FilesystemArtifactStore::open(directory.path().join("cas"), 100)?;
+        let (session, artifact) = complete_upload(&uploads, &cas, "worker-1", "source", b"data")?;
+        let grant = GrantArtifactReference {
+            owner_id: "worker-2".into(),
+            reference_key: "assignment:attempt-1:input".into(),
+            digest: artifact.digest,
+            kind: ArtifactReferenceKind::AssignmentInput,
+            purpose: "attempt input bundle".into(),
+            now_ms: 10,
+            retained_until_ms: None,
+        };
+        uploads.begin(&quota_request("worker-3", "reserved", b"xx", 9, 100))?;
+        let quota_blocked = GrantArtifactReference {
+            owner_id: "worker-3".into(),
+            reference_key: "assignment:quota-blocked".into(),
+            ..grant.clone()
+        };
+        assert!(matches!(
+            uploads.grant_reference(&quota_blocked),
+            Err(UploadError::QuotaExceeded {
+                scope: QuotaScope::Owner,
+                ..
+            })
+        ));
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let uploads = Arc::clone(&uploads);
+            let barrier = Arc::clone(&barrier);
+            let grant = grant.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                uploads.grant_reference(&grant)
+            }));
+        }
+        for handle in handles {
+            assert_eq!(
+                handle.join().expect("grant thread must not panic")?,
+                uploads.reference("worker-2", &grant.reference_key)?
+            );
+        }
+        assert!(uploads.can_read_artifact("worker-2", artifact.digest)?);
+        let mut conflicting = grant.clone();
+        conflicting.purpose = "different purpose".into();
+        assert!(matches!(
+            uploads.grant_reference(&conflicting),
+            Err(UploadError::ConflictingReferenceKey)
+        ));
+
+        let second = GrantArtifactReference {
+            reference_key: "receipt:attempt-1".into(),
+            kind: ArtifactReferenceKind::Receipt,
+            purpose: "attempt receipt evidence".into(),
+            ..grant
+        };
+        uploads.grant_reference(&second)?;
+        uploads.revoke_reference("worker-2", "assignment:attempt-1:input", 20)?;
+        assert!(uploads.can_read_artifact("worker-2", artifact.digest)?);
+        let revoked = uploads.revoke_reference("worker-2", "receipt:attempt-1", 21)?;
+        assert_eq!(
+            uploads.revoke_reference("worker-2", "receipt:attempt-1", 22)?,
+            revoked
+        );
+        assert!(!uploads.can_read_artifact("worker-2", artifact.digest)?);
+        assert!(uploads.can_read_artifact("worker-1", artifact.digest)?);
+        assert_eq!(
+            uploads
+                .reference("worker-1", &format!("upload:{}", session.upload_id))?
+                .kind,
+            ArtifactReferenceKind::Upload
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn garbage_collection_honors_readers_retention_and_releases_quota() -> Result<(), Box<dyn Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("uploads.sqlite3");
+        let upload_root = directory.path().join("uploads");
+        let cas_root = directory.path().join("cas");
+        let uploads = SqliteUploadStore::open_with_quotas(
+            &database,
+            &upload_root,
+            100,
+            100,
+            UploadQuotas {
+                total_bytes: 5,
+                per_owner_bytes: 5,
+            },
+        )?;
+        let cas = FilesystemArtifactStore::open(&cas_root, 100)?;
+        let (session, artifact) = complete_upload(&uploads, &cas, "worker-1", "source", b"12345")?;
+        let hold = GrantArtifactReference {
+            owner_id: "worker-2".into(),
+            reference_key: "retention:release-audit".into(),
+            digest: artifact.digest,
+            kind: ArtifactReferenceKind::RetentionRoot,
+            purpose: "minimum audit retention".into(),
+            now_ms: 10,
+            retained_until_ms: Some(50),
+        };
+        uploads.grant_reference(&hold)?;
+        let reader = uploads.open_referenced_artifact("worker-1", artifact.digest, &cas)?;
+        uploads.revoke_reference("worker-1", &format!("upload:{}", session.upload_id), 11)?;
+        uploads.revoke_reference("worker-2", &hold.reference_key, 12)?;
+        assert_eq!(
+            uploads.collect_garbage(&cas, 20, 10)?,
+            GarbageCollectionReport::default()
+        );
+        drop(reader);
+        assert_eq!(
+            uploads.collect_garbage(&cas, 50, 10)?,
+            GarbageCollectionReport {
+                collected_objects: 1,
+                reclaimed_bytes: 5,
+                skipped_active_readers: 0,
+            }
+        );
+        assert!(!cas.contains(artifact.digest)?);
+        uploads.begin(&quota_request("worker-3", "after-gc", b"abcde", 51, 100))?;
+
+        drop(uploads);
+        let reopened = SqliteUploadStore::open_with_quotas(
+            &database,
+            &upload_root,
+            100,
+            100,
+            UploadQuotas {
+                total_bytes: 5,
+                per_owner_bytes: 5,
+            },
+        )?;
+        assert!(!reopened.can_read_artifact("worker-1", artifact.digest)?);
+        assert!(!cas.contains(artifact.digest)?);
+        Ok(())
+    }
+
+    #[test]
+    fn garbage_collection_skips_an_active_reader_then_collects() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let uploads = SqliteUploadStore::open(
+            directory.path().join("uploads.sqlite3"),
+            directory.path().join("uploads"),
+            100,
+            100,
+        )?;
+        let cas = FilesystemArtifactStore::open(directory.path().join("cas"), 100)?;
+        let (session, artifact) = complete_upload(&uploads, &cas, "worker-1", "source", b"data")?;
+        let mut reader = uploads.open_referenced_artifact("worker-1", artifact.digest, &cas)?;
+        uploads.revoke_reference("worker-1", &format!("upload:{}", session.upload_id), 10)?;
+        assert_eq!(
+            uploads.collect_garbage(&cas, 11, 10)?,
+            GarbageCollectionReport {
+                collected_objects: 0,
+                reclaimed_bytes: 0,
+                skipped_active_readers: 1,
+            }
+        );
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, b"data");
+        drop(reader);
+        assert_eq!(uploads.collect_garbage(&cas, 12, 10)?.collected_objects, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_gc_recovers_after_restart_without_resurrecting_metadata()
+    -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("uploads.sqlite3");
+        let upload_root = directory.path().join("uploads");
+        let cas_root = directory.path().join("cas");
+        let cas = FilesystemArtifactStore::open(&cas_root, 100)?;
+        let artifact = {
+            let uploads = SqliteUploadStore::open(&database, &upload_root, 100, 100)?;
+            let (session, artifact) =
+                complete_upload(&uploads, &cas, "worker-1", "source", b"crash")?;
+            uploads.revoke_reference("worker-1", &format!("upload:{}", session.upload_id), 10)?;
+            uploads.connection()?.execute(
+                "INSERT INTO artifact_gc_pending(digest, marked_at_ms) VALUES (?1, 11)",
+                [artifact.digest.to_string()],
+            )?;
+            cas.remove_unreachable(artifact.digest)?;
+            artifact
+        };
+        let uploads = SqliteUploadStore::open(&database, &upload_root, 100, 100)?;
+        assert_eq!(uploads.collect_garbage(&cas, 12, 10)?.collected_objects, 1);
+        drop(uploads);
+        let reopened = SqliteUploadStore::open(&database, &upload_root, 100, 100)?;
+        assert!(!reopened.can_read_artifact("worker-1", artifact.digest)?);
+        assert!(!cas.contains(artifact.digest)?);
+        Ok(())
+    }
+
+    fn complete_upload(
+        uploads: &SqliteUploadStore,
+        cas: &FilesystemArtifactStore,
+        owner_id: &str,
+        upload_key: &str,
+        bytes: &[u8],
+    ) -> Result<(UploadSession, ArtifactIdentity), UploadError> {
+        let request = quota_request(owner_id, upload_key, bytes, 1, 100);
+        let session = uploads.begin(&request)?;
+        uploads.append(owner_id, &session.upload_id, 0, bytes, 2)?;
+        let artifact = uploads.finalize(owner_id, &session.upload_id, cas, 3)?;
+        Ok((session, artifact))
     }
 
     fn quota_store(

@@ -95,7 +95,9 @@ The contract, durable repository, and assignment-level reconciliation slices wer
   and retains a result arriving after lease expiry as stale instead of overwriting attempt state;
 - `alloyport-worker` uses a storage-domain `AttemptStore` and SQLite journal to commit immutable
   admission before acknowledgement, retain accepted/running/finished state across process restart,
-  populate hello/heartbeat reconciliation snapshots, and replay durable finished results;
+  populate hello/heartbeat reconciliation snapshots, and replay durable finished results; its
+  Design 0015 fake runtime proves typed execution, bounded output, local Artifact spooling, events,
+  and terminal ordering but is not yet launched by the outbound session;
 - both stream directions reject cumulative acknowledgements that regress or exceed the sequence
   actually sent; cancellation is durably requested, independently acknowledged, eventually terminal,
   replayed after reconnect, and tested against admission and lease-expiry races;
@@ -121,11 +123,13 @@ The contract, durable repository, and assignment-level reconciliation slices wer
 
 This is not the complete control plane. Replacement-worker selection and automatic invocation of
 reassignment are not implemented, ephemeral heartbeat/output-preview traffic is intentionally not
-durable, and execution and running-process signal delivery are not wired to a container. A separate
+durable, and the fake runtime plus running-process signal delivery are not wired to the control
+session or a container. A separate
 Artifact gRPC service now provides resumable upload, immutable download, stable enrolled ownership,
-and transactional global/per-owner quota accounting, but still lacks general reference metadata and
-garbage collection. Those omissions keep the implementation at Stage 1 rather than claiming
-production readiness.
+transactional global/per-owner quota accounting, controller-granted typed references, and explicit
+conservative garbage collection. Automatic retention/collection policy and controller integration
+remain absent. Those omissions keep the implementation at Stage 1 rather than claiming production
+readiness.
 
 ## Product topology
 
@@ -341,8 +345,8 @@ separately authorized operations path if deployment policy requires it.
 
 ### Stage 5: pool and resilience
 
-Add multi-worker scheduling, draining, artifact garbage collection, and rolling protocol upgrades.
-Scale the server only after single-instance reconciliation invariants are proven.
+Add multi-worker scheduling, draining, automatic artifact retention/collection policy, and rolling
+protocol upgrades. Scale the server only after single-instance reconciliation invariants are proven.
 
 ## Invariants
 

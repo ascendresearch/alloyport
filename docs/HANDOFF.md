@@ -30,6 +30,10 @@ Read these documents before changing architecture or implementation:
    immutable artifact storage boundary and its remaining service-layer gaps.
 8. [`design/0013-durable-certificate-enrollment.md`](design/0013-durable-certificate-enrollment.md)
    for stable mTLS owner mapping, rotation, revocation, and worker-control identity binding.
+9. [`design/0014-artifact-references-and-garbage-collection.md`](design/0014-artifact-references-and-garbage-collection.md)
+   for controller-granted reachability, retention, reader coordination, and conservative GC.
+10. [`design/0015-typed-fake-executor-runtime.md`](design/0015-typed-fake-executor-runtime.md) for
+    executor inputs/outcomes, output spooling, terminal ordering, and fake restart semantics.
 
 Design documents state intended behavior. Tests and code state what this revision actually implements.
 
@@ -122,8 +126,16 @@ The crate also implements a SQLite-backed resumable upload session layer:
   usage.
 
 This is the storage and resumable-session core used by the Artifact RPC adapter. Completed upload
-records also provide the first durable owner-to-digest read authorization. There is no general
-controller-granted reference tracking or garbage collection.
+records create typed durable upload references. Controller operations can add idempotent assignment
+input/output, receipt, retention-root, and other owner/digest references with purpose and optional
+minimum-retention metadata; revoked reference keys remain terminal.
+
+Active references grant their stable owner read access and count a digest once toward owner quota.
+Revoking the final active owner/digest reference removes access and releases owner quota, while
+optional retention can continue protecting physical bytes. Explicit bounded GC collects only when
+there is no active reference, unexpired retention, live upload session, or active in-process reader.
+A durable pending marker recovers deletion interrupted between the filesystem and SQLite; global
+quota is released only after object collection. Collection is not yet scheduled automatically.
 
 ### `alloyport-core`
 
@@ -224,8 +236,9 @@ The server library also implements a separate `ArtifactServiceImpl` adapter:
 The server binary registers this service alongside worker control. `EnrolledArtifactAccessPolicy`
 requires tonic's verified TLS connection information, maps the client leaf-certificate fingerprint
 through the durable identity registry, ignores client-supplied owner metadata, and permits a download
-only when that stable owner has a completed upload record for the digest. Rotation preserves those
-references; replacement and revocation fail closed. Consequently, Artifact RPCs return
+only when that stable owner has an active typed reference for the digest. Completed uploads create
+the initial reference and controller grants can add others. Rotation preserves those references;
+replacement and revocation fail closed. Consequently, Artifact RPCs return
 `Unauthenticated` on the permitted plaintext loopback development server.
 
 Remote `WorkerControlService` uses the same registry. The verified certificate must resolve to the
@@ -295,9 +308,25 @@ Current behavior:
 - exits a session on drain; cancellation is durably acknowledged and becomes terminal immediately
   while no executor process exists.
 
+The worker library also implements the Design 0015 deterministic fake executor runtime:
+
+- translates only validated, journal-stored assignments into typed executor inputs with logical
+  paths, argv, environment, timeout, and output limits;
+- produces independently offset stdout/stderr chunks through a bounded channel and classifies
+  success, nonzero exit, timeout, cancellation, output exhaustion, and infrastructure failure;
+- uses logical fake elapsed time so scheduler jitter and preview backpressure do not change receipts;
+- commits `Running` before execution, spools complete stdout, stderr, and a JSON receipt to a local
+  filesystem CAS, then atomically commits terminal journal data plus the durable finished outbox;
+- emits observed `alloyport-events` command/artifact producer frames and typed Design 0014 output and
+  receipt reference intents without granting server authorization;
+- returns an existing finished record without rerunning or duplicating events, safely reruns only the
+  side-effect-free fake plan from a restored `Running` state, and prevents two in-process executors
+  from claiming one attempt.
+
 The worker binary uses `ALLOYPORT_WORKER_DATABASE` or defaults to `alloyport-worker.sqlite3`.
-Admission identity is now disk backed, but do not enable real candidate execution until output
-spooling, executor process identity, and crash recovery are durable too.
+The fake runtime is not yet launched by the outbound session or binary. Do not enable real candidate
+execution until process identity, attach/terminate recovery, sandboxing, and resource enforcement are
+durable too.
 
 The `alloyport-worker` binary reconnects with capped exponential backoff. Required identity variables:
 
@@ -347,7 +376,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 62 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
+There are 71 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -371,6 +400,11 @@ repository tests for:
 - default shell-executor denial and explicit local opt-in;
 - protocol validation for sandbox paths and artifact digests.
 
+Fake executor coverage includes independent output offsets, bounded preview backpressure, timeout,
+cancellation, output exhaustion, deterministic elapsed time, stdout/stderr/receipt CAS spooling,
+event sequencing, typed reference intents, terminal idempotency, restored-`Running` recovery, and
+single-executor ownership.
+
 Artifact coverage includes streaming read/write, canonical digest parsing, digest and size rejection,
 interrupted-reader cleanup, concurrent duplicate publication, read-only publication, restart cleanup,
 verified readback, refusal to replace a corrupted existing object, idempotent session creation,
@@ -382,11 +416,15 @@ bounded range from a nonzero offset.
 An end-to-end mutual-TLS test creates one CA, a server identity, and three client identities. It
 proves forged worker hello rejection, cross-owner upload/download isolation, termination of an old
 live stream after rotation, preservation of existing-artifact access through the replacement
-certificate, and denial after revocation. Identity unit and command integration tests cover durable
-reopen, idempotency, conflicts, replacement state, and offline enrollment administration.
+certificate, explicit controller grant/revoke to another enrolled owner, and denial after revocation.
+Identity unit and command integration tests cover durable reopen, idempotency, conflicts, replacement
+state, and offline enrollment administration.
 Quota coverage includes reservation recovery after restart, idempotent and concurrent begin,
 per-owner isolation, terminal-failure and expiry release, duplicate digest accounting, pre-quota
 schema migration/backfill, and gRPC `ResourceExhausted` mapping.
+Reference/GC coverage includes concurrent idempotent grants, typed conflicts, multiple references,
+revocation, retention, active-reader protection, quota release, pending-delete restart recovery, and
+metadata non-resurrection after reopen.
 
 CI runs stable fmt/clippy/tests and a separate Rust 1.88.0 locked-dependency test job.
 
@@ -408,63 +446,61 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 
 - Lease-expiry reassignment is explicit and durable, but there is no scheduler policy that chooses a
   replacement worker or proactively invokes it for every expired lease.
-- The worker journal and lifecycle outbox are disk backed, but executor process identity and
-  artifact/output spooling are not.
+- The worker journal, lifecycle outbox, and fake executor's local Artifact spool are disk backed. The
+  outbound session does not launch that runtime or upload its spool; real executor process identity
+  and attach/terminate recovery are not implemented.
 - Durable lifecycle replay and seven-day orphaned-delivery retention are implemented. Heartbeats,
   status, output previews, welcomes, and ACK-only frames deliberately remain ephemeral; there is no
   generalized durable message bus or server replication.
 - The filesystem content-addressed store, durable resumable-upload sessions, registered Artifact
-  gRPC service, stable certificate-enrolled owner binding, completed-upload read authorization, and
-  transactional quotas are implemented. There is no controller-granted reference metadata,
-  object-store adapter, filesystem-capacity monitor, or GC.
-- No container/process executor, output streaming, resource enforcement, running-process signal
-  delivery, or device reset. Cancellation currently terminates admitted no-executor attempts only.
+  gRPC service, stable certificate-enrolled owner binding, typed read authorization, and transactional
+  quotas are implemented. Typed controller-granted references and conservative GC are
+  implemented as library operations, but no controller/public API or automatic retention/collection
+  scheduler invokes them. There is no object-store adapter or filesystem-capacity monitor.
+- No container/process executor, gRPC output streaming, resource enforcement, running-process signal
+  delivery, or device reset. The fake runtime has a cancellation token, but control-stream
+  cancellation is not connected to it and still terminates admitted no-executor attempts directly.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
-- No translation from worker messages into `alloyport-events` command events.
+- The fake runtime produces observed `alloyport-events` command/artifact frames, but the outbound
+  stream does not carry them and the server does not canonically ingest worker lifecycle messages.
 - No external scheduling API, task controller integration, or terminal UI worker view.
 - mTLS enrollment, rotation, revocation, Artifact authorization, and worker hello binding are covered
   end to end. Certificate issuance, online enrollment, CA revocation/expiry monitoring, pool/role
   authorization, and replicated identity storage are not implemented.
 - No persisted RunReceipt, signature, oracle integration, or audit transition.
-- No server replication, shared registry, load balancer/session ownership, or artifact GC.
+- No server replication, shared registry, load balancer/session ownership, or cross-process GC reader
+  coordination.
 - The Python harness in `/data/projects/ascend-factory/harness/worker.py` and `box.py` still uses
   SSH/SCP. No cutover has happened.
 
 ## Recommended next implementation order
 
-### 1. Add general Artifact reference reachability and garbage collection
+### 1. Connect the fake runtime to outbound worker control
 
-The filesystem CAS, durable upload-session state machine, streaming RPC, binary registration, and
-stable certificate enrollment are implemented, including rotation/revocation and atomic global/per-
-owner quota reservation with deduplicated completed usage. Next add controller-granted references
-for assignment inputs, outputs, receipts, and retention roots, then define safe reachability-based
-garbage collection. Do not put bundles or full logs on the control stream.
-
-### 2. Executor abstraction and fake executor
-
-Define typed executor input/output and a fake executor before Docker integration. It must consume
-logical artifact/mount references, never server-supplied host paths. Wire start/output/finish to both
-the control protocol and `alloyport-events`. Make output offsets, stdout/stderr separation,
-backpressure, full-output artifact production, timeout, cancellation, and terminal receipt mandatory.
+Launch the Design 0015 runtime after new assignment admission, multiplex live output without losing
+durable lifecycle ordering, and connect `CancelAttempt` to the active token. Upload the local spool
+through the Artifact service before reporting terminal digests, then let the controller validate and
+grant Design 0014 output/receipt references. Canonically ingest observed command events server-side.
+Keep GC explicit until those assignment and receipt roots are durable.
 
 Keep shell execution disabled. If later enabled for probes, require an explicit worker policy and a
 separate executor kind; do not reduce assignments to a shell string.
 
-### 3. One CUDA vertical slice
+### 2. One CUDA vertical slice
 
 Port the existing content-addressed bundle-to-container behavior from the Python harness into the new
 worker path. Do not copy the old SSH wrapper. Run a fixed fixture once through the old path and once
 through the new path as separate attempts, then compare bundle digest, image/environment identity,
 stdout/stderr, exit classification, and receipt fields.
 
-### 4. One Ascend vertical slice
+### 3. One Ascend vertical slice
 
 Add device discovery, CANN/driver identity, enumerated device-node policy, occupancy/health reporting,
 device leases, driver mount rules, and post-crash health/reset handling. Preserve the epistemic split:
 CUDA reference output and Ascend target output are independently executed receipts joined by an
 experiment and judged by the oracle.
 
-### 5. Cut over and remove SSH from runtime
+### 4. Cut over and remove SSH from runtime
 
 Only after evidence parity, make the outbound worker client the sole scheduler path. Remove SSH host,
 key, root-directory, remote-shell, and SCP configuration from AlloyPort runtime. Keep any operational
@@ -473,12 +509,12 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Add durable Artifact reference grants and safe garbage collection without weakening authorization:
+Connect the fake runtime to the outbound session without bypassing Artifact or evidence boundaries:
 
-> Read `docs/HANDOFF.md`, Design 0007, Design 0011, Design 0012, and Design 0013. Replace the
-> completed-upload-only read rule with durable controller-granted owner/digest references carrying
-> purpose and retention metadata. Preserve upload-owner access, make grants and revocations
-> idempotent and transactional, and define a conservative GC pass that deletes only CAS objects with
-> no live upload session, owner reference, assignment/receipt reference, or retention root. Account
-> quota release without racing upload finalization or download, and add restart/concurrency tests for
-> cross-owner denial, grant/revoke, deduplicated references, and unreachable-object collection.
+> Read `docs/HANDOFF.md`, Design 0010, Design 0011, Design 0014, and Design 0015. Add an active-attempt
+> task registry to `OutboundWorker`, start the fake runtime only after durable new admission, stream
+> bounded previews with correct per-stream offsets, and route `CancelAttempt` to its cancellation
+> token while preserving acknowledgement and terminal ordering. Upload spooled stdout/stderr/receipt
+> before `ExecutionFinished`, create controller-owned reference grants, and ingest the observed events
+> into canonical server order. Test disconnect/reconnect, cancel/finish races, upload retry, and no
+> duplicate executor or terminal receipt.
