@@ -3,11 +3,11 @@
 use super::*;
 use crate::cuda::{
     CUDA_FIXTURE_BUNDLE_MEDIA_TYPE, CUDA_FIXTURE_FEATURE, CudaFixtureBundle, CudaResourceCeilings,
-    OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+    OCI_IMAGE_MANIFEST_MEDIA_TYPE, VECTOR_ADD_FIXTURE_ID,
 };
 use crate::journal::{StoredArtifact, StoredExecution, StoredLimits};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
-use alloyport_proto::v1::{ExecutorKind, NetworkPolicy};
+use alloyport_proto::v1::{AttemptOutcome, ExecutorKind, NetworkPolicy};
 use std::io::Cursor;
 use std::sync::Mutex;
 

@@ -312,7 +312,7 @@ directories (including their migration and adapter-test files).
   schema module.
 - [x] Repository-wide production module size gate reached: tests were separated from CUDA Docker,
   CUDA supervisor/runtime, Artifact CAS, and event reducer modules. The largest production Rust
-  module is now 557 lines; no production module exceeds the 800-line review threshold.
+  module is now 552 lines; no production module exceeds the 800-line review threshold.
 - [x] First R6 async-persistence slice: worker control and execution paths use an immutable shared
   state handle and route journal operations through a four-permit bounded blocking adapter. No
   SQLite-backed journal call runs while holding a Tokio state mutex; a slow-operation concurrency
@@ -350,8 +350,9 @@ directories (including their migration and adapter-test files).
   internal configuration failures. Runtime and terminal-replay paths preserve that typed boundary.
 - [x] Worker R7 typed container-engine errors: `CudaContainerEngine` distinguishes invalid local
   configuration, engine unavailability, failed commands, invalid responses, and internal adapter
-  failures. Supervisor reconciliation invariants are separate from adapter failures, and CI rejects
-  a return to `String` errors on this plugin port.
+  failures. Its 157-line engine port/value module is physically separate from the 327-line durable
+  reconciliation state machine and the 96-line pure output-budget/terminal-outcome policy. CI
+  rejects both a return to `String` errors and these responsibilities being merged back together.
 - [x] Docker adapter responsibilities split three ways: the 367-line engine adapter owns container
   lifecycle orchestration and command argv, the 294-line command runner owns process spawning plus
   bounded/followed stdout/stderr I/O, and the 161-line protocol module owns JSON, timestamp,

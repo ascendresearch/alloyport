@@ -638,9 +638,11 @@ cargo test -p alloyport-server --test cuda_control_plane \
   contract fixtures live in a separate test module so production module metrics and CAS boundary
   checks cover the actual application code. The CUDA container-engine plugin port exposes typed
   invalid-configuration, unavailable, command-failed, invalid-response, and internal failures;
-  supervisor reconciliation invariants remain application errors rather than engine failures. The
-  Docker adapter separates container lifecycle orchestration, bounded CLI process/log I/O, and its
-  dedicated JSON/scalar response parser into three modules.
+  its port and transport-neutral values, durable supervisor state machine, and pure output-budget/
+  terminal-outcome policy live in separate modules. Supervisor reconciliation invariants remain
+  application errors rather than engine failures. The Docker adapter separates container lifecycle
+  orchestration, bounded CLI process/log I/O, and its dedicated JSON/scalar response parser into
+  three modules.
 - Durable lifecycle replay and seven-day orphaned-delivery retention are implemented. Heartbeats,
   status, output previews, welcomes, and ACK-only frames deliberately remain ephemeral; there is no
   generalized durable message bus or server replication.

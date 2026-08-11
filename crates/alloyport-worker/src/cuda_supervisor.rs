@@ -1,165 +1,21 @@
 //! Durable reconciliation state machine for policy-bound CUDA containers.
 
-use crate::cuda::{CudaContractError, CudaFixturePolicy, DockerCreatePlan, VECTOR_ADD_FIXTURE_ID};
+mod engine;
+mod outcome;
+
+pub use engine::{
+    ContainerEngineError, ContainerExit, ContainerIdentity, ContainerLogChunk, ContainerLogStream,
+    ContainerLogs, ContainerPhase, ContainerSnapshot, CudaContainerEngine, CudaExecutionFacts,
+    EngineFuture, SupervisedCudaExecution,
+};
+use outcome::{Termination, classify, enforce_output_limit};
+
+use crate::cuda::{CudaContractError, CudaFixturePolicy, DockerCreatePlan};
 use crate::executor::{CancellationToken, ExecutorResult};
 use crate::journal::StoredAssignment;
 use alloyport_artifacts::ArtifactStore;
-use alloyport_proto::v1::AttemptOutcome;
-use std::fmt::Debug;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-
-pub type EngineFuture<'a, T> =
-    Pin<Box<dyn Future<Output = Result<T, ContainerEngineError>> + Send + 'a>>;
-
-/// Stable failure categories exposed by pluggable CUDA container engines.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ContainerEngineError {
-    InvalidConfiguration(String),
-    Unavailable(String),
-    CommandFailed(String),
-    InvalidResponse(String),
-    Internal(String),
-}
-
-impl std::fmt::Display for ContainerEngineError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidConfiguration(detail) => {
-                write!(
-                    formatter,
-                    "invalid container engine configuration: {detail}"
-                )
-            }
-            Self::Unavailable(detail) => {
-                write!(formatter, "container engine unavailable: {detail}")
-            }
-            Self::CommandFailed(detail) => write!(formatter, "container command failed: {detail}"),
-            Self::InvalidResponse(detail) => {
-                write!(formatter, "invalid container engine response: {detail}")
-            }
-            Self::Internal(detail) => {
-                write!(formatter, "container engine internal failure: {detail}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ContainerEngineError {}
-
-impl From<String> for ContainerEngineError {
-    fn from(detail: String) -> Self {
-        Self::Internal(detail)
-    }
-}
-
-impl From<&str> for ContainerEngineError {
-    fn from(detail: &str) -> Self {
-        Self::Internal(detail.into())
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContainerIdentity {
-    pub name: String,
-    pub attempt_id: String,
-    pub bundle_digest: String,
-    pub image_manifest_digest: String,
-    pub image_id: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ContainerPhase {
-    Created,
-    Running,
-    Exited,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContainerSnapshot {
-    pub identity: ContainerIdentity,
-    pub phase: ContainerPhase,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ContainerExit {
-    pub exit_code: i32,
-    pub elapsed_ms: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContainerLogs {
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-    pub output_limit_exceeded: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ContainerLogStream {
-    Stdout,
-    Stderr,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContainerLogChunk {
-    pub stream: ContainerLogStream,
-    pub byte_offset: u64,
-    pub bytes: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CudaExecutionFacts {
-    pub container_name: String,
-    pub bundle_digest: String,
-    pub source_digest: String,
-    pub image_manifest_digest: String,
-    pub image_id: String,
-    pub device_id: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SupervisedCudaExecution {
-    pub result: ExecutorResult,
-    pub facts: CudaExecutionFacts,
-    pub live_output_streaming: bool,
-}
-
-/// Local container operations. Implementations must use argv, never a shell string.
-pub trait CudaContainerEngine: Debug + Send + Sync {
-    fn resolve_image_id<'a>(&'a self, plan: &'a DockerCreatePlan) -> EngineFuture<'a, String>;
-    fn inspect<'a>(&'a self, name: &'a str) -> EngineFuture<'a, Option<ContainerSnapshot>>;
-    fn create<'a>(
-        &'a self,
-        plan: &'a DockerCreatePlan,
-        identity: &'a ContainerIdentity,
-    ) -> EngineFuture<'a, ()>;
-    fn start<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()>;
-    fn wait<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ContainerExit>;
-    fn stop<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()>;
-    /// Returns at most `limit` combined stdout/stderr bytes and reports whether more existed.
-    fn logs<'a>(&'a self, name: &'a str, limit: u64) -> EngineFuture<'a, ContainerLogs>;
-    /// Follows a running container and returns early when the combined output limit is exceeded.
-    fn follow_logs<'a>(&'a self, name: &'a str, limit: u64) -> EngineFuture<'a, ContainerLogs> {
-        self.logs(name, limit)
-    }
-    /// Follows logs while forwarding best-effort bounded chunks with per-stream offsets.
-    fn follow_logs_observed<'a>(
-        &'a self,
-        name: &'a str,
-        limit: u64,
-        _observer: &'a mut (dyn FnMut(ContainerLogChunk) + Send),
-    ) -> EngineFuture<'a, ContainerLogs> {
-        self.follow_logs(name, limit)
-    }
-    /// Reports that observed following owns preview emission, including intentional omissions.
-    fn streams_live_log_observations(&self) -> bool {
-        false
-    }
-    /// Removes a terminal container after publication and the terminal journal commit.
-    fn remove<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()>;
-}
 
 #[derive(Clone, Debug)]
 pub struct CudaContainerSupervisor {
@@ -401,92 +257,6 @@ async fn reconcile_container(
         )));
     }
     Ok(created.phase)
-}
-
-#[derive(Clone, Copy)]
-enum Termination {
-    Exited(ContainerExit),
-    Cancelled(ContainerExit),
-    TimedOut(ContainerExit),
-    OutputLimitExceeded(ContainerExit),
-}
-
-fn enforce_output_limit(mut logs: ContainerLogs, limit: u64) -> ContainerLogs {
-    let stdout_len = u64::try_from(logs.stdout.len()).unwrap_or(u64::MAX);
-    let stderr_len = u64::try_from(logs.stderr.len()).unwrap_or(u64::MAX);
-    if stdout_len.saturating_add(stderr_len) <= limit {
-        return logs;
-    }
-    logs.output_limit_exceeded = true;
-    let kept_stdout = usize::try_from(limit.min(stdout_len)).unwrap_or(usize::MAX);
-    logs.stdout.truncate(kept_stdout);
-    let remaining = limit.saturating_sub(u64::try_from(logs.stdout.len()).unwrap_or(u64::MAX));
-    logs.stderr
-        .truncate(usize::try_from(remaining).unwrap_or(usize::MAX));
-    logs
-}
-
-fn classify(termination: Termination, logs: ContainerLogs, timeout_ms: u64) -> ExecutorResult {
-    let (exit, forced_outcome, detail) = match termination {
-        Termination::Exited(exit) => (exit, None, "CUDA fixture exited"),
-        Termination::Cancelled(exit) => {
-            (exit, Some(AttemptOutcome::Cancelled), "execution cancelled")
-        }
-        Termination::TimedOut(exit) => {
-            (exit, Some(AttemptOutcome::TimedOut), "execution timed out")
-        }
-        Termination::OutputLimitExceeded(exit) => (
-            exit,
-            Some(AttemptOutcome::InfraError),
-            "execution output limit exceeded",
-        ),
-    };
-    let (outcome, exit_code, elapsed_ms, detail) = if logs.output_limit_exceeded {
-        (
-            AttemptOutcome::InfraError,
-            None,
-            exit.elapsed_ms,
-            "execution output limit exceeded",
-        )
-    } else if let Some(outcome) = forced_outcome {
-        (
-            outcome,
-            None,
-            if outcome == AttemptOutcome::TimedOut {
-                timeout_ms
-            } else {
-                exit.elapsed_ms
-            },
-            detail,
-        )
-    } else if exit.exit_code != 0 {
-        (
-            AttemptOutcome::CandidateFailed,
-            Some(exit.exit_code),
-            exit.elapsed_ms,
-            "CUDA fixture returned a nonzero exit code",
-        )
-    } else if !String::from_utf8_lossy(&logs.stdout)
-        .lines()
-        .any(|line| line.starts_with(&format!("PASS fixture={VECTOR_ADD_FIXTURE_ID} ")))
-    {
-        (
-            AttemptOutcome::IntegrityViolation,
-            Some(0),
-            exit.elapsed_ms,
-            "CUDA fixture exited zero without its verification marker",
-        )
-    } else {
-        (AttemptOutcome::Succeeded, Some(0), exit.elapsed_ms, detail)
-    };
-    ExecutorResult {
-        outcome,
-        exit_code,
-        elapsed_ms,
-        stdout: logs.stdout,
-        stderr: logs.stderr,
-        detail: detail.into(),
-    }
 }
 
 async fn wait_for_cancellation(cancellation: &mut tokio::sync::watch::Receiver<bool>) {

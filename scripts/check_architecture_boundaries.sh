@@ -74,6 +74,16 @@ if docker_process_boundary=$(rg -n \
     crates/alloyport-worker/src/cuda_docker.rs); then
     violations+=("Docker process or bounded-I/O implementation returned to the engine adapter: ${docker_process_boundary}")
 fi
+if cuda_engine_boundary=$(rg -n \
+    '^pub type EngineFuture|^pub enum ContainerEngineError|^pub struct ContainerIdentity|^pub trait CudaContainerEngine' \
+    crates/alloyport-worker/src/cuda_supervisor.rs); then
+    violations+=("CUDA engine port or transport values returned to the supervisor state machine: ${cuda_engine_boundary}")
+fi
+if cuda_outcome_policy=$(rg -n \
+    '^enum Termination|^fn enforce_output_limit|^fn classify' \
+    crates/alloyport-worker/src/cuda_supervisor.rs); then
+    violations+=("CUDA terminal outcome policy returned to the supervisor state machine: ${cuda_outcome_policy}")
+fi
 if server_session_boundary=$(rg -n \
     '^    async fn register|^    async fn disconnect|^    async fn consume_stream' \
     crates/alloyport-server/src/lib.rs); then
@@ -108,8 +118,12 @@ if string_error=$(rg -n 'Future<Output = Result<\(\), String>>' \
     violations+=("Artifact publisher port regained an untyped String error: ${string_error}")
 fi
 if string_error=$(rg -n 'Future<Output = Result<T, String>>' \
-    crates/alloyport-worker/src/cuda_supervisor.rs); then
+    crates/alloyport-worker/src/cuda_supervisor/engine.rs); then
     violations+=("CUDA container engine port regained an untyped String error: ${string_error}")
+fi
+if ! rg -q '^pub trait CudaContainerEngine' \
+    crates/alloyport-worker/src/cuda_supervisor/engine.rs; then
+    violations+=("CUDA container engine plugin port is missing")
 fi
 
 if ((${#violations[@]} != 0)); then
