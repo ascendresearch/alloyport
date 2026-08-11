@@ -1,7 +1,10 @@
 //! Behavioral tests for the `SQLite` worker attempt journal.
 
-use super::*;
-use crate::journal::{StoredArtifact, StoredExecution};
+use super::SqliteAttemptStore;
+use crate::journal::{
+    AttemptLifecycleStore, StoreAdmissionOutcome, StoredArtifact, StoredAssignment,
+    StoredExecution, WorkerOutboxMessage, WorkerOutboxPayload, WorkerOutboxStore,
+};
 use std::error::Error;
 
 #[test]

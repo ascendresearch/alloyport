@@ -59,6 +59,11 @@ if mixed_worker_store=$(rg -n 'impl AttemptStore for SqliteAttemptStore' \
     crates/alloyport-worker/src/adapters/sqlite/attempt_store.rs); then
     violations+=("worker lifecycle and outbox capabilities regained one concrete trait impl: ${mixed_worker_store}")
 fi
+if worker_store_capability=$(rg -n \
+    'impl AttemptLifecycleStore|impl WorkerOutboxStore|enqueue_outbox_transaction' \
+    crates/alloyport-worker/src/adapters/sqlite/attempt_store.rs); then
+    violations+=("worker persistence capability SQL returned to the SQLite composition shell: ${worker_store_capability}")
+fi
 if ! rg -q 'pub trait AttemptLifecycleStore' crates/alloyport-worker/src/journal.rs \
     || ! rg -q 'pub trait WorkerOutboxStore' crates/alloyport-worker/src/journal.rs; then
     violations+=("worker journal capability ports are missing")

@@ -260,8 +260,10 @@ directories (including their migration and adapter-test files).
 - [x] Worker journal domain/port separated from `SqliteAttemptStore`; `journal.rs` contains no SQL
   or database-driver types. The former broad port is capability-segregated into
   `AttemptLifecycleStore` and `WorkerOutboxStore`, with `AttemptStore` retained as a compatibility
-  composition. SQLite implements both explicitly, and its 117-line test suite no longer inflates
-  the 532-line production adapter.
+  composition. SQLite implements both explicitly: a 112-line connection/schema shell composes a
+  263-line lifecycle implementation with a 174-line logical-outbox/delivery implementation. Their
+  shared transaction helper preserves atomic lifecycle-and-outbox commits, while the 120-line test
+  suite remains outside production modules.
 - [x] Interaction responsibilities physically separated from `SqliteInteractionStore`: the
   225-line domain/error/port module contains no SQL, database-driver, Tokio broadcast, or text
   sanitizer implementation; replay-to-live delivery is 302 lines and fail-closed worker display

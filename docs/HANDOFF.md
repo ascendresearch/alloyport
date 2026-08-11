@@ -343,6 +343,9 @@ Implements an outbound client session, hello/welcome negotiation, heartbeat, cum
 acknowledgement, disk-backed attempt knowledge, local admission, and reconnectable session state.
 The worker journal exposes separate attempt-lifecycle and durable-outbox ports; `AttemptStore`
 composes them for the complete outbound worker while narrower consumers can depend on one capability.
+The SQLite adapter mirrors that boundary with separate lifecycle and outbox modules behind a small
+schema/connection composition shell; lifecycle transitions enqueue authoritative messages in the
+same transaction.
 
 Current behavior:
 
