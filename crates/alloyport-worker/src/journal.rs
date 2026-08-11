@@ -3,56 +3,26 @@
 //! Database drivers, transactions, schema migrations, and SQL belong to outer adapters.
 
 use alloyport_core::{
-    ArtifactDescriptor, AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind,
-    NetworkPolicy, RejectionReason, TaskId,
+    ArtifactDescriptor, AssignmentId, AttemptId, AttemptOutcome, RejectionReason,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StoredAssignment {
-    pub assignment_id: AssignmentId,
-    pub attempt_id: AttemptId,
-    pub attempt_number: u32,
-    pub idempotency_key: String,
-    pub task_id: TaskId,
-    pub candidate_id: CandidateId,
-    pub execution: StoredExecution,
-    pub required_features: Vec<String>,
-}
+/// Backward-compatible journal name for the shared immutable assignment contract.
+pub type StoredAssignment = alloyport_core::AssignmentContract;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StoredExecution {
-    pub executor_kind: ExecutionKind,
-    pub argv: Vec<String>,
-    pub working_directory: String,
-    pub environment: Vec<StoredEnvironment>,
-    pub timeout_ms: u64,
-    pub bundle: StoredArtifact,
-    pub image: StoredArtifact,
-    pub limits: Option<StoredLimits>,
-}
+/// Backward-compatible journal name for the shared execution contract.
+pub type StoredExecution = alloyport_core::ExecutionContract;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StoredEnvironment {
-    pub name: String,
-    pub value: String,
-}
+/// Backward-compatible journal name for the shared environment entry.
+pub type StoredEnvironment = alloyport_core::EnvironmentEntry;
 
 /// Backward-compatible journal name for the shared Artifact descriptor.
 pub type StoredArtifact = ArtifactDescriptor;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StoredLimits {
-    pub cpu_millis: u64,
-    pub memory_bytes: u64,
-    pub disk_bytes: u64,
-    pub process_count: u32,
-    pub output_bytes: u64,
-    pub device_count: u32,
-    pub network: NetworkPolicy,
-}
+/// Backward-compatible journal name for the shared resource contract.
+pub type StoredLimits = alloyport_core::ResourceContract;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i64)]

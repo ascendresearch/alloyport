@@ -127,12 +127,14 @@ if ! rg -q '^pub enum ExecutionKind' crates/alloyport-core/src/execution.rs \
     || ! rg -q '^pub enum NetworkPolicy' crates/alloyport-core/src/execution.rs \
     || ! rg -q '^pub enum AttemptOutcome' crates/alloyport-core/src/execution.rs \
     || ! rg -q '^pub enum RejectionReason' crates/alloyport-core/src/execution.rs \
-    || ! rg -q 'pub executor_kind: ExecutionKind' crates/alloyport-server/src/storage/model.rs \
-    || ! rg -q 'pub network: NetworkPolicy' crates/alloyport-server/src/storage/model.rs \
+    || ! rg -q 'pub executor_kind: ExecutionKind' crates/alloyport-core/src/assignment.rs \
+    || ! rg -q 'pub network: NetworkPolicy' crates/alloyport-core/src/assignment.rs \
+    || ! rg -q '^pub type ExecutionContract = alloyport_core::ExecutionContract' \
+        crates/alloyport-server/src/storage/model.rs \
+    || ! rg -q '^pub type StoredExecution = alloyport_core::ExecutionContract' \
+        crates/alloyport-worker/src/journal.rs \
     || ! rg -q 'pub outcome: AttemptOutcome' crates/alloyport-server/src/storage/model.rs \
     || ! rg -q 'reason: RejectionReason' crates/alloyport-server/src/storage/model.rs \
-    || ! rg -q 'pub executor_kind: ExecutionKind' crates/alloyport-worker/src/journal.rs \
-    || ! rg -q 'pub network: NetworkPolicy' crates/alloyport-worker/src/journal.rs \
     || ! rg -q 'pub outcome: AttemptOutcome' crates/alloyport-worker/src/journal.rs; then
     violations+=("shared execution kind/network policy/outcome/rejection vocabulary is not used by both durable contracts")
 fi
@@ -147,28 +149,31 @@ if ! rg -q 'AttemptId,' crates/alloyport-core/src/identity.rs \
     || ! rg -q 'AssignmentId,' crates/alloyport-core/src/identity.rs \
     || ! rg -q 'TaskId,' crates/alloyport-core/src/identity.rs \
     || ! rg -q 'CandidateId,' crates/alloyport-core/src/identity.rs \
-    || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub attempt_id: AttemptId' \
+    || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub assignment_id: AssignmentId[^}]*pub attempt_id: AttemptId[^}]*pub task_id: TaskId[^}]*pub candidate_id: CandidateId[^}]*pub execution: ExecutionContract' \
+        crates/alloyport-core/src/assignment.rs \
+    || ! rg -q -U 'pub struct ExecutionContract \{[^}]*pub environment: Vec<EnvironmentEntry>[^}]*pub bundle: ArtifactDescriptor[^}]*pub image: ArtifactDescriptor[^}]*pub limits: Option<ResourceContract>' \
+        crates/alloyport-core/src/assignment.rs \
+    || ! rg -q '^pub type AssignmentContract = alloyport_core::AssignmentContract' \
         crates/alloyport-server/src/storage/model.rs \
-    || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub assignment_id: AssignmentId' \
-        crates/alloyport-server/src/storage/model.rs \
-    || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub task_id: TaskId' \
-        crates/alloyport-server/src/storage/model.rs \
-    || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub candidate_id: CandidateId' \
-        crates/alloyport-server/src/storage/model.rs \
-    || ! rg -q -U 'pub struct StoredAssignment \{[^}]*pub attempt_id: AttemptId' \
+    || ! rg -q '^pub type StoredAssignment = alloyport_core::AssignmentContract' \
         crates/alloyport-worker/src/journal.rs \
-    || ! rg -q -U 'pub struct StoredAssignment \{[^}]*pub assignment_id: AssignmentId' \
+    || ! rg -q '^pub type ExecutionContract = alloyport_core::ExecutionContract' \
+        crates/alloyport-server/src/storage/model.rs \
+    || ! rg -q '^pub type StoredExecution = alloyport_core::ExecutionContract' \
         crates/alloyport-worker/src/journal.rs \
-    || ! rg -q -U 'pub struct StoredAssignment \{[^}]*pub task_id: TaskId' \
+    || ! rg -q '^pub type EnvironmentEntry = alloyport_core::EnvironmentEntry' \
+        crates/alloyport-server/src/storage/model.rs \
+    || ! rg -q '^pub type StoredEnvironment = alloyport_core::EnvironmentEntry' \
         crates/alloyport-worker/src/journal.rs \
-    || ! rg -q -U 'pub struct StoredAssignment \{[^}]*pub candidate_id: CandidateId' \
+    || ! rg -q '^pub type ResourceContract = alloyport_core::ResourceContract' \
+        crates/alloyport-server/src/storage/model.rs \
+    || ! rg -q '^pub type StoredLimits = alloyport_core::ResourceContract' \
         crates/alloyport-worker/src/journal.rs; then
-    violations+=("validated AttemptId/AssignmentId/TaskId/CandidateId are not used by both immutable assignment contracts")
+    violations+=("server and worker do not retain the shared core immutable assignment vocabulary")
 fi
-if raw_contract_identity=$(rg -n -U \
-    'pub struct (AssignmentContract|StoredAssignment) \{[^}]*(pub attempt_id: String|pub assignment_id: String|pub task_id: String|pub candidate_id: String)' \
+if duplicate_assignment_contract=$(rg -n '^pub struct (AssignmentContract|ExecutionContract|EnvironmentEntry|ResourceContract|StoredAssignment|StoredExecution|StoredEnvironment|StoredLimits)' \
     crates/alloyport-server/src/storage/model.rs crates/alloyport-worker/src/journal.rs); then
-    violations+=("immutable assignment contract regained a raw stable ID: ${raw_contract_identity}")
+    violations+=("duplicate immutable assignment contract returned outside core: ${duplicate_assignment_contract}")
 fi
 if ! rg -q 'require_text\("assignment.candidate_id"' crates/alloyport-proto/src/lib.rs \
     || ! rg -q -U 'pub struct Task \{[^}]*pub id: TaskId' crates/alloyport-core/src/lib.rs \

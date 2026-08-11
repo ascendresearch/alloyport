@@ -294,8 +294,8 @@ directories (including their migration and adapter-test files).
   domain conversion lives at the transport edge; CI prevents transport and projection concerns
   returning to attempt observation.
 - [x] Server control storage contract split without breaking `storage::*`: the public facade is 21
-  lines, clock policy is 50 lines, transport-independent records/lifecycle values are 260 lines,
-  and capability-segregated repository ports plus typed errors are 216 lines. CI prevents these
+  lines, clock policy is 50 lines, transport-independent records/lifecycle values are 236 lines,
+  and capability-segregated repository ports plus typed errors are 218 lines. CI prevents these
   definitions returning to the compatibility facade.
 - [x] Worker outbound coordinator split by use case: `lib.rs` is 442 lines (down from 1,838), with
   local admission/journal state (356), control-session framing (289), attempt admission/cancellation
@@ -334,6 +334,12 @@ directories (including their migration and adapter-test files).
   verified stored object and has no asserted media type. Digest JSON stays the existing canonical
   string, SQLite payload shapes remain compatible, and parsing is confined to wire/config/database
   edges rather than repeated in application services.
+- [x] R3 immutable-assignment completion: the 93-line core contract now owns assignment, execution,
+  environment, resource, typed identity, enum, and Artifact vocabulary once. Server
+  `AssignmentContract`/`ExecutionContract`/`EnvironmentEntry`/`ResourceContract` and worker
+  `StoredAssignment`/`StoredExecution`/`StoredEnvironment`/`StoredLimits` are compatibility aliases,
+  eliminating four structurally identical model pairs without changing public paths or durable JSON.
+  CI rejects any duplicate application-layer definitions returning outside core.
 - [x] Worker executor responsibilities split: the durable fake execution coordinator is 501 lines
   (down from a 1,395-line mixed module), the shared local-spool/remote-publication boundary is 113
   lines, canonical event projection is 56 lines, and deterministic fake process behavior is 344

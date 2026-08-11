@@ -2,8 +2,7 @@
 
 use super::RepositoryError;
 use alloyport_core::{
-    ArtifactDescriptor, AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind,
-    NetworkPolicy, RejectionReason, TaskId,
+    ArtifactDescriptor, AssignmentId, AttemptId, AttemptOutcome, RejectionReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -38,50 +37,20 @@ pub struct ConnectionRegistration {
     pub connected_at_ms: u64,
 }
 
-/// Storage-domain form of an immutable assignment contract.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AssignmentContract {
-    pub assignment_id: AssignmentId,
-    pub attempt_id: AttemptId,
-    pub attempt_number: u32,
-    pub idempotency_key: String,
-    pub task_id: TaskId,
-    pub candidate_id: CandidateId,
-    pub execution: ExecutionContract,
-    pub required_features: Vec<String>,
-}
+/// Backward-compatible server name for the shared immutable assignment contract.
+pub type AssignmentContract = alloyport_core::AssignmentContract;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ExecutionContract {
-    pub executor_kind: ExecutionKind,
-    pub argv: Vec<String>,
-    pub working_directory: String,
-    pub environment: Vec<EnvironmentEntry>,
-    pub timeout_ms: u64,
-    pub bundle: ArtifactIdentity,
-    pub image: ArtifactIdentity,
-    pub limits: Option<ResourceContract>,
-}
+/// Backward-compatible server name for the shared execution contract.
+pub type ExecutionContract = alloyport_core::ExecutionContract;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct EnvironmentEntry {
-    pub name: String,
-    pub value: String,
-}
+/// Backward-compatible server name for the shared environment entry.
+pub type EnvironmentEntry = alloyport_core::EnvironmentEntry;
 
 /// Backward-compatible storage facade name for the shared Artifact descriptor.
 pub type ArtifactIdentity = ArtifactDescriptor;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ResourceContract {
-    pub cpu_millis: u64,
-    pub memory_bytes: u64,
-    pub disk_bytes: u64,
-    pub process_count: u32,
-    pub output_bytes: u64,
-    pub device_count: u32,
-    pub network: NetworkPolicy,
-}
+/// Backward-compatible server name for the shared resource contract.
+pub type ResourceContract = alloyport_core::ResourceContract;
 
 /// Durable server-side lifecycle for a process attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

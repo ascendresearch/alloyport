@@ -228,6 +228,10 @@ core release evidence, server control storage, and the worker journal. The artif
 the digest for compatibility; its two-field CAS `ArtifactIdentity` remains distinct from the
 three-field transport-independent descriptor because stored-object verification and declared media
 metadata are different concepts.
+The complete immutable assignment vocabulary now lives in `alloyport-core`: assignment, execution,
+environment, resource limits, identities, enums, and Artifact descriptors. Existing server storage
+and worker journal type names are compatibility aliases, so public paths and persisted JSON remain
+stable without maintaining parallel structures.
 Canonical Interaction persistence is capability-segregated into event-write, event-read, and
 run-access ports. Its SQLite schema shell, event/output log, and authorization grants are separate
 implementation modules, alongside independent replay-to-live broadcast and display sanitization.

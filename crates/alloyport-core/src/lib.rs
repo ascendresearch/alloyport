@@ -1,10 +1,12 @@
 //! Domain primitives for `AlloyPort`'s verified delivery lifecycle.
 
 mod artifact;
+mod assignment;
 mod execution;
 mod identity;
 
 pub use artifact::{ArtifactDescriptor, DigestParseError, Sha256Digest};
+pub use assignment::{AssignmentContract, EnvironmentEntry, ExecutionContract, ResourceContract};
 pub use execution::{
     AttemptOutcome, AttemptOutcomeError, ExecutionKind, ExecutionKindError, NetworkPolicy,
     NetworkPolicyError, RejectionReason, RejectionReasonError,
