@@ -2,7 +2,7 @@
 
 mod execution;
 
-pub use execution::{ExecutionKind, ExecutionKindError};
+pub use execution::{ExecutionKind, ExecutionKindError, NetworkPolicy, NetworkPolicyError};
 
 use std::collections::BTreeSet;
 use std::error::Error;

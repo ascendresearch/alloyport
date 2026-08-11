@@ -193,7 +193,7 @@ fn assignment(
                 process_count: 32,
                 output_bytes: 64 * 1024,
                 device_count: 1,
-                network: NetworkPolicy::Disabled.into(),
+                network: NetworkPolicy::Disabled,
             }),
         },
         required_features: vec![CUDA_FIXTURE_FEATURE.into()],

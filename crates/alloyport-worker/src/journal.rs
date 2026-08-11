@@ -2,7 +2,7 @@
 //!
 //! Database drivers, transactions, schema migrations, and SQL belong to outer adapters.
 
-use alloyport_core::ExecutionKind;
+use alloyport_core::{ExecutionKind, NetworkPolicy};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -52,7 +52,7 @@ pub struct StoredLimits {
     pub process_count: u32,
     pub output_bytes: u64,
     pub device_count: u32,
-    pub network: i32,
+    pub network: NetworkPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

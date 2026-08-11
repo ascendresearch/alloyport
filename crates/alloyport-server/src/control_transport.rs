@@ -6,7 +6,7 @@ use crate::storage::{
     ArtifactIdentity, AssignmentContract, EnvironmentEntry, ExecutionContract, RepositoryError,
     ResourceContract, WorkerCapabilities, WorkerRegistration,
 };
-use alloyport_core::ExecutionKind;
+use alloyport_core::{ExecutionKind, NetworkPolicy};
 use alloyport_events::{
     ArtifactRef as EventArtifactRef, Authority, Event, Producer, ProducerEvent, Visibility,
 };
@@ -200,7 +200,8 @@ pub(super) fn assignment_to_contract(assignment: &Assignment) -> AssignmentContr
                 process_count: limits.process_count,
                 output_bytes: limits.output_bytes,
                 device_count: limits.device_count,
-                network: limits.network,
+                network: NetworkPolicy::try_from(limits.network)
+                    .expect("validated assignment contains a known network policy"),
             }),
         },
         required_features: assignment.required_features.clone(),
@@ -242,7 +243,7 @@ pub(super) fn contract_to_assignment(contract: &AssignmentContract) -> Assignmen
                     process_count: limits.process_count,
                     output_bytes: limits.output_bytes,
                     device_count: limits.device_count,
-                    network: limits.network,
+                    network: limits.network.into(),
                 }),
         }),
         required_features: contract.required_features.clone(),

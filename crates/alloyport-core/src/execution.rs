@@ -63,6 +63,50 @@ impl Display for ExecutionKindError {
 
 impl Error for ExecutionKindError {}
 
+/// Network access permitted to an execution sandbox.
+///
+/// `Unspecified` preserves the protocol's backward-compatible default; backend policy decides
+/// whether a concrete execution kind requires a more restrictive explicit value.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[repr(i32)]
+#[serde(try_from = "i32", into = "i32")]
+pub enum NetworkPolicy {
+    Unspecified = 0,
+    Disabled = 1,
+    DependencyFetch = 2,
+}
+
+impl From<NetworkPolicy> for i32 {
+    fn from(policy: NetworkPolicy) -> Self {
+        policy as Self
+    }
+}
+
+impl TryFrom<i32> for NetworkPolicy {
+    type Error = NetworkPolicyError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Unspecified),
+            1 => Ok(Self::Disabled),
+            2 => Ok(Self::DependencyFetch),
+            _ => Err(NetworkPolicyError(value)),
+        }
+    }
+}
+
+/// A wire or persisted network-policy number is not part of the domain vocabulary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NetworkPolicyError(pub i32);
+
+impl Display for NetworkPolicyError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        write!(formatter, "invalid network policy {}", self.0)
+    }
+}
+
+impl Error for NetworkPolicyError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +120,15 @@ mod tests {
             ExecutionKind::CudaFixture
         );
         assert!(serde_json::from_str::<ExecutionKind>("0").is_err());
+        assert_eq!(serde_json::to_string(&NetworkPolicy::Disabled)?, "1");
+        assert_eq!(
+            serde_json::from_str::<NetworkPolicy>("2")?,
+            NetworkPolicy::DependencyFetch
+        );
+        assert_eq!(
+            serde_json::from_str::<NetworkPolicy>("0")?,
+            NetworkPolicy::Unspecified
+        );
         Ok(())
     }
 }

@@ -7,8 +7,8 @@ use crate::cuda::{
 };
 use crate::journal::{StoredArtifact, StoredExecution, StoredLimits};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
-use alloyport_core::ExecutionKind;
-use alloyport_proto::v1::{AttemptOutcome, NetworkPolicy};
+use alloyport_core::{ExecutionKind, NetworkPolicy};
+use alloyport_proto::v1::AttemptOutcome;
 use std::io::Cursor;
 use std::sync::Mutex;
 
@@ -255,7 +255,7 @@ fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
                 process_count: 32,
                 output_bytes: 64 * 1024,
                 device_count: 1,
-                network: NetworkPolicy::Disabled.into(),
+                network: NetworkPolicy::Disabled,
             }),
         },
         required_features: vec![CUDA_FIXTURE_FEATURE.into()],

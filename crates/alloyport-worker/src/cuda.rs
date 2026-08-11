@@ -2,8 +2,7 @@
 
 use crate::journal::{StoredAssignment, StoredLimits};
 use alloyport_artifacts::{ArtifactStore, Sha256Digest};
-use alloyport_core::ExecutionKind;
-use alloyport_proto::v1::NetworkPolicy;
+use alloyport_core::{ExecutionKind, NetworkPolicy};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -428,8 +427,7 @@ fn validate_limits(
         || limits.output_bytes == 0
         || limits.output_bytes > ceilings.output_bytes
         || limits.device_count != 1
-        || NetworkPolicy::try_from(limits.network).unwrap_or(NetworkPolicy::Unspecified)
-            != NetworkPolicy::Disabled
+        || limits.network != NetworkPolicy::Disabled
     {
         return Err(CudaContractError::Assignment(
             "resource limits exceed policy or permit an unsafe mode",

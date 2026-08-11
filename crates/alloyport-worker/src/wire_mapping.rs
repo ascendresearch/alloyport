@@ -4,7 +4,7 @@ use crate::journal::{
     StoredArtifact, StoredAssignment, StoredEnvironment, StoredExecution, StoredFinished,
     StoredLimits, WorkerOutboxPayload,
 };
-use alloyport_core::ExecutionKind;
+use alloyport_core::{ExecutionKind, NetworkPolicy};
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, CancellationAcknowledged,
     ExecutionFinished, server_to_worker, worker_to_server,
@@ -55,7 +55,8 @@ pub(super) fn assignment_to_stored(assignment: &Assignment) -> StoredAssignment 
                 process_count: limits.process_count,
                 output_bytes: limits.output_bytes,
                 device_count: limits.device_count,
-                network: limits.network,
+                network: NetworkPolicy::try_from(limits.network)
+                    .expect("validated assignment contains a known network policy"),
             }),
         },
         required_features: assignment.required_features.clone(),

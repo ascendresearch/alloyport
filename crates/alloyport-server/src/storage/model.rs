@@ -1,7 +1,7 @@
 //! Transport-independent control-plane records and lifecycle values.
 
 use super::RepositoryError;
-use alloyport_core::ExecutionKind;
+use alloyport_core::{ExecutionKind, NetworkPolicy};
 use serde::{Deserialize, Serialize};
 
 /// Worker registration persisted independently of its current network session.
@@ -81,7 +81,7 @@ pub struct ResourceContract {
     pub process_count: u32,
     pub output_bytes: u64,
     pub device_count: u32,
-    pub network: i32,
+    pub network: NetworkPolicy,
 }
 
 /// Durable server-side lifecycle for a process attempt.
