@@ -11,10 +11,12 @@ pub mod cuda_docker;
 pub mod cuda_runtime;
 pub mod cuda_supervisor;
 pub mod execution_backend;
+mod execution_coordination;
 pub mod executor;
 pub mod fake_executor;
 pub mod journal;
 mod wire_mapping;
+mod worker_delivery;
 mod worker_state;
 use worker_state::WorkerPersistence;
 

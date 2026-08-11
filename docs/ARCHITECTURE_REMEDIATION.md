@@ -297,10 +297,11 @@ directories (including their migration and adapter-test files).
   lines, clock policy is 50 lines, transport-independent records/lifecycle values are 260 lines,
   and capability-segregated repository ports plus typed errors are 216 lines. CI prevents these
   definitions returning to the compatibility facade.
-- [x] Worker outbound coordinator split by use case: `lib.rs` is 440 lines (down from 1,838), with
-  local admission/journal state (356), control-session framing (289), attempt execution coordination
-  (513), wire/journal mapping (188), and tests (340) isolated in cohesive modules. No module in this
-  slice exceeds the 800-line review threshold.
+- [x] Worker outbound coordinator split by use case: `lib.rs` is 442 lines (down from 1,838), with
+  local admission/journal state (356), control-session framing (289), attempt admission/cancellation
+  (238), execution task/update coordination (204), durable/ephemeral delivery and terminal Artifact
+  publication (90), wire/journal mapping (188), and tests (340) isolated in cohesive modules. CI
+  prevents execution and delivery responsibilities returning to admission.
 - [x] First R4 execution-backend slice: closed Fake/CUDA dispatch replaced by an executor-kind
   registry and public `ExecutionBackend` composition port, including duplicate-capability and
   third-party probe-backend coverage.
@@ -318,7 +319,7 @@ directories (including their migration and adapter-test files).
   schema module.
 - [x] Repository-wide production module size gate reached: tests were separated from CUDA Docker,
   CUDA supervisor/runtime, Artifact CAS, and event reducer modules. The largest production Rust
-  module is now 513 lines; no production module exceeds the 800-line review threshold.
+  module is now 501 lines; no production module exceeds the 800-line review threshold.
 - [x] First R6 async-persistence slice: worker control and execution paths use an immutable shared
   state handle and route journal operations through a four-permit bounded blocking adapter. No
   SQLite-backed journal call runs while holding a Tokio state mutex; a slow-operation concurrency

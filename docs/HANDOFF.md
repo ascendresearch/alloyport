@@ -358,6 +358,8 @@ composes them for the complete outbound worker while narrower consumers can depe
 The SQLite adapter mirrors that boundary with separate lifecycle and outbox modules behind a small
 schema/connection composition shell; lifecycle transitions enqueue authoritative messages in the
 same transaction.
+Assignment admission/cancellation, execution task/update coordination, and durable/ephemeral frame
+delivery plus terminal Artifact publication are separate application modules.
 
 Current behavior:
 

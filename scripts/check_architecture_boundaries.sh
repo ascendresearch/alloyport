@@ -69,6 +69,16 @@ if executor_artifact_boundary=$(rg -n \
     crates/alloyport-worker/src/executor.rs); then
     violations+=("Artifact publication or event projection returned to the fake runtime coordinator: ${executor_artifact_boundary}")
 fi
+if attempt_execution_boundary=$(rg -n \
+    '^    async fn ensure_execution|^    async fn handle_execution_update|^    pub\(super\) async fn handle_execution_receive|^async fn run_registered_execution' \
+    crates/alloyport-worker/src/attempt_coordinator.rs); then
+    violations+=("execution task/update coordination returned to attempt admission: ${attempt_execution_boundary}")
+fi
+if worker_delivery_boundary=$(rg -n \
+    '^    pub\(super\) async fn send_ephemeral|^    pub\(super\) async fn publish_pending_terminal_artifacts|^    pub\(super\) async fn send_pending_outbox|^    pub\(super\) async fn available_slots' \
+    crates/alloyport-worker/src/attempt_coordinator.rs); then
+    violations+=("worker frame delivery or terminal publication returned to attempt admission: ${worker_delivery_boundary}")
+fi
 if docker_process_boundary=$(rg -n \
     'struct SystemDockerCommandRunner|trait DockerCommandRunner|^fn follow_command|^fn read_bounded|struct DockerCommandOutput' \
     crates/alloyport-worker/src/cuda_docker.rs); then
