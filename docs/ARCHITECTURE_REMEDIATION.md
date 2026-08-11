@@ -122,6 +122,19 @@ Acceptance:
 - Artifact input/output services are execution-context ports rather than CUDA branches;
 - an Ascend backend can be added through composition.
 
+Implemented in the first R4 slice:
+
+- the closed `AttachedRuntime::{Fake, Cuda}` dispatch has been removed;
+- `ExecutionBackend` declares owned executor kinds, execution, and restart-cleanup behavior;
+- worker composition registers backends by executor kind and rejects overlapping ownership before
+  a session starts;
+- Fake and CUDA are built-in adapters behind the same port, and a probe backend test demonstrates
+  that adding an implementation does not edit the control-session or attempt state machine.
+
+The remaining R4/R7 follow-up is to replace the concrete Artifact downloader in
+`BackendExecutionRequest` with input/materialization ports and refine backend errors into explicit
+retryable, terminal, policy, and integrity categories.
+
 ### R5 — Split oversized coordinators by use case (P1)
 
 Split `WorkerControlService`, `OutboundWorker`, Artifact upload metadata, control storage, and
@@ -247,6 +260,9 @@ directories (including their migration and adapter-test files).
   local admission/journal state (230), control-session framing (272), attempt execution coordination
   (537), wire/journal mapping (188), and tests (289) isolated in cohesive modules. No module in this
   slice exceeds the 800-line review threshold.
+- [x] First R4 execution-backend slice: closed Fake/CUDA dispatch replaced by an executor-kind
+  registry and public `ExecutionBackend` composition port, including duplicate-capability and
+  third-party probe-backend coverage.
 - [x] SQL-location architecture check has no legacy allowlist entries.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.

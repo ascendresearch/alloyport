@@ -1,12 +1,9 @@
 //! Attempt admission, cancellation, execution, and durable outbox coordination.
 
-use super::{
-    AttachedRuntime, ExecutionIntegration, ExecutionUpdate, OutboundWorker, WorkerError,
-    WorkerState,
-};
-use crate::artifact_download::RemoteArtifactDownloader;
+use super::{ExecutionUpdate, OutboundWorker, WorkerError, WorkerState};
+use crate::execution_backend::{BackendExecutionRequest, ExecutionBackend, ExecutionObserver};
 use crate::executor::{
-    self, ArtifactPublisher, CancellationToken, ExecutionObservation, ExecutionStream,
+    ArtifactPublisher, CancellationToken, ExecutionObservation, ExecutionStream,
     terminal_reference_intents,
 };
 use crate::journal::{LocalAttemptPhase, StoredFinished, WorkerOutboxPayload};
@@ -124,7 +121,7 @@ impl OutboundWorker {
                 executor.as_str_name()
             ))
         })?;
-        if integration.attached.supports(executor) {
+        if integration.backends.backend(executor).is_some() {
             Ok(())
         } else {
             Err(WorkerError::PolicyViolation(format!(
@@ -251,12 +248,12 @@ impl OutboundWorker {
         }
         let executor = ExecutorKind::try_from(attempt.assignment.execution.executor_kind)
             .unwrap_or(ExecutorKind::Unspecified);
-        if !integration.attached.supports(executor) {
-            return Err(WorkerError::Execution(format!(
+        let backend = integration.backends.backend(executor).ok_or_else(|| {
+            WorkerError::Execution(format!(
                 "attached runtime does not support executor kind {}",
                 executor.as_str_name()
-            )));
-        }
+            ))
+        })?;
 
         let mut active = integration.active.lock().await;
         if let Some(cancellation) = active.get(attempt_id) {
@@ -275,7 +272,7 @@ impl OutboundWorker {
         let updates = self.execution_updates.clone();
         tokio::spawn(async move {
             let result = run_registered_execution(
-                &integration,
+                backend.as_ref(),
                 &state,
                 &attempt_id,
                 &cancellation_for_task,
@@ -476,62 +473,30 @@ impl OutboundWorker {
 }
 
 async fn run_registered_execution(
-    integration: &ExecutionIntegration,
+    backend: &dyn ExecutionBackend,
     state: &WorkerState,
     attempt_id: &str,
     cancellation: &CancellationToken,
-    downloader: Option<&RemoteArtifactDownloader>,
+    downloader: Option<&crate::artifact_download::RemoteArtifactDownloader>,
     publisher: Option<&dyn ArtifactPublisher>,
     updates: &broadcast::Sender<ExecutionUpdate>,
-) -> Result<executor::ExecutionRun, executor::ExecutionRuntimeError> {
+) -> Result<crate::executor::ExecutionRun, crate::executor::ExecutionRuntimeError> {
     let observed_attempt_id = attempt_id.to_owned();
     let observed_updates = updates.clone();
-    let observer = move |observation| {
+    let observer: ExecutionObserver = Arc::new(move |observation| {
         let _ = observed_updates.send(ExecutionUpdate::Observation {
             attempt_id: observed_attempt_id.clone(),
             observation,
         });
-    };
-    match &integration.attached {
-        AttachedRuntime::Fake { runtime, executor } => {
-            if let Some(publisher) = publisher {
-                runtime
-                    .run_observed_and_publish(
-                        state,
-                        attempt_id,
-                        executor,
-                        cancellation,
-                        publisher,
-                        observer,
-                    )
-                    .await
-            } else {
-                runtime
-                    .run_observed(state, attempt_id, executor, cancellation, observer)
-                    .await
-            }
-        }
-        AttachedRuntime::Cuda(runtime) => {
-            if let Some(downloader) = downloader {
-                let attempt = state.attempt(attempt_id)?.ok_or_else(|| {
-                    executor::ExecutionRuntimeError::MissingAttempt(attempt_id.into())
-                })?;
-                downloader
-                    .download(&attempt.assignment.execution.bundle)
-                    .await
-                    .map_err(|error| {
-                        executor::ExecutionRuntimeError::Executor(error.to_string())
-                    })?;
-            }
-            if let Some(publisher) = publisher {
-                runtime
-                    .run_observed_and_publish(state, attempt_id, cancellation, publisher, observer)
-                    .await
-            } else {
-                runtime
-                    .run_observed(state, attempt_id, cancellation, observer)
-                    .await
-            }
-        }
-    }
+    });
+    backend
+        .execute(BackendExecutionRequest {
+            state,
+            attempt_id,
+            cancellation,
+            downloader,
+            publisher,
+            observer,
+        })
+        .await
 }

@@ -9,16 +9,20 @@ pub mod cuda;
 pub mod cuda_docker;
 pub mod cuda_runtime;
 pub mod cuda_supervisor;
+pub mod execution_backend;
 pub mod executor;
 pub mod journal;
 mod wire_mapping;
 mod worker_state;
 
-use alloyport_proto::v1::{Backend, ExecutorKind, WorkerHello};
+use alloyport_proto::v1::{Backend, WorkerHello};
 use alloyport_proto::{ValidationError, validate_worker_hello};
 use artifact_download::RemoteArtifactDownloader;
 use cuda::CUDA_FIXTURE_FEATURE;
 use cuda_runtime::CudaExecutionRuntime;
+use execution_backend::{
+    CudaExecutionBackend, ExecutionBackend, ExecutionBackendRegistry, FakeExecutionBackend,
+};
 use executor::{
     ArtifactPublisher, CancellationToken, ExecutionObservation, FakeExecutionRuntime, FakeExecutor,
 };
@@ -181,25 +185,32 @@ pub struct OutboundWorker {
 
 #[derive(Debug)]
 struct ExecutionIntegration {
-    attached: AttachedRuntime,
+    backends: ExecutionBackendRegistry,
     active: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
 }
 
-#[derive(Debug)]
-enum AttachedRuntime {
-    Fake {
-        runtime: Arc<FakeExecutionRuntime>,
-        executor: Arc<FakeExecutor>,
-    },
-    Cuda(Arc<CudaExecutionRuntime>),
-}
+impl ExecutionIntegration {
+    fn with_backend(backend: Arc<dyn ExecutionBackend>) -> Result<Self, WorkerError> {
+        let mut backends = ExecutionBackendRegistry::default();
+        backends.register(backend).map_err(|executor| {
+            WorkerError::Execution(format!(
+                "execution backend already registered for {}",
+                executor.as_str_name()
+            ))
+        })?;
+        Ok(Self {
+            backends,
+            active: Arc::new(Mutex::new(BTreeMap::new())),
+        })
+    }
 
-impl AttachedRuntime {
-    fn supports(&self, executor: ExecutorKind) -> bool {
-        match self {
-            Self::Fake { .. } => executor != ExecutorKind::CudaFixture,
-            Self::Cuda(_) => executor == ExecutorKind::CudaFixture,
-        }
+    fn register(&mut self, backend: Arc<dyn ExecutionBackend>) -> Result<(), WorkerError> {
+        self.backends.register(backend).map_err(|executor| {
+            WorkerError::Execution(format!(
+                "execution backend already registered for {}",
+                executor.as_str_name()
+            ))
+        })
     }
 }
 
@@ -271,15 +282,10 @@ impl OutboundWorker {
     ///
     /// Returns an error when the runtime would record receipts for a different logical worker.
     pub fn with_fake_executor(
-        mut self,
+        self,
         runtime: Arc<FakeExecutionRuntime>,
         executor: Arc<FakeExecutor>,
     ) -> Result<Self, WorkerError> {
-        if self.execution.is_some() {
-            return Err(WorkerError::Execution(
-                "an execution runtime is already attached".into(),
-            ));
-        }
         if runtime.worker_id() != self.hello.worker_id {
             return Err(WorkerError::Execution(format!(
                 "fake runtime identity {} does not match worker {}",
@@ -287,11 +293,7 @@ impl OutboundWorker {
                 self.hello.worker_id
             )));
         }
-        self.execution = Some(Arc::new(ExecutionIntegration {
-            attached: AttachedRuntime::Fake { runtime, executor },
-            active: Arc::new(Mutex::new(BTreeMap::new())),
-        }));
-        Ok(self)
+        self.with_execution_backend(Arc::new(FakeExecutionBackend::new(runtime, executor)))
     }
 
     /// Attaches the policy-bound CUDA runtime and restricts admission to its executor kind.
@@ -304,11 +306,6 @@ impl OutboundWorker {
         mut self,
         runtime: Arc<CudaExecutionRuntime>,
     ) -> Result<Self, WorkerError> {
-        if self.execution.is_some() {
-            return Err(WorkerError::Execution(
-                "an execution runtime is already attached".into(),
-            ));
-        }
         if runtime.worker_id() != self.hello.worker_id {
             return Err(WorkerError::Execution(format!(
                 "CUDA runtime identity {} does not match worker {}",
@@ -349,10 +346,30 @@ impl OutboundWorker {
             )
         })?;
         state.get_mut().policy = state.get_mut().policy.cuda_fixture_only();
-        self.execution = Some(Arc::new(ExecutionIntegration {
-            attached: AttachedRuntime::Cuda(runtime),
-            active: Arc::new(Mutex::new(BTreeMap::new())),
-        }));
+        self.with_execution_backend(Arc::new(CudaExecutionBackend::new(runtime)))
+    }
+
+    /// Registers an execution backend without changing the control-session state machine.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if another backend already owns one of the declared executor kinds or the
+    /// worker was cloned before composition completed.
+    pub fn with_execution_backend(
+        mut self,
+        backend: Arc<dyn ExecutionBackend>,
+    ) -> Result<Self, WorkerError> {
+        if let Some(integration) = self.execution.as_mut() {
+            Arc::get_mut(integration)
+                .ok_or_else(|| {
+                    WorkerError::Execution(
+                        "execution backends must be registered before sharing the worker".into(),
+                    )
+                })?
+                .register(backend)?;
+        } else {
+            self.execution = Some(Arc::new(ExecutionIntegration::with_backend(backend)?));
+        }
         Ok(self)
     }
 

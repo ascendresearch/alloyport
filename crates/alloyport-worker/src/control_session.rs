@@ -1,7 +1,6 @@
 //! Outbound gRPC control-session lifecycle and frame validation.
 
-use super::{AttachedRuntime, DEFAULT_HEARTBEAT_INTERVAL, OutboundWorker, WorkerError};
-use crate::executor::CancellationToken;
+use super::{DEFAULT_HEARTBEAT_INTERVAL, OutboundWorker, WorkerError};
 use crate::journal::LocalAttemptPhase;
 use crate::wire_mapping::expected_server_message_id;
 use alloyport_proto::v1::worker_control_client::WorkerControlClient;
@@ -31,28 +30,27 @@ impl OutboundWorker {
         let Some(integration) = self.execution.as_ref() else {
             return Ok(());
         };
-        let AttachedRuntime::Cuda(runtime) = &integration.attached else {
-            return Ok(());
-        };
         let state = self.state.lock().await.clone();
         let terminal_attempts = state
             .store
             .attempts()?
             .into_iter()
-            .filter(|attempt| {
-                attempt.phase == LocalAttemptPhase::Finished
-                    && ExecutorKind::try_from(attempt.assignment.execution.executor_kind)
-                        .unwrap_or(ExecutorKind::Unspecified)
-                        == ExecutorKind::CudaFixture
+            .filter(|attempt| attempt.phase == LocalAttemptPhase::Finished)
+            .map(|attempt| {
+                (
+                    ExecutorKind::try_from(attempt.assignment.execution.executor_kind)
+                        .unwrap_or(ExecutorKind::Unspecified),
+                    attempt.assignment.attempt_id,
+                )
             })
-            .map(|attempt| attempt.assignment.attempt_id)
             .collect::<Vec<_>>();
-        for attempt_id in terminal_attempts {
+        for (executor, attempt_id) in terminal_attempts {
+            let Some(backend) = integration.backends.backend(executor) else {
+                continue;
+            };
             // Cleanup is deliberately best effort here: a stale container cannot prevent durable
             // terminal outbox delivery. A later session retries the same idempotent removal.
-            let _ = runtime
-                .run(&state, &attempt_id, &CancellationToken::new())
-                .await;
+            let _ = backend.retry_terminal_cleanup(&state, &attempt_id).await;
         }
         Ok(())
     }
