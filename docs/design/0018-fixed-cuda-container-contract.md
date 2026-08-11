@@ -88,17 +88,19 @@ container. It reconciles the deterministic name through `Created`, `Running`, an
 requires exact attempt/bundle/manifest/image identity on every reattach, and refuses to delete or
 reuse a conflicting container. Missing containers are created once, created containers are started,
 running containers are waited without another start, and exited containers are replayed only to
-recover their terminal result and logs. Cancellation and timeout stop the same identified container
-and then wait for its terminal state. Output exhaustion, nonzero exit, and exit zero without the
-fixture's `PASS` marker have distinct fail-closed outcomes.
+recover their terminal result and logs. Cancellation, timeout, and running-output exhaustion stop
+the same identified container and then wait for its terminal state. Output exhaustion, nonzero exit,
+and exit zero without the fixture's `PASS` marker have distinct fail-closed outcomes.
 
 `DockerCliEngine` implements this boundary with `std::process::Command` argv and no shell. Image and
 container inspect JSON are size-bounded and parsed into exact identities and phases. An inspect
 failure is considered absence only when a second exact-name `container list` succeeds and returns no
 container. `docker wait` is cross-checked against the inspected exit code, while inspected RFC 3339
 start/finish timestamps recover elapsed time after restart. Stdout and stderr pipes are drained
-concurrently, retain only bounded bytes, and preserve an exhaustion flag for terminal
-classification. Removal is a separate idempotent operation.
+concurrently under one combined byte counter, retain only bounded bytes, and preserve an exhaustion
+flag for terminal classification. For a running container, `docker logs --follow` is itself
+terminated as soon as that counter exceeds the budget; the supervisor then stops and waits for the
+identified container. Removal is a separate idempotent operation.
 
 `CudaExecutionRuntime` marks `Running` before supervision, spools stdout/stderr and a typed receipt to
 the local CAS, optionally publishes all three objects, and only then commits terminal journal/outbox
@@ -112,9 +114,10 @@ retain the identified container for safe reconciliation.
 CUDA-fixture-only, verifies worker/runtime identity plus CUDA architecture/driver/toolkit facts, and
 uses the same active-attempt cancellation registry as the fake runtime. Session startup retries
 idempotent cleanup for terminal CUDA attempts without allowing cleanup failure to block durable
-terminal outbox delivery. The worker binary does not construct this stack yet. The next slice must
-add live previews and early output-limit termination, explicit binary configuration, and the real
-GB10 validation.
+terminal outbox delivery. The worker binary does not construct this stack yet. The log follower now
+enforces early output-limit termination, but does not emit chunked live previews. The next slice must
+add explicit binary configuration and the real GB10 validation; preview streaming remains a separate
+runtime integration.
 
 ## Evidence and parity
 
@@ -153,10 +156,12 @@ construction without a shell, network, arbitrary mounts, or server-selected devi
 
 Fake-engine state-machine tests cover missing-container create/start, exited replay without another
 create/start, running reattach, cancellation and timeout stop/wait, exact-identity conflict,
-resolved-image mismatch, output exhaustion, nonzero exit, and exit zero without the fixture marker.
+resolved-image mismatch, active stop on running-output exhaustion, nonzero exit, and exit zero
+without the fixture marker.
 Docker-adapter tests cover exact inspect identity/timestamp parsing, unsupported-state rejection,
-bounded pipe draining, exact command argv, missing-container discrimination, log-exhaustion
-propagation, and idempotent terminal removal without contacting a daemon. Runtime coverage proves
+bounded pipe draining, one combined stdout/stderr follow budget, exact `logs --follow` argv,
+missing-container discrimination, log-exhaustion propagation, and idempotent terminal removal
+without contacting a daemon. Runtime coverage proves
 that publication observes `Running`, terminal commit precedes removal, a cleanup failure preserves
 the terminal receipt/container, and replay retries only cleanup. A loopback gRPC test sends a real
 typed CUDA assignment through the controller, runs it with a fake container engine, publishes all

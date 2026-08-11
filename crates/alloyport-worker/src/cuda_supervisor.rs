@@ -78,6 +78,10 @@ pub trait CudaContainerEngine: Debug + Send + Sync {
     fn stop<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()>;
     /// Returns at most `limit` combined stdout/stderr bytes and reports whether more existed.
     fn logs<'a>(&'a self, name: &'a str, limit: u64) -> EngineFuture<'a, ContainerLogs>;
+    /// Follows a running container and returns early when the combined output limit is exceeded.
+    fn follow_logs<'a>(&'a self, name: &'a str, limit: u64) -> EngineFuture<'a, ContainerLogs> {
+        self.logs(name, limit)
+    }
     /// Removes a terminal container after publication and the terminal journal commit.
     fn remove<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()>;
 }
@@ -158,41 +162,31 @@ impl CudaContainerSupervisor {
                 .map_err(CudaSupervisorError::Engine)?;
         }
 
-        let termination = if phase == ContainerPhase::Exited {
-            Termination::Exited(
-                engine
-                    .wait(&identity.name)
-                    .await
-                    .map_err(CudaSupervisorError::Engine)?,
-            )
-        } else {
-            let mut cancelled = cancellation.subscribe();
-            tokio::select! {
-                biased;
-                () = wait_for_cancellation(&mut cancelled) => {
-                    engine.stop(&identity.name).await.map_err(CudaSupervisorError::Engine)?;
-                    Termination::Cancelled(engine.wait(&identity.name).await.map_err(CudaSupervisorError::Engine)?)
-                }
-                result = tokio::time::timeout(
-                    Duration::from_millis(assignment.execution.timeout_ms),
-                    engine.wait(&identity.name),
-                ) => if let Ok(exit) = result {
-                    Termination::Exited(exit.map_err(CudaSupervisorError::Engine)?)
-                } else {
-                    engine.stop(&identity.name).await.map_err(CudaSupervisorError::Engine)?;
-                    Termination::TimedOut(engine.wait(&identity.name).await.map_err(CudaSupervisorError::Engine)?)
-                }
-            }
-        };
         let output_limit = assignment
             .execution
             .limits
             .as_ref()
             .map_or(0, |limits| limits.output_bytes);
-        let logs = engine
-            .logs(&identity.name, output_limit)
-            .await
-            .map_err(CudaSupervisorError::Engine)?;
+        let (termination, logs) = if phase == ContainerPhase::Exited {
+            let exit = engine
+                .wait(&identity.name)
+                .await
+                .map_err(CudaSupervisorError::Engine)?;
+            let logs = engine
+                .logs(&identity.name, output_limit)
+                .await
+                .map_err(CudaSupervisorError::Engine)?;
+            (Termination::Exited(exit), logs)
+        } else {
+            collect_running(
+                engine,
+                &identity.name,
+                assignment.execution.timeout_ms,
+                output_limit,
+                cancellation,
+            )
+            .await?
+        };
         Ok(SupervisedCudaExecution {
             result: classify(
                 termination,
@@ -209,6 +203,67 @@ impl CudaContainerSupervisor {
             },
         })
     }
+}
+
+async fn collect_running(
+    engine: &dyn CudaContainerEngine,
+    name: &str,
+    timeout_ms: u64,
+    output_limit: u64,
+    cancellation: &CancellationToken,
+) -> Result<(Termination, ContainerLogs), CudaSupervisorError> {
+    let mut cancelled = cancellation.subscribe();
+    let wait = engine.wait(name);
+    let follow = engine.follow_logs(name, output_limit);
+    let timeout = tokio::time::sleep(Duration::from_millis(timeout_ms));
+    tokio::pin!(wait, follow, timeout);
+    let mut collected_logs = None;
+    loop {
+        let termination = tokio::select! {
+            biased;
+            () = wait_for_cancellation(&mut cancelled) => {
+                stop_and_wait(engine, name, &mut wait).await.map(Termination::Cancelled)?
+            }
+            () = &mut timeout => {
+                stop_and_wait(engine, name, &mut wait).await.map(Termination::TimedOut)?
+            }
+            exit = &mut wait => Termination::Exited(exit.map_err(CudaSupervisorError::Engine)?),
+            logs = &mut follow, if collected_logs.is_none() => {
+                let logs = match logs {
+                    Ok(logs) => logs,
+                    Err(error) => {
+                        let _ = engine.stop(name).await;
+                        let _ = (&mut wait).await;
+                        return Err(CudaSupervisorError::Engine(error));
+                    }
+                };
+                if logs.output_limit_exceeded {
+                    let exit = stop_and_wait(engine, name, &mut wait).await?;
+                    return Ok((Termination::OutputLimitExceeded(exit), logs));
+                }
+                collected_logs = Some(logs);
+                continue;
+            }
+        };
+        let logs = if let Some(logs) = collected_logs {
+            logs
+        } else {
+            follow.await.map_err(CudaSupervisorError::Engine)?
+        };
+        return Ok((termination, logs));
+    }
+}
+
+async fn stop_and_wait(
+    engine: &dyn CudaContainerEngine,
+    name: &str,
+    wait: &mut EngineFuture<'_, ContainerExit>,
+) -> Result<ContainerExit, CudaSupervisorError> {
+    engine
+        .stop(name)
+        .await
+        .map_err(CudaSupervisorError::Engine)?;
+    wait.await.map_err(CudaSupervisorError::Engine)
 }
 
 async fn reconcile_container(
@@ -258,6 +313,7 @@ enum Termination {
     Exited(ContainerExit),
     Cancelled(ContainerExit),
     TimedOut(ContainerExit),
+    OutputLimitExceeded(ContainerExit),
 }
 
 fn enforce_output_limit(mut logs: ContainerLogs, limit: u64) -> ContainerLogs {
@@ -284,6 +340,11 @@ fn classify(termination: Termination, logs: ContainerLogs, timeout_ms: u64) -> E
         Termination::TimedOut(exit) => {
             (exit, Some(AttemptOutcome::TimedOut), "execution timed out")
         }
+        Termination::OutputLimitExceeded(exit) => (
+            exit,
+            Some(AttemptOutcome::InfraError),
+            "execution output limit exceeded",
+        ),
     };
     let (outcome, exit_code, elapsed_ms, detail) = if logs.output_limit_exceeded {
         (
@@ -476,6 +537,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn running_output_exhaustion_stops_the_container_before_it_exits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = fixture()?;
+        let engine = FakeEngine::new(fixture.image_id.to_string());
+        engine.block_first_wait();
+        engine.exceed_output_limit();
+
+        let exhausted = fixture
+            .supervisor
+            .run(&fixture.assignment, &engine, &CancellationToken::new())
+            .await?;
+
+        assert_eq!(exhausted.outcome, AttemptOutcome::InfraError);
+        assert!(exhausted.detail.contains("output limit exceeded"));
+        assert_eq!(engine.counts(), (1, 1, 1));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn image_mismatch_and_terminal_classification_are_fail_closed()
     -> Result<(), Box<dyn std::error::Error>> {
         let fixture = fixture()?;
@@ -646,6 +726,7 @@ mod tests {
         stops: usize,
         wait_calls: usize,
         block_first_wait: bool,
+        output_limit_exceeded: bool,
     }
 
     impl FakeEngine {
@@ -663,6 +744,7 @@ mod tests {
                     stops: 0,
                     wait_calls: 0,
                     block_first_wait: false,
+                    output_limit_exceeded: false,
                 }),
             }
         }
@@ -681,6 +763,13 @@ mod tests {
                 .lock()
                 .expect("fake engine lock")
                 .block_first_wait = true;
+        }
+
+        fn exceed_output_limit(&self) {
+            self.state
+                .lock()
+                .expect("fake engine lock")
+                .output_limit_exceeded = true;
         }
     }
 
@@ -747,11 +836,13 @@ mod tests {
 
         fn logs<'a>(&'a self, _name: &'a str, _limit: u64) -> EngineFuture<'a, ContainerLogs> {
             Box::pin(async {
+                let output_limit_exceeded =
+                    self.state.lock().map_err(|_| "lock")?.output_limit_exceeded;
                 Ok(ContainerLogs {
                     stdout: b"PASS fixture=cuda-vectoradd-v1 elements=1048576 checksum=670562424\n"
                         .to_vec(),
                     stderr: Vec::new(),
-                    output_limit_exceeded: false,
+                    output_limit_exceeded,
                 })
             })
         }

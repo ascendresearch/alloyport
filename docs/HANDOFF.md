@@ -349,8 +349,8 @@ The worker library also implements the Design 0015 deterministic fake executor r
   from the server's committed offset, validates the completed remote identity, and prevents the
   terminal journal/outbox commit until all three objects are finalized.
 
-Design 0018 adds the first real-CUDA contract and reconciliation boundary without starting Docker
-from the worker yet:
+Design 0018 adds the first real-CUDA contract and reconciliation boundary without enabling Docker
+execution in the worker binary yet:
 
 - protocol minor 3 defines a dedicated `CudaFixture` executor kind that remains default-deny;
 - local policy binds one fixture, bundle digest, OCI manifest digest, expected local image ID,
@@ -363,11 +363,13 @@ from the worker yet:
   `AssignmentInput` reference before delivery, and the worker can download it with bounded contiguous
   offsets plus final digest/size verification into its local CAS.
 - an engine-neutral supervisor verifies the resolved image ID, reconciles stable container identity
-  across missing/created/running/exited states, stops on cancellation or timeout, recovers bounded
-  terminal logs, and rejects identity conflicts or a zero exit without the fixed `PASS` marker.
+  across missing/created/running/exited states, concurrently follows bounded logs, stops on
+  cancellation, timeout, or combined output-budget exhaustion, and rejects identity conflicts or a
+  zero exit without the fixed `PASS` marker.
 - an argv-only Docker CLI engine performs bounded image/container inspection, distinguishes a
   genuinely absent container from an inspect failure, cross-checks wait/inspect exit state, recovers
-  elapsed time from daemon timestamps, drains bounded logs, and exposes explicit terminal removal.
+  elapsed time from daemon timestamps, follows stdout/stderr under one combined in-memory budget,
+  terminates its log follower when that budget is exhausted, and exposes explicit terminal removal.
 - a CUDA runtime spools stdout/stderr plus a bundle/source/image/device/environment receipt, gates
   the terminal commit on optional remote publication, removes only after that commit, and retries a
   failed cleanup from terminal replay without rerunning the fixture.
@@ -437,7 +439,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 93 Rust tests. Control-plane coverage includes real loopback gRPC streams and SQLite
+There are 95 Rust tests. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -493,10 +495,12 @@ and proves a repeated fetch reuses the local object. CUDA enqueue coverage rejec
 metadata and grants only an already published bundle with the exact declared size.
 CUDA supervisor coverage uses a fake engine to prove create/start, running reattach, exited replay,
 cancellation and timeout stop/wait, image and durable-identity mismatch rejection, output exhaustion,
-nonzero exit, and mandatory fixture verification-marker classification.
+active stop on running-output exhaustion, nonzero exit, and mandatory fixture verification-marker
+classification.
 Docker adapter coverage proves exact inspect identity and timestamp parsing, ambiguous-state
-rejection, bounded pipe draining, exact argv dispatch, missing-container discrimination,
-log-exhaustion propagation, and idempotent removal without requiring Docker in CI. CUDA runtime
+rejection, bounded pipe draining, combined stdout/stderr following budgets, exact `logs --follow`
+argv dispatch, missing-container discrimination, log-exhaustion propagation, and idempotent removal
+without requiring Docker in CI. CUDA runtime
 coverage proves publication-before-terminal and terminal-before-removal ordering, durable receipt
 facts, cleanup-failure retention, and cleanup-only terminal replay. A dedicated CUDA control-plane
 test covers CUDA-only outbound admission, Artifact-gated completion, a post-commit cleanup failure,
@@ -548,9 +552,11 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
   quotas are implemented. Worker terminal ingestion now creates typed output/receipt references;
   other controller/public grant operations and automatic retention/collection scheduling remain
   absent. There is no object-store adapter or filesystem-capacity monitor.
-- No live Docker log previews/early output-limit stop, automatic device discovery, binary CUDA
-  configuration, or device reset. The explicitly attached CUDA runtime emits bounded terminal
-  observations and a configured environment receipt; the worker binary still constructs no runtime.
+- No live Docker log previews, automatic device discovery, binary CUDA configuration, or device
+  reset. The Docker boundary now follows running logs and actively stops the identified container on
+  combined output-budget exhaustion, but the explicitly attached CUDA runtime still emits only
+  bounded terminal observations plus a configured environment receipt; the worker binary constructs
+  no runtime.
   Attached fake runs emit ephemeral gRPC output previews and accept control-stream cancellation;
   workers with no executor attached still terminate cancelled admitted attempts directly.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
@@ -582,9 +588,9 @@ stdout/stderr, exit classification, and receipt fields.
 
 The typed executor, fixture bundle, local allowlist, Docker create plan, Artifact bundle
 download/grant, durable supervisor, argv-only Docker engine, gated CUDA runtime, environment receipt,
-terminal cleanup ordering, and outbound-session integration are implemented. Next add live bounded
-Docker output, explicit worker-binary configuration, and the real GB10 loopback smoke. Keep shell
-execution disabled.
+terminal cleanup ordering, outbound-session integration, and bounded running-log enforcement are
+implemented. Next add explicit worker-binary configuration, live preview chunk publication, and the
+real GB10 loopback smoke. Keep shell execution disabled.
 
 ### 2. Public event replay and subscription
 
@@ -610,9 +616,8 @@ evidence.
 
 Implement one fixed CUDA execution vertical slice without reviving the SSH runtime path:
 
-> Read `docs/HANDOFF.md` and Designs 0007, 0011, 0015 through 0018. Extend the Docker engine/runtime
-> boundary with bounded live stdout/stderr following and stop the identified container as soon as the
-> combined output budget is exhausted. Configure the worker binary only from explicit local CUDA
-> policy and Artifact settings, then run the fixed GB10 fixture through outbound loopback gRPC and
-> compare its receipt against the legacy parity attempt. Keep generic shell/container execution
-> disabled.
+> Read `docs/HANDOFF.md` and Designs 0007, 0011, 0015 through 0018. Extend the worker binary's
+> configuration boundary so it constructs CUDA execution only from explicit local fixture, image,
+> device, sandbox, and Artifact settings. Then run the fixed GB10 fixture through outbound loopback
+> gRPC and compare its receipt against the legacy parity attempt. Keep generic shell/container
+> execution disabled, and do not treat bounded terminal observations as live previews.

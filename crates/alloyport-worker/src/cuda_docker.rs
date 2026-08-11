@@ -11,8 +11,10 @@ use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
+use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -61,6 +63,17 @@ impl DockerCliEngine {
         tokio::task::spawn_blocking(move || runner.run(&arguments, output_limit))
             .await
             .map_err(|error| format!("Docker CLI task failed: {error}"))?
+    }
+
+    async fn follow_command(
+        &self,
+        arguments: Vec<String>,
+        output_limit: u64,
+    ) -> Result<DockerCommandOutput, String> {
+        let runner = Arc::clone(&self.runner);
+        tokio::task::spawn_blocking(move || runner.follow(&arguments, output_limit))
+            .await
+            .map_err(|error| format!("Docker CLI follow task failed: {error}"))?
     }
 
     async fn inspect_detail(&self, name: &str) -> Result<Option<DockerContainerDetail>, String> {
@@ -238,6 +251,32 @@ impl CudaContainerEngine for DockerCliEngine {
         })
     }
 
+    fn follow_logs<'a>(
+        &'a self,
+        name: &'a str,
+        limit: u64,
+    ) -> crate::cuda_supervisor::EngineFuture<'a, ContainerLogs> {
+        Box::pin(async move {
+            let output = self
+                .follow_command(
+                    vec![
+                        "container".into(),
+                        "logs".into(),
+                        "--follow".into(),
+                        name.into(),
+                    ],
+                    limit,
+                )
+                .await?;
+            require_exit_success("follow container logs", &output)?;
+            Ok(ContainerLogs {
+                stdout: output.stdout,
+                stderr: output.stderr,
+                output_limit_exceeded: output.output_limit_exceeded,
+            })
+        })
+    }
+
     fn remove<'a>(&'a self, name: &'a str) -> crate::cuda_supervisor::EngineFuture<'a, ()> {
         Box::pin(async move {
             let output = self
@@ -265,6 +304,14 @@ struct SystemDockerCommandRunner {
 
 trait DockerCommandRunner: Debug + Send + Sync {
     fn run(&self, arguments: &[String], output_limit: u64) -> Result<DockerCommandOutput, String>;
+
+    fn follow(
+        &self,
+        arguments: &[String],
+        output_limit: u64,
+    ) -> Result<DockerCommandOutput, String> {
+        self.run(arguments, output_limit)
+    }
 }
 
 impl DockerCommandRunner for SystemDockerCommandRunner {
@@ -303,6 +350,77 @@ impl DockerCommandRunner for SystemDockerCommandRunner {
             output_limit_exceeded: stdout_exceeded || stderr_exceeded || combined_exceeded,
         })
     }
+
+    fn follow(
+        &self,
+        arguments: &[String],
+        output_limit: u64,
+    ) -> Result<DockerCommandOutput, String> {
+        follow_command(&self.binary, arguments, output_limit)
+    }
+}
+
+fn follow_command(
+    binary: &Path,
+    arguments: &[String],
+    output_limit: u64,
+) -> Result<DockerCommandOutput, String> {
+    let mut child = Command::new(binary)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| command_io_error(binary, &error))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Docker CLI stdout pipe is missing".to_owned())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Docker CLI stderr pipe is missing".to_owned())?;
+    let total = Arc::new(AtomicU64::new(0));
+    let (limit_sender, limit_receiver) = mpsc::sync_channel(1);
+    let stdout_total = Arc::clone(&total);
+    let stdout_limit_sender = limit_sender.clone();
+    let stdout_task = thread::spawn(move || {
+        read_follow_bounded(stdout, output_limit, &stdout_total, &stdout_limit_sender)
+    });
+    let stderr_total = Arc::clone(&total);
+    let stderr_task = thread::spawn(move || {
+        read_follow_bounded(stderr, output_limit, &stderr_total, &limit_sender)
+    });
+    let mut killed_for_limit = false;
+    let status = loop {
+        if limit_receiver.try_recv().is_ok() {
+            killed_for_limit = true;
+            let _ = child.kill();
+            break child
+                .wait()
+                .map_err(|error| format!("failed waiting for Docker log follower: {error}"))?;
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("failed polling Docker log follower: {error}"))?
+        {
+            break status;
+        }
+        thread::sleep(Duration::from_millis(2));
+    };
+    let (stdout, stdout_exceeded) = join_reader(stdout_task, "stdout")?;
+    let (stderr, stderr_exceeded) = join_reader(stderr_task, "stderr")?;
+    let combined_exceeded = total.load(Ordering::Relaxed) > output_limit;
+    Ok(DockerCommandOutput {
+        success: status.success() || killed_for_limit,
+        exit_code: status.code(),
+        stdout,
+        stderr,
+        output_limit_exceeded: killed_for_limit
+            || stdout_exceeded
+            || stderr_exceeded
+            || combined_exceeded,
+    })
 }
 
 #[derive(Debug)]
@@ -325,6 +443,39 @@ fn read_bounded(mut reader: impl Read, limit: u64) -> io::Result<(Vec<u8>, bool)
             break;
         }
         let remaining = limit.saturating_sub(bytes.len());
+        let keep = remaining.min(read);
+        bytes.extend_from_slice(&buffer[..keep]);
+        exceeded |= keep < read;
+    }
+    Ok((bytes, exceeded))
+}
+
+fn read_follow_bounded(
+    mut reader: impl Read,
+    limit: u64,
+    total: &AtomicU64,
+    limit_sender: &mpsc::SyncSender<()>,
+) -> io::Result<(Vec<u8>, bool)> {
+    let retained_limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let mut bytes = Vec::new();
+    let mut exceeded = false;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let read_u64 = u64::try_from(read).unwrap_or(u64::MAX);
+        let previous = total
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_add(read_u64))
+            })
+            .unwrap_or_else(|value| value);
+        if previous.saturating_add(read_u64) > limit {
+            exceeded = true;
+            let _ = limit_sender.try_send(());
+        }
+        let remaining = retained_limit.saturating_sub(bytes.len());
         let keep = remaining.min(read);
         bytes.extend_from_slice(&buffer[..keep]);
         exceeded |= keep < read;
@@ -582,6 +733,24 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn followed_readers_share_one_combined_output_budget() -> Result<(), io::Error> {
+        let total = AtomicU64::new(0);
+        let (limit_sender, limit_receiver) = mpsc::sync_channel(1);
+        let (stdout, stdout_exceeded) =
+            read_follow_bounded(Cursor::new(b"abc"), 5, &total, &limit_sender)?;
+        let (stderr, stderr_exceeded) =
+            read_follow_bounded(Cursor::new(b"def"), 5, &total, &limit_sender)?;
+
+        assert_eq!(stdout, b"abc");
+        assert_eq!(stderr, b"def");
+        assert!(!stdout_exceeded);
+        assert!(stderr_exceeded);
+        assert!(limit_receiver.try_recv().is_ok());
+        assert_eq!(total.load(Ordering::Relaxed), 6);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn cli_boundary_distinguishes_absence_and_preserves_log_exhaustion() -> Result<(), String>
     {
@@ -605,7 +774,7 @@ mod tests {
                 success(b"", b"", false),
             ),
             expected(
-                &["container", "logs", "alloyport-attempt-1"],
+                &["container", "logs", "--follow", "alloyport-attempt-1"],
                 5,
                 success(b"abcde", b"", true),
             ),
@@ -644,7 +813,7 @@ mod tests {
         };
 
         assert!(engine.inspect("alloyport-attempt-1").await?.is_none());
-        let logs = engine.logs("alloyport-attempt-1", 5).await?;
+        let logs = engine.follow_logs("alloyport-attempt-1", 5).await?;
         assert_eq!(logs.stdout, b"abcde");
         assert!(logs.output_limit_exceeded);
         engine.remove("alloyport-attempt-1").await?;
