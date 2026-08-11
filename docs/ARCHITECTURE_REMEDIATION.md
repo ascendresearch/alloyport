@@ -231,6 +231,8 @@ Every remediation slice must pass:
 ```bash
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
+bash scripts/check_sql_boundaries.sh
+bash scripts/check_architecture_boundaries.sh
 cargo test --workspace
 ```
 
@@ -301,6 +303,8 @@ directories (including their migration and adapter-test files).
   `SqliteUploadStore` or `FilesystemArtifactStore` dependency; those types remain only in adapters,
   tests, and the binary composition root.
 - [x] SQL-location architecture check has no legacy allowlist entries.
+- [x] CI architecture boundary check enforces the 800-line production-module ceiling and prevents
+  server application code from regaining concrete SQLite Upload or filesystem CAS dependencies.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.
 - [ ] Remaining workstreams.
