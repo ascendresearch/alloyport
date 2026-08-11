@@ -277,6 +277,18 @@ if string_error=$(rg -n 'Future<Output = Result<T, String>>' \
     crates/alloyport-worker/src/cuda_supervisor/engine.rs); then
     violations+=("CUDA container engine port regained an untyped String error: ${string_error}")
 fi
+if backend_string_error=$(rg -n \
+    'BackendExecutionFuture.*ExecutionRuntimeError|Future<Output = Result<ExecutionRun, (String|ExecutionRuntimeError)>|result: Result<\(\), String>' \
+    crates/alloyport-worker/src/execution_backend.rs crates/alloyport-worker/src/lib.rs); then
+    violations+=("execution backend boundary regained an internal or String error: ${backend_string_error}")
+fi
+if ! rg -q '^pub enum BackendFailureClass' crates/alloyport-worker/src/backend_error.rs \
+    || ! rg -q '^pub enum BackendError' crates/alloyport-worker/src/backend_error.rs \
+    || ! rg -q 'Future<Output = Result<ExecutionRun, BackendError>>' \
+        crates/alloyport-worker/src/execution_backend.rs \
+    || ! rg -q 'result: Result<\(\), BackendError>' crates/alloyport-worker/src/lib.rs; then
+    violations+=("execution backend failures do not retain typed categories through coordination")
+fi
 if ! rg -q '^pub trait CudaContainerEngine' \
     crates/alloyport-worker/src/cuda_supervisor/engine.rs; then
     violations+=("CUDA container engine plugin port is missing")

@@ -1,6 +1,7 @@
 //! Execution Artifact identity, local spooling, and remote publication boundary.
 
 use super::ExecutionRuntimeError;
+use crate::backend_error::BackendError;
 use crate::journal::{StoredArtifact, StoredFinished};
 use alloyport_artifacts::upload::ArtifactReferenceKind;
 use alloyport_artifacts::{ArtifactStore, IngestRequest};
@@ -47,6 +48,18 @@ impl Display for ArtifactPublicationError {
 }
 
 impl Error for ArtifactPublicationError {}
+
+impl From<ArtifactPublicationError> for BackendError {
+    fn from(error: ArtifactPublicationError) -> Self {
+        let detail = error.to_string();
+        match error {
+            ArtifactPublicationError::Unavailable(_) => Self::retryable(detail),
+            ArtifactPublicationError::Rejected(_) => Self::policy(detail),
+            ArtifactPublicationError::LocalArtifact(_) => Self::integrity(detail),
+            ArtifactPublicationError::Internal(_) => Self::terminal(detail),
+        }
+    }
+}
 
 /// Publishes worker-local execution artifacts before terminal lifecycle state becomes reportable.
 pub trait ArtifactPublisher: Debug + Send + Sync {

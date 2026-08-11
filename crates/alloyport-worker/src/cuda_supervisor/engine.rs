@@ -1,5 +1,6 @@
 //! Pluggable CUDA container-engine port and transport-neutral value objects.
 
+use crate::backend_error::BackendError;
 use crate::cuda::DockerCreatePlan;
 use crate::executor::ExecutorResult;
 use std::fmt::Debug;
@@ -43,6 +44,20 @@ impl std::fmt::Display for ContainerEngineError {
 }
 
 impl std::error::Error for ContainerEngineError {}
+
+impl From<ContainerEngineError> for BackendError {
+    fn from(error: ContainerEngineError) -> Self {
+        let detail = error.to_string();
+        match error {
+            ContainerEngineError::InvalidConfiguration(_) => Self::policy(detail),
+            ContainerEngineError::Unavailable(_) => Self::retryable(detail),
+            ContainerEngineError::CommandFailed(_) | ContainerEngineError::Internal(_) => {
+                Self::terminal(detail)
+            }
+            ContainerEngineError::InvalidResponse(_) => Self::integrity(detail),
+        }
+    }
+}
 
 impl From<String> for ContainerEngineError {
     fn from(detail: String) -> Self {

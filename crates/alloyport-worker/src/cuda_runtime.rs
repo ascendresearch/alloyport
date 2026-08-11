@@ -227,7 +227,7 @@ impl CudaExecutionRuntime {
                 },
             )
             .await
-            .map_err(|error| ExecutionRuntimeError::Executor(error.to_string()))?;
+            .map_err(|error| ExecutionRuntimeError::Backend(error.into()))?;
         if !execution.live_output_streaming {
             append_output(
                 &self.worker_id,

@@ -5,6 +5,7 @@ pub mod artifact_download;
 pub mod artifact_input;
 pub mod artifact_upload;
 mod attempt_coordinator;
+mod backend_error;
 mod control_session;
 pub mod cuda;
 pub mod cuda_docker;
@@ -27,7 +28,8 @@ use artifact_input::ArtifactInputProvider;
 use cuda::CUDA_FIXTURE_FEATURE;
 use cuda_runtime::CudaExecutionRuntime;
 use execution_backend::{
-    CudaExecutionBackend, ExecutionBackend, ExecutionBackendRegistry, FakeExecutionBackend,
+    BackendError, CudaExecutionBackend, ExecutionBackend, ExecutionBackendRegistry,
+    FakeExecutionBackend,
 };
 use executor::{
     ArtifactPublicationError, ArtifactPublisher, CancellationToken, ExecutionObservation,
@@ -67,6 +69,7 @@ pub enum WorkerError {
     Transport(tonic::transport::Error),
     Rpc(tonic::Status),
     ArtifactPublication(ArtifactPublicationError),
+    Backend(BackendError),
     Execution(String),
     Protocol(String),
     StreamClosed,
@@ -92,6 +95,7 @@ impl Display for WorkerError {
             Self::ArtifactPublication(error) => {
                 write!(formatter, "worker Artifact publication failed: {error}")
             }
+            Self::Backend(error) => Display::fmt(error, formatter),
             Self::Execution(detail) => write!(formatter, "worker execution failed: {detail}"),
             Self::Protocol(detail) => write!(formatter, "worker protocol error: {detail}"),
             Self::StreamClosed => write!(formatter, "worker control stream closed"),
@@ -108,6 +112,7 @@ impl Error for WorkerError {
             Self::AttemptStore(error) => Some(error),
             Self::PersistenceTask(error) => Some(error),
             Self::ArtifactPublication(error) => Some(error),
+            Self::Backend(error) => Some(error),
             Self::ConflictingAttempt(_)
             | Self::PolicyViolation(_)
             | Self::Execution(_)
@@ -238,7 +243,7 @@ enum ExecutionUpdate {
     },
     Completed {
         attempt_id: String,
-        result: Result<(), String>,
+        result: Result<(), BackendError>,
     },
 }
 

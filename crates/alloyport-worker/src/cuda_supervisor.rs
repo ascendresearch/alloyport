@@ -10,6 +10,7 @@ pub use engine::{
 };
 use outcome::{Termination, classify, enforce_output_limit};
 
+use crate::backend_error::BackendError;
 use crate::cuda::{CudaContractError, CudaFixturePolicy, DockerCreatePlan};
 use crate::executor::{CancellationToken, ExecutorResult};
 use crate::journal::StoredAssignment;
@@ -318,6 +319,28 @@ impl std::error::Error for CudaSupervisorError {
             Self::Contract(error) => Some(error),
             Self::Engine(error) => Some(error),
             Self::Invariant(_) | Self::ImageMismatch { .. } | Self::IdentityConflict(_) => None,
+        }
+    }
+}
+
+impl From<CudaSupervisorError> for BackendError {
+    fn from(error: CudaSupervisorError) -> Self {
+        let detail = error.to_string();
+        match error {
+            CudaSupervisorError::Contract(error) => match error {
+                CudaContractError::InvalidPolicy(_) | CudaContractError::Assignment(_) => {
+                    Self::policy(detail)
+                }
+                CudaContractError::Digest(_)
+                | CudaContractError::Artifact(_)
+                | CudaContractError::Bundle(_)
+                | CudaContractError::Json(_) => Self::integrity(detail),
+                CudaContractError::Io(_) => Self::retryable(detail),
+            },
+            CudaSupervisorError::Engine(error) => Self::from(error),
+            CudaSupervisorError::Invariant(_) => Self::terminal(detail),
+            CudaSupervisorError::ImageMismatch { .. }
+            | CudaSupervisorError::IdentityConflict(_) => Self::integrity(detail),
         }
     }
 }

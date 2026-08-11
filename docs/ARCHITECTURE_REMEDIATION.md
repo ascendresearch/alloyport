@@ -131,8 +131,10 @@ Implemented in the first R4 slice:
 - Fake and CUDA are built-in adapters behind the same port, and a probe backend test demonstrates
   that adding an implementation does not edit the control-session or attempt state machine.
 
-The remaining R4 follow-up is to refine all backend failures into explicit retryable, terminal,
-policy, and integrity categories; Artifact input failures now already preserve these broad classes.
+R4 error refinement is complete: every backend execution and cleanup future returns the stable
+`BackendError` vocabulary with retryable, terminal, policy, and integrity categories. Built-in
+Artifact, journal/runtime, CUDA contract, and container-engine failures map at their owning boundary,
+and coordination retains the category rather than flattening it into text.
 
 ### R5 — Split oversized coordinators by use case (P1)
 
@@ -297,7 +299,7 @@ directories (including their migration and adapter-test files).
   lines, clock policy is 50 lines, transport-independent records/lifecycle values are 236 lines,
   and capability-segregated repository ports plus typed errors are 221 lines. CI prevents these
   definitions returning to the compatibility facade.
-- [x] Worker outbound coordinator split by use case: `lib.rs` is 442 lines (down from 1,838), with
+- [x] Worker outbound coordinator split by use case: `lib.rs` is 441 lines (down from 1,838), with
   local admission/journal state (356), control-session framing (289), attempt admission/cancellation
   (238), execution task/update coordination (204), durable/ephemeral delivery and terminal Artifact
   publication (90), wire/journal mapping (188), and tests (340) isolated in cohesive modules. CI
@@ -305,6 +307,11 @@ directories (including their migration and adapter-test files).
 - [x] First R4 execution-backend slice: closed Fake/CUDA dispatch replaced by an executor-kind
   registry and public `ExecutionBackend` composition port, including duplicate-capability and
   third-party probe-backend coverage.
+- [x] R4 backend-error completion: the public backend execution/cleanup futures return the 213-line
+  `BackendError` policy module's retryable, terminal, policy, and integrity categories. The 232-line
+  registry/adapters map internal runtime failures at the plugin boundary; completion updates and
+  `WorkerError` retain the typed value with attempt context. CI rejects `String` or
+  `ExecutionRuntimeError` returning to the backend port or coordination update.
 - [x] First R3 shared-domain slices: `alloyport_core::{ExecutionKind, NetworkPolicy,
   AttemptOutcome, RejectionReason}` replace raw integers in both server and worker durable contracts
   and are used by backend registration, application policy, fake/CUDA runtime classification, and
@@ -349,8 +356,8 @@ directories (including their migration and adapter-test files).
   implementations; `with_repository_ports`, `with_repository`, and `with_repositories` retain the
   broader compatibility paths. All capability traits carry their own `Debug + Send + Sync` object
   guarantees, and CI rejects broad repository access returning to application modules.
-- [x] Worker executor responsibilities split: the durable fake execution coordinator is 501 lines
-  (down from a 1,395-line mixed module), the shared local-spool/remote-publication boundary is 113
+- [x] Worker executor responsibilities split: the durable fake execution coordinator is 508 lines
+  (down from a 1,395-line mixed module), the shared local-spool/remote-publication boundary is 126
   lines, canonical event projection is 56 lines, and deterministic fake process behavior is 344
   lines. Its behavioral suite remains isolated from production code, and existing `executor::*`
   imports stay source-compatible through explicit re-exports.
@@ -363,7 +370,7 @@ directories (including their migration and adapter-test files).
   schema module.
 - [x] Repository-wide production module size gate reached: tests were separated from CUDA Docker,
   CUDA supervisor/runtime, Artifact CAS, and event reducer modules. The largest production Rust
-  module is now 501 lines; no production module exceeds the 800-line review threshold.
+  module is now 573 lines; no production module exceeds the 800-line review threshold.
 - [x] First R6 async-persistence slice: worker control and execution paths use an immutable shared
   state handle and route journal operations through a four-permit bounded blocking adapter. No
   SQLite-backed journal call runs while holding a Tokio state mutex; a slow-operation concurrency
@@ -401,7 +408,7 @@ directories (including their migration and adapter-test files).
   internal configuration failures. Runtime and terminal-replay paths preserve that typed boundary.
 - [x] Worker R7 typed container-engine errors: `CudaContainerEngine` distinguishes invalid local
   configuration, engine unavailability, failed commands, invalid responses, and internal adapter
-  failures. Its 157-line engine port/value module is physically separate from the 327-line durable
+  failures. Its 172-line engine port/value module is physically separate from the 350-line durable
   reconciliation state machine and the 96-line pure output-budget/terminal-outcome policy. CI
   rejects both a return to `String` errors and these responsibilities being merged back together.
 - [x] Docker adapter responsibilities split three ways: the 367-line engine adapter owns container

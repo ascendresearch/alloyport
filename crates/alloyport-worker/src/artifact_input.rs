@@ -1,5 +1,6 @@
 //! Assignment-input materialization port and implementation-independent error categories.
 
+use crate::backend_error::BackendError;
 use crate::journal::StoredArtifact;
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -39,3 +40,15 @@ impl Display for ArtifactInputError {
 }
 
 impl Error for ArtifactInputError {}
+
+impl From<ArtifactInputError> for BackendError {
+    fn from(error: ArtifactInputError) -> Self {
+        let detail = error.to_string();
+        match error {
+            ArtifactInputError::Unavailable(_) => Self::retryable(detail),
+            ArtifactInputError::Invalid(_) | ArtifactInputError::Policy(_) => Self::policy(detail),
+            ArtifactInputError::Integrity(_) => Self::integrity(detail),
+            ArtifactInputError::Internal(_) => Self::terminal(detail),
+        }
+    }
+}

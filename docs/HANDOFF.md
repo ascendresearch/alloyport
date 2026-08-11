@@ -383,6 +383,10 @@ schema/connection composition shell; lifecycle transitions enqueue authoritative
 same transaction.
 Assignment admission/cancellation, execution task/update coordination, and durable/ephemeral frame
 delivery plus terminal Artifact publication are separate application modules.
+The public `ExecutionBackend` execution and cleanup futures return `BackendError`, whose retryable,
+terminal, policy, and integrity variants survive the completion-update path into `WorkerError`.
+Artifact input/publication, journal/runtime, CUDA contract, and container-engine adapters classify
+their own failures; callers do not parse backend error text or receive `ExecutionRuntimeError`.
 
 Current behavior:
 

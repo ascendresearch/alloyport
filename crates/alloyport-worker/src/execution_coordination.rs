@@ -1,7 +1,9 @@
 //! Execution task registration and live update coordination for admitted attempts.
 
 use super::{ExecutionUpdate, OutboundWorker, WorkerError, WorkerState};
-use crate::execution_backend::{BackendExecutionRequest, ExecutionBackend, ExecutionObserver};
+use crate::execution_backend::{
+    BackendError, BackendExecutionRequest, ExecutionBackend, ExecutionObserver,
+};
 use crate::executor::{
     ArtifactPublisher, CancellationToken, ExecutionObservation, ExecutionStream,
 };
@@ -61,8 +63,7 @@ impl OutboundWorker {
                 &updates,
             )
             .await
-            .map(|_| ())
-            .map_err(|error| error.to_string());
+            .map(|_| ());
             integration.active.lock().await.remove(&attempt_id);
             let _ = updates.send(ExecutionUpdate::Completed { attempt_id, result });
         });
@@ -116,8 +117,8 @@ impl OutboundWorker {
                 .await
             }
             ExecutionUpdate::Completed { attempt_id, result } => {
-                result.map_err(|detail| {
-                    WorkerError::Execution(format!("attempt {attempt_id}: {detail}"))
+                result.map_err(|error| {
+                    WorkerError::Backend(error.with_context(format_args!("attempt {attempt_id}")))
                 })?;
                 self.send_pending_outbox(
                     connection_id,
@@ -179,7 +180,7 @@ async fn run_registered_execution(
     input_provider: Option<&dyn crate::artifact_input::ArtifactInputProvider>,
     publisher: Option<&dyn ArtifactPublisher>,
     updates: &broadcast::Sender<ExecutionUpdate>,
-) -> Result<crate::executor::ExecutionRun, crate::executor::ExecutionRuntimeError> {
+) -> Result<crate::executor::ExecutionRun, BackendError> {
     let observed_attempt_id = attempt_id.to_owned();
     let observed_updates = updates.clone();
     let observer: ExecutionObserver = Arc::new(move |observation| {

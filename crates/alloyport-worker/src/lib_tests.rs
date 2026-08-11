@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::execution_backend::{
-    BackendExecutionFuture, BackendExecutionRequest, ExecutionBackend, ExecutionKind,
+    BackendError, BackendExecutionFuture, BackendExecutionRequest, ExecutionBackend, ExecutionKind,
 };
 use crate::journal::{LocalAttemptPhase, StoredArtifact};
 use alloyport_core::AttemptOutcome;
@@ -93,11 +93,7 @@ impl ExecutionBackend for ProbeBackend {
     }
 
     fn execute<'a>(&'a self, _request: BackendExecutionRequest<'a>) -> BackendExecutionFuture<'a> {
-        Box::pin(async {
-            Err(executor::ExecutionRuntimeError::Executor(
-                "probe backend must not execute in registration tests".into(),
-            ))
-        })
+        Box::pin(async { Err(BackendError::terminal("probe backend must not execute")) })
     }
 }
 

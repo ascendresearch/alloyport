@@ -2,6 +2,7 @@
 
 use crate::WorkerState;
 use crate::artifact_input::ArtifactInputProvider;
+pub use crate::backend_error::{BackendError, BackendFailureClass};
 use crate::cuda_runtime::CudaExecutionRuntime;
 use crate::executor::{
     ArtifactPublisher, CancellationToken, ExecutionObservation, ExecutionRun,
@@ -19,11 +20,11 @@ pub type ExecutionObserver = Arc<dyn Fn(ExecutionObservation) + Send + Sync>;
 
 /// Future returned by an execution backend.
 pub type BackendExecutionFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<ExecutionRun, ExecutionRuntimeError>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<ExecutionRun, BackendError>> + Send + 'a>>;
 
 /// Future returned by a backend's restart cleanup hook.
 pub type BackendCleanupFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<(), ExecutionRuntimeError>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
 
 /// Services and durable state supplied to one backend execution.
 pub struct BackendExecutionRequest<'a> {
@@ -133,7 +134,7 @@ impl ExecutionBackend for FakeExecutionBackend {
     fn execute<'a>(&'a self, request: BackendExecutionRequest<'a>) -> BackendExecutionFuture<'a> {
         Box::pin(async move {
             let observer = request.observer;
-            if let Some(publisher) = request.publisher {
+            let result = if let Some(publisher) = request.publisher {
                 self.runtime
                     .run_observed_and_publish(
                         request.state,
@@ -154,7 +155,8 @@ impl ExecutionBackend for FakeExecutionBackend {
                         move |observation| observer(observation),
                     )
                     .await
-            }
+            };
+            result.map_err(BackendError::from)
         })
     }
 }
@@ -190,7 +192,7 @@ impl ExecutionBackend for CudaExecutionBackend {
                     .await?;
             }
             let observer = request.observer;
-            if let Some(publisher) = request.publisher {
+            let result = if let Some(publisher) = request.publisher {
                 self.runtime
                     .run_observed_and_publish(
                         request.state,
@@ -209,7 +211,8 @@ impl ExecutionBackend for CudaExecutionBackend {
                         move |observation| observer(observation),
                     )
                     .await
-            }
+            };
+            result.map_err(BackendError::from)
         })
     }
 
@@ -223,6 +226,7 @@ impl ExecutionBackend for CudaExecutionBackend {
                 .run(state, attempt_id, &CancellationToken::new())
                 .await
                 .map(|_| ())
+                .map_err(BackendError::from)
         })
     }
 }

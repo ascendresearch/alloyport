@@ -13,6 +13,7 @@ pub(crate) use artifact_coordination::{
 pub(crate) use event_projection::{event_artifact, output_event, producer_event};
 
 use crate::artifact_input::ArtifactInputError;
+use crate::backend_error::BackendError;
 use crate::journal::{LocalAttemptPhase, StoredArtifact, StoredFinished};
 use crate::{WorkerError, WorkerState};
 use alloyport_artifacts::{ArtifactStore, ArtifactStoreError};
@@ -36,7 +37,7 @@ pub enum ExecutionRuntimeError {
     Artifact(ArtifactStoreError),
     ArtifactInput(ArtifactInputError),
     Serialization(serde_json::Error),
-    Executor(String),
+    Backend(BackendError),
     ArtifactPublication(ArtifactPublicationError),
     CleanupAfterCommit(String),
     InvalidConfiguration(&'static str),
@@ -53,7 +54,7 @@ impl Display for ExecutionRuntimeError {
             Self::Artifact(error) => Display::fmt(error, formatter),
             Self::ArtifactInput(error) => Display::fmt(error, formatter),
             Self::Serialization(error) => Display::fmt(error, formatter),
-            Self::Executor(detail) => write!(formatter, "executor failed: {detail}"),
+            Self::Backend(error) => Display::fmt(error, formatter),
             Self::ArtifactPublication(error) => {
                 write!(formatter, "execution Artifact publication failed: {error}")
             }
@@ -87,8 +88,8 @@ impl Error for ExecutionRuntimeError {
             Self::Serialization(error) => Some(error),
             Self::TaskJoin(error) => Some(error),
             Self::ArtifactPublication(error) => Some(error),
+            Self::Backend(error) => Some(error),
             Self::CleanupAfterCommit(_)
-            | Self::Executor(_)
             | Self::AttemptAlreadyRunning(_)
             | Self::InvalidConfiguration(_)
             | Self::MissingAttempt(_)
@@ -124,6 +125,12 @@ impl From<ArtifactPublicationError> for ExecutionRuntimeError {
 impl From<serde_json::Error> for ExecutionRuntimeError {
     fn from(error: serde_json::Error) -> Self {
         Self::Serialization(error)
+    }
+}
+
+impl From<BackendError> for ExecutionRuntimeError {
+    fn from(error: BackendError) -> Self {
+        Self::Backend(error)
     }
 }
 
