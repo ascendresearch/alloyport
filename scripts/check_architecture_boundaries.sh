@@ -27,6 +27,7 @@ server_application_files=(
 worker_application_files=(
     crates/alloyport-worker/src/artifact_download.rs
     crates/alloyport-worker/src/artifact_upload.rs
+    crates/alloyport-worker/src/cuda.rs
     crates/alloyport-worker/src/cuda_runtime.rs
     crates/alloyport-worker/src/cuda_supervisor.rs
     crates/alloyport-worker/src/executor.rs

@@ -309,6 +309,8 @@ directories (including their migration and adapter-test files).
   input download, and remote output publication depend on `ArtifactStore`. The filesystem CAS is
   selected only by the worker binary and test fixtures; CI prevents concrete CAS dependencies from
   returning to these application modules.
+- [x] CUDA contract tests moved out of the production module: `cuda.rs` is approximately 480 lines
+  rather than 678, and the module is now included in the concrete-Artifact-adapter CI guard.
 - [x] Worker R7 typed publication errors: `ArtifactPublisher` exposes stable failure categories;
   the remote gRPC adapter classifies local integrity, transient transport/RPC, remote rejection, and
   internal configuration failures. Runtime and terminal-replay paths preserve that typed boundary.
