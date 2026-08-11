@@ -5,6 +5,8 @@ use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+use crate::storage::RepositoryError;
+
 const MAX_BLOCKING_PERSISTENCE_OPERATIONS: usize = 8;
 
 #[derive(Clone, Debug)]
@@ -60,5 +62,11 @@ impl Error for PersistenceTaskError {
             Self::Closed => None,
             Self::Join(error) => Some(error),
         }
+    }
+}
+
+impl From<PersistenceTaskError> for RepositoryError {
+    fn from(error: PersistenceTaskError) -> Self {
+        Self::Storage(Box::new(error))
     }
 }

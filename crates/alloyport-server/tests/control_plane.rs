@@ -680,6 +680,12 @@ async fn fake_execution_resumes_artifact_uploads_before_controller_accepts_termi
         service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Finished)
     })
     .await?;
+    wait_until(|| async {
+        service
+            .interaction_events("task-1")
+            .is_ok_and(|events| events.len() == 7)
+    })
+    .await?;
     let finished = worker_state
         .finished_attempt("attempt-1")?
         .expect("terminal state is committed only after all remote finalizations");

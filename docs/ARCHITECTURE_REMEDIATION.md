@@ -287,6 +287,10 @@ directories (including their migration and adapter-test files).
   Connection-state snapshots are released before repository work, while a dedicated delivery
   coordinator preserves outbound sequence allocation; slow persistence cannot occupy network
   executor threads.
+- [x] Server R6 lifecycle slice: worker registration/disconnection, lease reaping, assignment
+  enqueue/reassignment/cancellation, and abandoned-preparation reconciliation use the same bounded
+  persistence boundary. Multi-store preparation remains one blocking-domain operation so Artifact
+  grants, interaction projection, retry deferral, and dispatchability preserve their ordering.
 - [x] SQL-location architecture check has no legacy allowlist entries.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.

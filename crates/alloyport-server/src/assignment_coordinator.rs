@@ -17,9 +17,12 @@ impl WorkerControlService {
     pub async fn reconcile_preparing_assignments(
         &self,
     ) -> Result<PreparationReconciliationReport, RepositoryError> {
+        let repository = self.repository.clone();
         let assignments = self
-            .repository
-            .preparing_assignments(PREPARATION_RECONCILE_BATCH_SIZE)?;
+            .persistence
+            .run(move || repository.preparing_assignments(PREPARATION_RECONCILE_BATCH_SIZE))
+            .await
+            .map_err(RepositoryError::from)??;
         let mut report = PreparationReconciliationReport {
             scanned: assignments.len(),
             ..PreparationReconciliationReport::default()
@@ -27,39 +30,54 @@ impl WorkerControlService {
         for assignment in assignments {
             let attempt_id = assignment.contract.attempt_id.clone();
             let now_ms = self.clock.now_unix_ms();
-            if let Err(error) = self.grant_cuda_assignment_input(
-                &assignment.worker_id,
-                &assignment.contract,
-                now_ms,
-            ) {
-                self.repository.defer_assignment_preparation(
-                    &assignment.contract.attempt_id,
-                    &assignment.worker_id,
-                    now_ms,
-                )?;
-                report.failures.push(PreparationReconciliationFailure {
-                    attempt_id,
-                    detail: error.to_string(),
-                });
-                continue;
-            }
-            if let Err(error) = self.record_run_started(&assignment.contract, now_ms) {
-                self.repository.defer_assignment_preparation(
-                    &assignment.contract.attempt_id,
-                    &assignment.worker_id,
-                    now_ms,
-                )?;
-                report.failures.push(PreparationReconciliationFailure {
-                    attempt_id,
-                    detail: error.to_string(),
-                });
-                continue;
-            }
-            if !self.repository.mark_assignment_dispatchable(
-                &assignment.contract.attempt_id,
-                &assignment.worker_id,
-                now_ms,
-            )? {
+            let service = self.clone();
+            let persisted_assignment = assignment.clone();
+            let preparation = self
+                .persistence
+                .run(move || {
+                    if let Err(error) = service.grant_cuda_assignment_input(
+                        &persisted_assignment.worker_id,
+                        &persisted_assignment.contract,
+                        now_ms,
+                    ) {
+                        service.repository.defer_assignment_preparation(
+                            &persisted_assignment.contract.attempt_id,
+                            &persisted_assignment.worker_id,
+                            now_ms,
+                        )?;
+                        return Ok::<_, RepositoryError>(Err(error.to_string()));
+                    }
+                    if let Err(error) =
+                        service.record_run_started(&persisted_assignment.contract, now_ms)
+                    {
+                        service.repository.defer_assignment_preparation(
+                            &persisted_assignment.contract.attempt_id,
+                            &persisted_assignment.worker_id,
+                            now_ms,
+                        )?;
+                        return Ok(Err(error.to_string()));
+                    }
+                    service
+                        .repository
+                        .mark_assignment_dispatchable(
+                            &persisted_assignment.contract.attempt_id,
+                            &persisted_assignment.worker_id,
+                            now_ms,
+                        )
+                        .map(Ok)
+                })
+                .await
+                .map_err(RepositoryError::from)??;
+            let became_dispatchable = match preparation {
+                Ok(became_dispatchable) => became_dispatchable,
+                Err(detail) => {
+                    report
+                        .failures
+                        .push(PreparationReconciliationFailure { attempt_id, detail });
+                    continue;
+                }
+            };
+            if !became_dispatchable {
                 continue;
             }
             report.recovered += 1;
@@ -95,7 +113,12 @@ impl WorkerControlService {
     pub async fn reconcile_preparing_assignments_at_startup(
         &self,
     ) -> Result<PreparationReconciliationReport, RepositoryError> {
-        let count = self.repository.preparing_assignment_count()?;
+        let repository = self.repository.clone();
+        let count = self
+            .persistence
+            .run(move || repository.preparing_assignment_count())
+            .await
+            .map_err(RepositoryError::from)??;
         let passes = count.div_ceil(PREPARATION_RECONCILE_BATCH_SIZE);
         let mut aggregate = PreparationReconciliationReport::default();
         for _ in 0..passes {
@@ -143,16 +166,32 @@ impl WorkerControlService {
         let worker_id = worker_id.into();
         let contract = assignment_to_contract(&assignment);
         let now_ms = self.clock.now_unix_ms();
-        let stored = self
-            .repository
-            .store_assignment(&worker_id, &contract, now_ms)?;
-        self.grant_cuda_assignment_input(&worker_id, &contract, now_ms)?;
-        self.record_run_started(&contract, now_ms)?;
-        let became_dispatchable = self.repository.mark_assignment_dispatchable(
-            &contract.attempt_id,
-            &worker_id,
-            self.clock.now_unix_ms(),
-        )?;
+        let service = self.clone();
+        let prepared_worker_id = worker_id.clone();
+        let prepared_contract = contract.clone();
+        let (stored, became_dispatchable) = self
+            .persistence
+            .run(move || {
+                let stored = service.repository.store_assignment(
+                    &prepared_worker_id,
+                    &prepared_contract,
+                    now_ms,
+                )?;
+                service.grant_cuda_assignment_input(
+                    &prepared_worker_id,
+                    &prepared_contract,
+                    now_ms,
+                )?;
+                service.record_run_started(&prepared_contract, now_ms)?;
+                let became_dispatchable = service.repository.mark_assignment_dispatchable(
+                    &prepared_contract.attempt_id,
+                    &prepared_worker_id,
+                    service.clock.now_unix_ms(),
+                )?;
+                Ok::<_, EnqueueError>((stored, became_dispatchable))
+            })
+            .await
+            .map_err(RepositoryError::from)??;
         if stored == StoreAssignmentOutcome::Duplicate && !became_dispatchable {
             return Ok(EnqueueOutcome::Duplicate);
         }
@@ -184,11 +223,14 @@ impl WorkerControlService {
         assignment: Assignment,
     ) -> Result<EnqueueOutcome, EnqueueError> {
         validate_assignment(&assignment)?;
-        self.interactions.grant_run_access(
-            &assignment.task_id,
-            owner_id,
-            self.clock.now_unix_ms(),
-        )?;
+        let interactions = self.interactions.clone();
+        let run_id = assignment.task_id.clone();
+        let owner_id = owner_id.to_owned();
+        let now_ms = self.clock.now_unix_ms();
+        self.persistence
+            .run(move || interactions.grant_run_access(&run_id, &owner_id, now_ms))
+            .await
+            .map_err(RepositoryError::from)??;
         self.enqueue_assignment(worker_id, assignment).await
     }
 
@@ -238,24 +280,38 @@ impl WorkerControlService {
     ) -> Result<EnqueueOutcome, EnqueueError> {
         let replacement_worker_id = replacement_worker_id.into();
         let replacement_attempt_id = replacement_attempt_id.into();
-        let reassignment = self.repository.reassign_expired(
-            expired_attempt_id,
-            &replacement_worker_id,
-            &replacement_attempt_id,
-            self.clock.now_unix_ms(),
-        )?;
-        validate_assignment(&contract_to_assignment(&reassignment.assignment.contract))?;
-        self.grant_cuda_assignment_input(
-            &replacement_worker_id,
-            &reassignment.assignment.contract,
-            self.clock.now_unix_ms(),
-        )?;
-        self.record_run_started(&reassignment.assignment.contract, self.clock.now_unix_ms())?;
-        let became_dispatchable = self.repository.mark_assignment_dispatchable(
-            &replacement_attempt_id,
-            &replacement_worker_id,
-            self.clock.now_unix_ms(),
-        )?;
+        let service = self.clone();
+        let expired_attempt_id = expired_attempt_id.to_owned();
+        let prepared_worker_id = replacement_worker_id.clone();
+        let prepared_attempt_id = replacement_attempt_id.clone();
+        let (reassignment, became_dispatchable) = self
+            .persistence
+            .run(move || {
+                let reassignment = service.repository.reassign_expired(
+                    &expired_attempt_id,
+                    &prepared_worker_id,
+                    &prepared_attempt_id,
+                    service.clock.now_unix_ms(),
+                )?;
+                validate_assignment(&contract_to_assignment(&reassignment.assignment.contract))?;
+                service.grant_cuda_assignment_input(
+                    &prepared_worker_id,
+                    &reassignment.assignment.contract,
+                    service.clock.now_unix_ms(),
+                )?;
+                service.record_run_started(
+                    &reassignment.assignment.contract,
+                    service.clock.now_unix_ms(),
+                )?;
+                let became_dispatchable = service.repository.mark_assignment_dispatchable(
+                    &prepared_attempt_id,
+                    &prepared_worker_id,
+                    service.clock.now_unix_ms(),
+                )?;
+                Ok::<_, EnqueueError>((reassignment, became_dispatchable))
+            })
+            .await
+            .map_err(RepositoryError::from)??;
         if reassignment.outcome == StoreAssignmentOutcome::Duplicate && !became_dispatchable {
             return Ok(EnqueueOutcome::Duplicate);
         }
@@ -328,9 +384,17 @@ impl WorkerControlService {
         reason: impl Into<String>,
     ) -> Result<CancelOutcome, RepositoryError> {
         let reason = reason.into();
-        let cancellation =
-            self.repository
-                .request_cancellation(attempt_id, &reason, self.clock.now_unix_ms())?;
+        let repository = self.repository.clone();
+        let persisted_attempt_id = attempt_id.to_owned();
+        let persisted_reason = reason.clone();
+        let now_ms = self.clock.now_unix_ms();
+        let cancellation = self
+            .persistence
+            .run(move || {
+                repository.request_cancellation(&persisted_attempt_id, &persisted_reason, now_ms)
+            })
+            .await
+            .map_err(RepositoryError::from)??;
         match cancellation.outcome {
             CancellationStoreOutcome::CancelledBeforeSend => {
                 return Ok(CancelOutcome::CancelledBeforeSend);

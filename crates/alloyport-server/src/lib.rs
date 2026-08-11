@@ -373,7 +373,12 @@ impl WorkerControlService {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            self.expire_leases()?;
+            let repository = self.repository.clone();
+            let now_ms = self.clock.now_unix_ms();
+            self.persistence
+                .run(move || repository.expire_leases(now_ms))
+                .await
+                .map_err(RepositoryError::from)??;
         }
     }
 
@@ -396,18 +401,26 @@ impl WorkerControlService {
         let worker_id = hello.worker_id.clone();
         let negotiated_protocol_minor = hello.protocol_minor.min(PROTOCOL_MINOR);
         let now_ms = self.clock.now_unix_ms();
-        self.repository.expire_leases(now_ms)?;
-        self.repository
-            .prune_orphaned_server_frames(now_ms.saturating_sub(OUTBOX_ORPHAN_RETENTION_MS))?;
-        self.repository.register_worker(
-            &hello_to_registration(&hello),
-            &ConnectionRegistration {
-                connection_id: connection_id.clone(),
-                worker_id: worker_id.clone(),
-                instance_id: hello.instance_id.clone(),
-                connected_at_ms: now_ms,
-            },
-        )?;
+        let repository = self.repository.clone();
+        let registration = hello_to_registration(&hello);
+        let connection = ConnectionRegistration {
+            connection_id: connection_id.clone(),
+            worker_id: worker_id.clone(),
+            instance_id: hello.instance_id.clone(),
+            connected_at_ms: now_ms,
+        };
+        let pending = self
+            .persistence
+            .run(move || {
+                repository.expire_leases(now_ms)?;
+                repository.prune_orphaned_server_frames(
+                    now_ms.saturating_sub(OUTBOX_ORPHAN_RETENTION_MS),
+                )?;
+                repository.register_worker(&registration, &connection)?;
+                repository.replayable_assignments(&registration.worker_id)
+            })
+            .await
+            .map_err(RepositoryError::from)??;
 
         {
             let mut state = self.state.lock().await;
@@ -437,7 +450,6 @@ impl WorkerControlService {
                 attempt_lease_ms: ATTEMPT_LEASE_MS,
             })),
         }];
-        let pending = self.repository.replayable_assignments(&worker_id)?;
         for assignment in pending {
             let cancellation_reason = assignment.cancellation_reason.clone();
             if let Some((_, message)) = self
@@ -458,9 +470,13 @@ impl WorkerControlService {
     }
 
     async fn disconnect(&self, worker_id: &str, connection_id: &str) {
+        let repository = self.repository.clone();
+        let persisted_connection_id = connection_id.to_owned();
+        let now_ms = self.clock.now_unix_ms();
         let _ = self
-            .repository
-            .disconnect(connection_id, self.clock.now_unix_ms());
+            .persistence
+            .run(move || repository.disconnect(&persisted_connection_id, now_ms))
+            .await;
         let mut state = self.state.lock().await;
         if let Some(worker) = state.workers.get_mut(worker_id)
             && worker.connection_id == connection_id
