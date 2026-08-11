@@ -15,7 +15,9 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
+use std::future::Future;
 use std::io::Cursor;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -365,6 +367,7 @@ pub enum ExecutionRuntimeError {
     Worker(WorkerError),
     Artifact(ArtifactStoreError),
     Serialization(serde_json::Error),
+    ArtifactPublication(String),
     InvalidConfiguration(&'static str),
     AttemptAlreadyRunning(String),
     MissingAttempt(String),
@@ -378,6 +381,9 @@ impl Display for ExecutionRuntimeError {
             Self::Worker(error) => Display::fmt(error, formatter),
             Self::Artifact(error) => Display::fmt(error, formatter),
             Self::Serialization(error) => Display::fmt(error, formatter),
+            Self::ArtifactPublication(detail) => {
+                write!(formatter, "execution Artifact publication failed: {detail}")
+            }
             Self::InvalidConfiguration(detail) => {
                 write!(formatter, "invalid fake executor configuration: {detail}")
             }
@@ -400,7 +406,8 @@ impl Error for ExecutionRuntimeError {
             Self::Artifact(error) => Some(error),
             Self::Serialization(error) => Some(error),
             Self::TaskJoin(error) => Some(error),
-            Self::AttemptAlreadyRunning(_)
+            Self::ArtifactPublication(_)
+            | Self::AttemptAlreadyRunning(_)
             | Self::InvalidConfiguration(_)
             | Self::MissingAttempt(_)
             | Self::MissingTerminalData(_) => None,
@@ -440,6 +447,15 @@ pub struct ArtifactReferenceIntent {
     pub kind: ArtifactReferenceKind,
     pub purpose: String,
     pub artifact: StoredArtifact,
+}
+
+/// Publishes worker-local execution artifacts before terminal lifecycle state becomes reportable.
+pub trait ArtifactPublisher: Debug + Send + Sync {
+    /// Publishes every reference intent, idempotently resuming any prior partial publication.
+    fn publish<'a>(
+        &'a self,
+        references: &'a [ArtifactReferenceIntent],
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 }
 
 pub struct FakeExecutionRuntime {
@@ -527,6 +543,51 @@ impl FakeExecutionRuntime {
         attempt_id: &str,
         executor: &FakeExecutor,
         cancellation: &CancellationToken,
+        observer: F,
+    ) -> Result<ExecutionRun, ExecutionRuntimeError>
+    where
+        F: FnMut(ExecutionObservation) + Send,
+    {
+        self.run_inner(state, attempt_id, executor, cancellation, None, observer)
+            .await
+    }
+
+    /// Executes one attempt and publishes its artifacts before the terminal journal commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::run`], plus publication failures reported by the
+    /// configured publisher.
+    pub async fn run_observed_and_publish<F>(
+        &self,
+        state: &WorkerState,
+        attempt_id: &str,
+        executor: &FakeExecutor,
+        cancellation: &CancellationToken,
+        publisher: &dyn ArtifactPublisher,
+        observer: F,
+    ) -> Result<ExecutionRun, ExecutionRuntimeError>
+    where
+        F: FnMut(ExecutionObservation) + Send,
+    {
+        self.run_inner(
+            state,
+            attempt_id,
+            executor,
+            cancellation,
+            Some(publisher),
+            observer,
+        )
+        .await
+    }
+
+    async fn run_inner<F>(
+        &self,
+        state: &WorkerState,
+        attempt_id: &str,
+        executor: &FakeExecutor,
+        cancellation: &CancellationToken,
+        publisher: Option<&dyn ArtifactPublisher>,
         mut observer: F,
     ) -> Result<ExecutionRun, ExecutionRuntimeError>
     where
@@ -541,7 +602,7 @@ impl FakeExecutionRuntime {
                 .finished
                 .ok_or_else(|| ExecutionRuntimeError::MissingTerminalData(attempt_id.into()))?;
             return Ok(ExecutionRun {
-                reference_intents: reference_intents(attempt_id, &finished),
+                reference_intents: terminal_reference_intents(attempt_id, &finished),
                 finished,
                 events: Vec::new(),
                 replayed_terminal: true,
@@ -554,10 +615,17 @@ impl FakeExecutionRuntime {
             .execute_with_events(&input, executor, cancellation, &mut observer)
             .await;
         let persisted = self.persist_result(&input, result).await?;
+        let reference_intents = terminal_reference_intents(attempt_id, &persisted.finished);
+        if let Some(publisher) = publisher {
+            publisher
+                .publish(&reference_intents)
+                .await
+                .map_err(ExecutionRuntimeError::ArtifactPublication)?;
+        }
         state.mark_finished(attempt_id, &persisted.finished)?;
         self.append_terminal_events(&input, &persisted, &mut events);
         Ok(ExecutionRun {
-            reference_intents: reference_intents(attempt_id, &persisted.finished),
+            reference_intents,
             finished: persisted.finished,
             events,
             replayed_terminal: false,
@@ -809,7 +877,10 @@ fn event_artifact(artifact: &StoredArtifact, reference: &str) -> EventArtifactRe
     }
 }
 
-fn reference_intents(attempt_id: &str, finished: &StoredFinished) -> Vec<ArtifactReferenceIntent> {
+pub(crate) fn terminal_reference_intents(
+    attempt_id: &str,
+    finished: &StoredFinished,
+) -> Vec<ArtifactReferenceIntent> {
     let mut references = Vec::new();
     for (artifact, suffix, purpose) in [
         (
@@ -1115,6 +1186,101 @@ mod tests {
             i32::from(AttemptOutcome::Cancelled)
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn artifact_publication_gates_terminal_commit_and_retries_idempotently()
+    -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let state = WorkerState::open_sqlite(
+            AdmissionPolicy::default(),
+            directory.path().join("worker.sqlite3"),
+        )?;
+        state.admit(&assignment())?;
+        let runtime = FakeExecutionRuntime::new(
+            "worker-1",
+            Arc::new(FilesystemArtifactStore::open(
+                directory.path().join("spool"),
+                4_096,
+            )?),
+            1,
+        )?;
+        let executor = FakeExecutor::new(FakeExecutionPlan::successful(vec![FakeStep::Stdout(
+            b"publish me".to_vec(),
+        )]));
+        let failed = runtime
+            .run_observed_and_publish(
+                &state,
+                "attempt-1",
+                &executor,
+                &CancellationToken::new(),
+                &RejectingPublisher,
+                |_| {},
+            )
+            .await;
+        assert!(matches!(
+            failed,
+            Err(ExecutionRuntimeError::ArtifactPublication(detail)) if detail == "unavailable"
+        ));
+        assert!(state.finished_attempt("attempt-1")?.is_none());
+        assert_eq!(state.outbox_len()?, 2);
+
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let retry = runtime
+            .run_observed_and_publish(
+                &state,
+                "attempt-1",
+                &executor,
+                &CancellationToken::new(),
+                &RecordingPublisher(Arc::clone(&published)),
+                |_| {},
+            )
+            .await?;
+        assert_eq!(retry.finished.outcome, i32::from(AttemptOutcome::Succeeded));
+        assert_eq!(state.outbox_len()?, 3);
+        assert_eq!(
+            *published.lock().expect("publication fixture lock"),
+            vec![
+                "output:attempt-1:stdout",
+                "output:attempt-1:stderr",
+                "receipt:attempt-1",
+            ]
+        );
+        Ok(())
+    }
+
+    #[derive(Debug)]
+    struct RejectingPublisher;
+
+    impl ArtifactPublisher for RejectingPublisher {
+        fn publish<'a>(
+            &'a self,
+            _references: &'a [ArtifactReferenceIntent],
+        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+            Box::pin(async { Err("unavailable".into()) })
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingPublisher(Arc<Mutex<Vec<String>>>);
+
+    impl ArtifactPublisher for RecordingPublisher {
+        fn publish<'a>(
+            &'a self,
+            references: &'a [ArtifactReferenceIntent],
+        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .map_err(|_| "publication fixture lock poisoned".to_owned())?
+                    .extend(
+                        references
+                            .iter()
+                            .map(|reference| reference.reference_key.clone()),
+                    );
+                Ok(())
+            })
+        }
     }
 
     async fn execute_plan(

@@ -1,5 +1,6 @@
 //! Outbound worker client and local assignment admission state.
 
+pub mod artifact_upload;
 pub mod executor;
 pub mod journal;
 
@@ -12,7 +13,8 @@ use alloyport_proto::v1::{
 };
 use alloyport_proto::{ValidationError, validate_assignment, validate_worker_hello};
 use executor::{
-    CancellationToken, ExecutionObservation, ExecutionStream, FakeExecutionRuntime, FakeExecutor,
+    ArtifactPublisher, CancellationToken, ExecutionObservation, ExecutionStream,
+    FakeExecutionRuntime, FakeExecutor, terminal_reference_intents,
 };
 use journal::{
     AttemptStore, AttemptStoreError, LocalAttemptPhase, LocalAttemptRecord, SqliteAttemptStore,
@@ -354,6 +356,7 @@ pub struct OutboundWorker {
     hello: WorkerHello,
     state: Arc<Mutex<WorkerState>>,
     execution: Option<Arc<FakeExecutionIntegration>>,
+    artifact_publisher: Option<Arc<dyn ArtifactPublisher>>,
     execution_updates: broadcast::Sender<ExecutionUpdate>,
 }
 
@@ -416,6 +419,7 @@ impl OutboundWorker {
             hello,
             state: Arc::new(Mutex::new(state)),
             execution: None,
+            artifact_publisher: None,
             execution_updates,
         })
     }
@@ -448,6 +452,13 @@ impl OutboundWorker {
         Ok(self)
     }
 
+    /// Requires execution artifacts to be published before terminal journal state is committed.
+    #[must_use]
+    pub fn with_artifact_publisher(mut self, publisher: Arc<dyn ArtifactPublisher>) -> Self {
+        self.artifact_publisher = Some(publisher);
+        self
+    }
+
     #[must_use]
     pub fn state(&self) -> Arc<Mutex<WorkerState>> {
         Arc::clone(&self.state)
@@ -460,6 +471,11 @@ impl OutboundWorker {
     /// Returns [`WorkerError`] on transport, framing, validation or identity failures. A supervisor
     /// may reconnect this same value; its in-process attempt map is retained.
     pub async fn run_session(&self) -> Result<(), WorkerError> {
+        self.publish_pending_terminal_artifacts().await?;
+        self.run_control_session().await
+    }
+
+    async fn run_control_session(&self) -> Result<(), WorkerError> {
         let channel = self.endpoint.clone().connect().await?;
         let mut client = WorkerControlClient::new(channel);
         let (outbound, receiver) = mpsc::channel(64);
@@ -880,27 +896,20 @@ impl OutboundWorker {
         let cancellation_for_task = cancellation.clone();
         let state = self.state.lock().await.clone();
         let integration = Arc::clone(integration);
+        let artifact_publisher = self.artifact_publisher.clone();
         let updates = self.execution_updates.clone();
         tokio::spawn(async move {
-            let observed_attempt_id = attempt_id.clone();
-            let observed_updates = updates.clone();
-            let result = integration
-                .runtime
-                .run_observed(
-                    &state,
-                    &attempt_id,
-                    &integration.executor,
-                    &cancellation_for_task,
-                    move |observation| {
-                        let _ = observed_updates.send(ExecutionUpdate::Observation {
-                            attempt_id: observed_attempt_id.clone(),
-                            observation,
-                        });
-                    },
-                )
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string());
+            let result = run_registered_execution(
+                &integration,
+                &state,
+                &attempt_id,
+                &cancellation_for_task,
+                artifact_publisher.as_deref(),
+                &updates,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string());
             integration.active.lock().await.remove(&attempt_id);
             let _ = updates.send(ExecutionUpdate::Completed { attempt_id, result });
         });
@@ -1027,6 +1036,28 @@ impl OutboundWorker {
             .map_err(|_| WorkerError::StreamClosed)
     }
 
+    async fn publish_pending_terminal_artifacts(&self) -> Result<(), WorkerError> {
+        let Some(publisher) = self.artifact_publisher.as_ref() else {
+            return Ok(());
+        };
+        let pending = self.state.lock().await.pending_outbox()?;
+        for entry in pending {
+            let WorkerOutboxPayload::ExecutionFinished {
+                attempt_id,
+                finished,
+                ..
+            } = entry.payload
+            else {
+                continue;
+            };
+            publisher
+                .publish(&terminal_reference_intents(&attempt_id, &finished))
+                .await
+                .map_err(WorkerError::Execution)?;
+        }
+        Ok(())
+    }
+
     async fn send_pending_outbox(
         &self,
         connection_id: &str,
@@ -1065,6 +1096,48 @@ impl OutboundWorker {
         Ok(self.hello.capabilities.as_ref().map_or(0, |capabilities| {
             capabilities.max_concurrency.saturating_sub(active)
         }))
+    }
+}
+
+async fn run_registered_execution(
+    integration: &FakeExecutionIntegration,
+    state: &WorkerState,
+    attempt_id: &str,
+    cancellation: &CancellationToken,
+    publisher: Option<&dyn ArtifactPublisher>,
+    updates: &broadcast::Sender<ExecutionUpdate>,
+) -> Result<executor::ExecutionRun, executor::ExecutionRuntimeError> {
+    let observed_attempt_id = attempt_id.to_owned();
+    let observed_updates = updates.clone();
+    let observer = move |observation| {
+        let _ = observed_updates.send(ExecutionUpdate::Observation {
+            attempt_id: observed_attempt_id.clone(),
+            observation,
+        });
+    };
+    if let Some(publisher) = publisher {
+        integration
+            .runtime
+            .run_observed_and_publish(
+                state,
+                attempt_id,
+                &integration.executor,
+                cancellation,
+                publisher,
+                observer,
+            )
+            .await
+    } else {
+        integration
+            .runtime
+            .run_observed(
+                state,
+                attempt_id,
+                &integration.executor,
+                cancellation,
+                observer,
+            )
+            .await
     }
 }
 
@@ -1393,10 +1466,89 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let database = directory.path().join("worker.sqlite3");
         let endpoint = Endpoint::from_static("http://127.0.0.1:50051");
-        let first = WorkerHello {
+        let first = worker_hello("worker-1");
+        OutboundWorker::open_sqlite(endpoint.clone(), first.clone(), &database)?;
+        let mut changed = first;
+        changed.worker_id = "worker-2".to_owned();
+        assert!(matches!(
+            OutboundWorker::open_sqlite(endpoint, changed, &database),
+            Err(WorkerError::AttemptStore(
+                AttemptStoreError::WorkerIdentityMismatch { .. }
+            ))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pending_legacy_terminal_is_published_before_control_replay()
+    -> Result<(), Box<dyn Error>> {
+        let state = WorkerState::default();
+        state.admit(&assignment("true"))?;
+        let artifact = StoredArtifact {
+            digest: format!("sha256:{}", "c".repeat(64)),
+            size_bytes: 1,
+            media_type: "application/octet-stream".into(),
+        };
+        state.mark_finished(
+            "attempt-1",
+            &StoredFinished {
+                outcome: AttemptOutcome::Succeeded.into(),
+                exit_code: Some(0),
+                elapsed_ms: 1,
+                receipt: Some(artifact.clone()),
+                stdout: Some(artifact.clone()),
+                stderr: Some(artifact),
+                detail: "legacy local terminal".into(),
+            },
+        )?;
+        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let worker = OutboundWorker::with_state(
+            Endpoint::from_static("http://127.0.0.1:50051"),
+            worker_hello("worker-1"),
+            state,
+        )?
+        .with_artifact_publisher(Arc::new(RecordingTerminalPublisher(Arc::clone(&recorded))));
+
+        worker.publish_pending_terminal_artifacts().await?;
+        assert_eq!(
+            *recorded.lock().expect("terminal publisher fixture lock"),
+            vec![
+                "output:attempt-1:stdout",
+                "output:attempt-1:stderr",
+                "receipt:attempt-1",
+            ]
+        );
+        Ok(())
+    }
+
+    #[derive(Debug)]
+    struct RecordingTerminalPublisher(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl ArtifactPublisher for RecordingTerminalPublisher {
+        fn publish<'a>(
+            &'a self,
+            references: &'a [executor::ArtifactReferenceIntent],
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .map_err(|_| "terminal publisher fixture lock poisoned".to_owned())?
+                    .extend(
+                        references
+                            .iter()
+                            .map(|reference| reference.reference_key.clone()),
+                    );
+                Ok(())
+            })
+        }
+    }
+
+    fn worker_hello(worker_id: &str) -> WorkerHello {
+        WorkerHello {
             protocol_major: alloyport_proto::PROTOCOL_MAJOR,
             protocol_minor: alloyport_proto::PROTOCOL_MINOR,
-            worker_id: "worker-1".to_owned(),
+            worker_id: worker_id.to_owned(),
             instance_id: "instance-1".to_owned(),
             worker_version: "test".to_owned(),
             features: Vec::new(),
@@ -1410,16 +1562,6 @@ mod tests {
                 container_runtime: "test".to_owned(),
             }),
             active_attempts: Vec::new(),
-        };
-        OutboundWorker::open_sqlite(endpoint.clone(), first.clone(), &database)?;
-        let mut changed = first;
-        changed.worker_id = "worker-2".to_owned();
-        assert!(matches!(
-            OutboundWorker::open_sqlite(endpoint, changed, &database),
-            Err(WorkerError::AttemptStore(
-                AttemptStoreError::WorkerIdentityMismatch { .. }
-            ))
-        ));
-        Ok(())
+        }
     }
 }

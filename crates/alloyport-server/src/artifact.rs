@@ -388,7 +388,7 @@ fn identity_to_proto(identity: ArtifactIdentity) -> artifact_v1::ArtifactIdentit
     }
 }
 
-fn upload_status(error: UploadError) -> Status {
+pub(crate) fn upload_status(error: UploadError) -> Status {
     match error {
         UploadError::NotFound(_) => Status::not_found(error.to_string()),
         UploadError::OwnerMismatch => Status::permission_denied(error.to_string()),

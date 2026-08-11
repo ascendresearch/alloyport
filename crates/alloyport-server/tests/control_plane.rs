@@ -1,14 +1,20 @@
-use alloyport_artifacts::FilesystemArtifactStore;
+use alloyport_artifacts::upload::{
+    ArtifactReferenceKind, BeginUpload, SqliteUploadStore, UploadQuotas,
+};
+use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest};
+use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, AttemptOutcome, Backend, ExecutionSpec, ExecutorKind,
     WorkerCapabilities, WorkerHello,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
+use alloyport_server::artifact::{ArtifactAccessPolicy, ArtifactServiceImpl};
 use alloyport_server::storage::SqliteControlRepository;
 use alloyport_server::{
     AssignmentState, CancelOutcome, EnqueueOutcome, ManualClock, WorkerControlService,
 };
+use alloyport_worker::artifact_upload::RemoteArtifactPublisher;
 use alloyport_worker::executor::{FakeExecutionPlan, FakeExecutionRuntime, FakeExecutor, FakeStep};
 use alloyport_worker::{OutboundWorker, StoredFinished};
 use std::error::Error;
@@ -18,6 +24,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::{Endpoint, Server};
+use tonic::{Extensions, Status};
 
 #[tokio::test]
 async fn worker_handshake_assignment_and_duplicate_suppression() -> Result<(), Box<dyn Error>> {
@@ -517,6 +524,164 @@ async fn fake_execution_cancellation_acknowledges_before_terminal_completion()
     let _ = shutdown_send.send(());
     server_task.await??;
     Ok(())
+}
+
+#[tokio::test]
+async fn fake_execution_resumes_artifact_uploads_before_controller_accepts_terminal()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let local_artifacts = Arc::new(FilesystemArtifactStore::open(
+        directory.path().join("worker-spool"),
+        8_192,
+    )?);
+    let remote_artifacts = Arc::new(FilesystemArtifactStore::open(
+        directory.path().join("server-cas"),
+        8_192,
+    )?);
+    let uploads = Arc::new(SqliteUploadStore::open_with_quotas(
+        directory.path().join("uploads.sqlite3"),
+        directory.path().join("upload-data"),
+        8_192,
+        4,
+        UploadQuotas::unbounded(),
+    )?);
+    let stdout = b"resumable output";
+    let stdout_digest = Sha256Digest::digest_bytes(stdout);
+    let partial = uploads.begin(&BeginUpload {
+        owner_id: "cuda-1".into(),
+        upload_key: "output:attempt-1:stdout".into(),
+        expected_digest: stdout_digest,
+        expected_size_bytes: u64::try_from(stdout.len())?,
+        media_type: "application/vnd.alloyport.stdout".into(),
+        now_ms: 1_000,
+        expires_at_ms: 61_000,
+    })?;
+    uploads.append("cuda-1", &partial.upload_id, 0, &stdout[..3], 1_001)?;
+
+    let service = WorkerControlService::new().with_artifact_metadata(Arc::clone(&uploads));
+    let artifact_service = ArtifactServiceImpl::new(
+        Arc::clone(&uploads),
+        remote_artifacts,
+        Arc::new(FixedArtifactOwner),
+        Arc::new(ManualClock::new(2_000)),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let endpoint = Endpoint::from_shared(format!("http://{address}"))?;
+    let (shutdown_send, shutdown_receive) = oneshot::channel();
+    let grpc_service = service.clone();
+    let server_task = tokio::spawn(async move {
+        Server::builder()
+            .add_service(WorkerControlServer::new(grpc_service))
+            .add_service(ArtifactServiceServer::new(artifact_service))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_receive.await;
+            })
+            .await
+    });
+
+    let runtime = Arc::new(FakeExecutionRuntime::new(
+        "cuda-1",
+        Arc::clone(&local_artifacts),
+        1,
+    )?);
+    let executor = Arc::new(FakeExecutor::new(FakeExecutionPlan::successful(vec![
+        FakeStep::Stdout(stdout.to_vec()),
+    ])));
+    let publisher = Arc::new(RemoteArtifactPublisher::new(
+        endpoint.clone(),
+        local_artifacts,
+        4,
+        Some(60_000),
+    )?);
+    let worker = OutboundWorker::new(endpoint, hello())?
+        .with_fake_executor(runtime, executor)?
+        .with_artifact_publisher(publisher);
+    let worker_state = worker.state();
+    let worker_task = tokio::spawn(async move { worker.run_session().await });
+    wait_until(|| async {
+        service
+            .worker_snapshot("cuda-1")
+            .await
+            .is_some_and(|snapshot| snapshot.connected)
+    })
+    .await?;
+    assert_eq!(
+        service.enqueue_assignment("cuda-1", assignment()).await?,
+        EnqueueOutcome::Sent
+    );
+    wait_until(|| async {
+        service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Finished)
+    })
+    .await?;
+    let finished = worker_state
+        .lock()
+        .await
+        .finished_attempt("attempt-1")?
+        .expect("terminal state is committed only after all remote finalizations");
+    assert_uploaded_execution_artifacts(&uploads, &finished, stdout_digest)?;
+
+    worker_task.abort();
+    let _ = worker_task.await;
+    let _ = shutdown_send.send(());
+    server_task.await??;
+    Ok(())
+}
+
+fn assert_uploaded_execution_artifacts(
+    uploads: &SqliteUploadStore,
+    finished: &StoredFinished,
+    stdout_digest: Sha256Digest,
+) -> Result<(), Box<dyn Error>> {
+    let expected_stdout_digest = stdout_digest.to_string();
+    assert_eq!(
+        finished
+            .stdout
+            .as_ref()
+            .map(|artifact| artifact.digest.as_str()),
+        Some(expected_stdout_digest.as_str())
+    );
+    for (key, kind) in [
+        (
+            "output:attempt-1:stdout",
+            ArtifactReferenceKind::AssignmentOutput,
+        ),
+        (
+            "output:attempt-1:stderr",
+            ArtifactReferenceKind::AssignmentOutput,
+        ),
+        ("receipt:attempt-1", ArtifactReferenceKind::Receipt),
+    ] {
+        assert!(uploads.completed_upload_by_key("cuda-1", key)?.is_some());
+        assert_eq!(uploads.reference("cuda-1", key)?.kind, kind);
+    }
+    assert_eq!(
+        uploads
+            .completed_upload_by_key("cuda-1", "output:attempt-1:stdout")?
+            .expect("partial upload must finalize")
+            .digest,
+        stdout_digest
+    );
+    Ok(())
+}
+
+#[derive(Debug)]
+struct FixedArtifactOwner;
+
+impl ArtifactAccessPolicy for FixedArtifactOwner {
+    fn resolve_owner(
+        &self,
+        _metadata: &tonic::metadata::MetadataMap,
+        _extensions: &Extensions,
+    ) -> Result<String, Status> {
+        Ok("cuda-1".into())
+    }
+
+    fn authorize_download(&self, _owner_id: &str, _digest: Sha256Digest) -> Result<(), Status> {
+        Err(Status::permission_denied(
+            "download is outside this fixture",
+        ))
+    }
 }
 
 #[tokio::test]

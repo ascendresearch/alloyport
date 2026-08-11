@@ -34,6 +34,8 @@ Read these documents before changing architecture or implementation:
    for controller-granted reachability, retention, reader coordination, and conservative GC.
 10. [`design/0015-typed-fake-executor-runtime.md`](design/0015-typed-fake-executor-runtime.md) for
     executor inputs/outcomes, output spooling, terminal ordering, and fake restart semantics.
+11. [`design/0016-gated-remote-artifact-publication.md`](design/0016-gated-remote-artifact-publication.md)
+    for resumable worker publication, terminal gating, controller validation, and typed grants.
 
 Design documents state intended behavior. Tests and code state what this revision actually implements.
 
@@ -328,7 +330,15 @@ The worker library also implements the Design 0015 deterministic fake executor r
   cancellation acknowledgement to the registered token before terminal completion;
 - treats live observations as bounded and ephemeral while retaining started/finished authority in
   the journal outbox, so disconnecting a stream neither cancels execution nor loses its terminal
-  replay.
+  replay;
+- optionally attaches a Design 0016 remote publisher that resumes each stdout/stderr/receipt upload
+  from the server's committed offset, validates the completed remote identity, and prevents the
+  terminal journal/outbox commit until all three objects are finalized.
+
+When Artifact metadata is attached to `WorkerControlService`, the controller accepts terminal
+stdout/stderr/receipt only when the reporting stable worker finalized exact owner-scoped upload keys
+with matching digest, size, and media type. It then creates idempotent `AssignmentOutput` and
+`Receipt` roots before recording `Finished`. A wire digest cannot manufacture remote evidence.
 
 The worker binary uses `ALLOYPORT_WORKER_DATABASE` or defaults to `alloyport-worker.sqlite3`.
 The worker binary does not attach the fake runtime. Do not enable real candidate execution until
@@ -382,7 +392,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 73 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
+There are 78 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -409,17 +419,22 @@ repository tests for:
 The loopback control-plane suite also attaches the fake executor, disconnects and reconnects while
 the task is still running, verifies terminal replay without a second executor/receipt, and cancels a
 running fake task through the server control API.
+Another combined control/Artifact loopback test begins with a partially committed stdout upload,
+resumes it from the durable server offset, finalizes empty stderr and the receipt, creates typed
+controller references, and only then accepts the terminal lifecycle frame.
 
 Fake executor coverage includes independent output offsets, bounded preview backpressure, timeout,
 cancellation, output exhaustion, deterministic elapsed time, stdout/stderr/receipt CAS spooling,
 event sequencing, typed reference intents, terminal idempotency, restored-`Running` recovery, and
-single-executor ownership.
+single-executor ownership. Publication-gate coverage verifies that a failed publisher leaves the
+attempt `Running` with no finished outbox row and that an idempotent retry can commit once.
 
 Artifact coverage includes streaming read/write, canonical digest parsing, digest and size rejection,
 interrupted-reader cleanup, concurrent duplicate publication, read-only publication, restart cleanup,
 verified readback, refusal to replace a corrupted existing object, idempotent session creation,
 offset-conflict rejection, crash-tail truncation, reopen/resume/finalize, expiry pruning, and terminal
-versus retryable finalization failures. A real loopback Artifact gRPC test begins a session, resumes
+versus retryable finalization failures, including direct finalization of a zero-byte object. A real
+loopback Artifact gRPC test begins a session, resumes
 it through two independent client streams, finalizes it, reads completed status, and downloads a
 bounded range from a nonzero offset.
 
@@ -458,16 +473,17 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
   replacement worker or proactively invokes it for every expired lease.
 - The worker journal, lifecycle outbox, and fake executor's local Artifact spool are disk backed. An
   explicitly configured outbound worker launches that fake runtime and preserves its task across
-  stream reconnects, but does not upload its spool; real executor process identity and
+  stream reconnects. An optional publisher now uploads its spool and gates terminal reporting, but
+  the worker binary does not attach either fake component; real executor process identity and
   attach/terminate recovery are not implemented.
 - Durable lifecycle replay and seven-day orphaned-delivery retention are implemented. Heartbeats,
   status, output previews, welcomes, and ACK-only frames deliberately remain ephemeral; there is no
   generalized durable message bus or server replication.
 - The filesystem content-addressed store, durable resumable-upload sessions, registered Artifact
   gRPC service, stable certificate-enrolled owner binding, typed read authorization, and transactional
-  quotas are implemented. Typed controller-granted references and conservative GC are
-  implemented as library operations, but no controller/public API or automatic retention/collection
-  scheduler invokes them. There is no object-store adapter or filesystem-capacity monitor.
+  quotas are implemented. Worker terminal ingestion now creates typed output/receipt references;
+  other controller/public grant operations and automatic retention/collection scheduling remain
+  absent. There is no object-store adapter or filesystem-capacity monitor.
 - No container/process executor, resource enforcement, running-process signal delivery, or device
   reset. Attached fake runs emit ephemeral gRPC output previews and accept control-stream
   cancellation; workers with no executor attached still terminate cancelled admitted attempts
@@ -488,13 +504,13 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 
 ## Recommended next implementation order
 
-### 1. Complete Artifact and event integration for fake execution
+### 1. Canonically ingest worker interaction events
 
 The Design 0015 runtime now launches after admission, multiplexes live output, survives session
-reconnect, and accepts cancellation through its active token. Next, upload its local spool through the
-Artifact service before reporting terminal digests, then let the controller validate and grant Design
-0014 output/receipt references. Canonically ingest observed command events server-side. Keep GC
-explicit until those assignment and receipt roots are durable.
+reconnect, and accepts cancellation through its active token. Design 0016 now uploads and validates
+the local spool before terminal acceptance and creates durable output/receipt roots. Next,
+canonically ingest started/output/artifact/completed observations server-side under Design 0010,
+including replay and preview deduplication rules. Keep GC explicit.
 
 Keep shell execution disabled. If later enabled for probes, require an explicit worker policy and a
 separate executor kind; do not reduce assignments to a shell string.
@@ -522,13 +538,11 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Complete the remote Artifact and canonical-event half of fake execution without weakening terminal
-ordering:
+Add canonical worker-event ingestion without merging transport and interaction-event types:
 
-> Read `docs/HANDOFF.md`, Design 0010, Design 0011, Design 0014, and Design 0015. Add a worker Artifact
-> uploader that resumes by durable owner/idempotency keys and uploads stdout, stderr, and receipt
-> before `ExecutionFinished` becomes sendable. Have the controller validate the terminal Artifact
-> identities, create owner-stable AssignmentOutput/Receipt grants, and translate observed lifecycle
-> and output into canonical event order. Test upload retry across reconnect, cancel/finish races,
-> duplicate terminal delivery, grant idempotency, and refusal to publish a digest whose bytes are not
-> remotely present.
+> Read `docs/HANDOFF.md`, Design 0010, Design 0011, Design 0015, and Design 0016. Add a durable server
+> event repository and explicit worker-protocol-to-`alloyport-events` translation. Give durable
+> lifecycle frames stable deduplication identities, define how ephemeral output offsets are checked
+> and deduplicated across reconnect, and sequence canonical events per task. Test duplicate terminal
+> delivery, output replay/offset conflicts, disconnect gaps, canonical restart recovery, and ensure
+> observations cannot publish verdict or audit authority.

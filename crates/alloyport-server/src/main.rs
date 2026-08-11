@@ -25,6 +25,7 @@ const PROTOBUF_CHUNK_OVERHEAD_BYTES: usize = 64 * 1024;
 
 struct ArtifactRuntime {
     service: ArtifactServiceImpl,
+    uploads: Arc<SqliteUploadStore>,
     max_decoding_message_bytes: usize,
 }
 
@@ -48,12 +49,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let identities = Arc::new(SqliteIdentityRegistry::open(identity_database(
         &artifact_root,
     ))?);
-    let mut control_service = WorkerControlService::open_sqlite(database)?;
+    let artifact = artifact_runtime(&artifact_root, Arc::clone(&identities))?;
+    let mut control_service = WorkerControlService::open_sqlite(database)?
+        .with_artifact_metadata(Arc::clone(&artifact.uploads));
     if require_enrollment {
         let resolver: Arc<dyn ConnectionIdentityResolver> = identities.clone();
         control_service = control_service.require_identity_resolver(resolver);
     }
-    let artifact = artifact_runtime(&artifact_root, identities)?;
     let mut server = Server::builder();
     if let Some(tls) = tls {
         server = server.tls_config(tls)?;
@@ -121,7 +123,13 @@ fn artifact_runtime(
         resolver,
     ));
     Ok(ArtifactRuntime {
-        service: ArtifactServiceImpl::new(uploads, artifacts, access, Arc::new(SystemClock)),
+        service: ArtifactServiceImpl::new(
+            Arc::clone(&uploads),
+            artifacts,
+            access,
+            Arc::new(SystemClock),
+        ),
+        uploads: Arc::clone(&uploads),
         max_decoding_message_bytes: max_chunk_bytes.saturating_add(PROTOBUF_CHUNK_OVERHEAD_BYTES),
     })
 }

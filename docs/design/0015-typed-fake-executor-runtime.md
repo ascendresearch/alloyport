@@ -82,10 +82,10 @@ admitted no-executor attempt.
 ## Deliberate limits
 
 The fake runtime can be launched by `OutboundWorker::run_session`, but remains a test-oriented
-library attachment and is not configured by the worker binary. Worker-local spool artifacts are not
-uploaded to the remote Artifact service, so their digests must not yet be treated as remotely
-readable evidence. Reference intents do not become durable server grants. The server currently
-accepts and sequence-validates live output frames but does not persist or canonically translate them.
+library attachment and is not configured by the worker binary. When Design 0016's publisher is
+attached, worker-local artifacts are uploaded and controller-validated before terminal acceptance;
+without that explicit publisher, they remain local-only. The server currently accepts and
+sequence-validates live output frames but does not persist or canonically translate them.
 
 There is no process/container executor, process identity, OS signal delivery, CPU/memory/disk
 enforcement, sandbox provisioning, device access, output coalescing, or spool retention policy. The

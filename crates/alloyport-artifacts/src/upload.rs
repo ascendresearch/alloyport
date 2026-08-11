@@ -481,6 +481,35 @@ impl SqliteUploadStore {
         Ok(session)
     }
 
+    /// Returns the finalized identity for one owner-scoped idempotency key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the metadata database cannot be read or contains invalid values.
+    pub fn completed_upload_by_key(
+        &self,
+        owner_id: &str,
+        upload_key: &str,
+    ) -> Result<Option<ArtifactIdentity>, UploadError> {
+        self.completed_upload_session_by_key(owner_id, upload_key)
+            .map(|session| session.and_then(|session| session.artifact))
+    }
+
+    /// Returns a completed owner-scoped upload session by its stable idempotency key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the metadata database cannot be read or contains invalid values.
+    pub fn completed_upload_session_by_key(
+        &self,
+        owner_id: &str,
+        upload_key: &str,
+    ) -> Result<Option<UploadSession>, UploadError> {
+        let database = self.connection()?;
+        Ok(session_by_key(&database, owner_id, upload_key)?
+            .filter(|session| session.state == UploadState::Completed))
+    }
+
     pub fn owns_completed_artifact(
         &self,
         owner_id: &str,
@@ -784,12 +813,22 @@ impl SqliteUploadStore {
             session
         };
         let path = self.data_path(upload_id)?;
-        let mut file = File::open(&path).map_err(|source| UploadError::Io {
-            operation: "open upload data for finalization",
-            source,
-        })?;
+        let mut source: Box<dyn Read> = match File::open(&path) {
+            Ok(file) => Box::new(file),
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound && session.expected_size_bytes == 0 =>
+            {
+                Box::new(io::empty())
+            }
+            Err(source) => {
+                return Err(UploadError::Io {
+                    operation: "open upload data for finalization",
+                    source,
+                });
+            }
+        };
         let artifact = match artifact_store.ingest(
-            &mut file,
+            source.as_mut(),
             IngestRequest {
                 expected_digest: Some(session.expected_digest),
                 expected_size_bytes: Some(session.expected_size_bytes),
@@ -1731,6 +1770,38 @@ mod tests {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
         assert_eq!(bytes, b"hello world");
+        Ok(())
+    }
+
+    #[test]
+    fn zero_byte_upload_finalizes_without_an_append_file() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let uploads = SqliteUploadStore::open(
+            directory.path().join("uploads.sqlite3"),
+            directory.path().join("uploads"),
+            1_024,
+            8,
+        )?;
+        let artifacts = FilesystemArtifactStore::open(directory.path().join("cas"), 1_024)?;
+        let digest = Sha256Digest::digest_bytes(&[]);
+        let session = uploads.begin(&BeginUpload {
+            owner_id: "worker-1".into(),
+            upload_key: "attempt-1:stderr".into(),
+            expected_digest: digest,
+            expected_size_bytes: 0,
+            media_type: "application/vnd.alloyport.stderr".into(),
+            now_ms: 1,
+            expires_at_ms: 1_001,
+        })?;
+
+        assert_eq!(
+            uploads.finalize("worker-1", &session.upload_id, &artifacts, 2)?,
+            ArtifactIdentity {
+                digest,
+                size_bytes: 0,
+            }
+        );
+        assert!(artifacts.contains(digest)?);
         Ok(())
     }
 

@@ -4,6 +4,10 @@ pub mod artifact;
 pub mod identity;
 pub mod storage;
 
+use alloyport_artifacts::Sha256Digest;
+use alloyport_artifacts::upload::{
+    ArtifactReferenceKind, GrantArtifactReference, SqliteUploadStore,
+};
 use alloyport_proto::v1::worker_control_server::WorkerControl;
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, CancelAttempt,
@@ -18,6 +22,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use storage::{
@@ -136,6 +141,7 @@ pub struct WorkerControlService {
     repository: Arc<dyn ControlRepository>,
     clock: Arc<dyn Clock>,
     identity_resolver: Option<Arc<dyn ConnectionIdentityResolver>>,
+    artifact_metadata: Option<Arc<SqliteUploadStore>>,
     connection_counter: Arc<AtomicU64>,
     lease_counter: Arc<AtomicU64>,
 }
@@ -179,6 +185,7 @@ impl WorkerControlService {
             repository,
             clock,
             identity_resolver: None,
+            artifact_metadata: None,
             connection_counter: Arc::new(AtomicU64::new(unique_seed())),
             lease_counter: Arc::new(AtomicU64::new(unique_seed())),
         }
@@ -191,6 +198,13 @@ impl WorkerControlService {
         identity_resolver: Arc<dyn ConnectionIdentityResolver>,
     ) -> Self {
         self.identity_resolver = Some(identity_resolver);
+        self
+    }
+
+    /// Requires terminal Artifact identities to match finalized uploads and creates typed roots.
+    #[must_use]
+    pub fn with_artifact_metadata(mut self, uploads: Arc<SqliteUploadStore>) -> Self {
+        self.artifact_metadata = Some(uploads);
         self
     }
 
@@ -777,6 +791,15 @@ impl WorkerControlService {
         finished: ExecutionFinished,
         now_ms: u64,
     ) -> Result<ObservationDisposition, Status> {
+        if let Some(uploads) = self.artifact_metadata.as_ref() {
+            validate_and_grant_finished_artifacts(
+                uploads,
+                worker_id,
+                &finished.attempt_id,
+                &finished,
+                now_ms,
+            )?;
+        }
         self.observe(
             worker_id,
             finished.assignment_id,
@@ -1136,6 +1159,76 @@ fn identity_to_artifact(identity: &ArtifactIdentity) -> ArtifactRef {
     }
 }
 
+fn validate_and_grant_finished_artifacts(
+    uploads: &SqliteUploadStore,
+    worker_id: &str,
+    attempt_id: &str,
+    finished: &ExecutionFinished,
+    now_ms: u64,
+) -> Result<(), Status> {
+    for (artifact, reference_key, kind, purpose) in [
+        (
+            finished.stdout.as_ref(),
+            format!("output:{attempt_id}:stdout"),
+            ArtifactReferenceKind::AssignmentOutput,
+            "complete attempt stdout",
+        ),
+        (
+            finished.stderr.as_ref(),
+            format!("output:{attempt_id}:stderr"),
+            ArtifactReferenceKind::AssignmentOutput,
+            "complete attempt stderr",
+        ),
+        (
+            finished.receipt.as_ref(),
+            format!("receipt:{attempt_id}"),
+            ArtifactReferenceKind::Receipt,
+            "attempt run receipt",
+        ),
+    ] {
+        let artifact = artifact.ok_or_else(|| {
+            Status::failed_precondition(format!(
+                "terminal execution is missing required Artifact {reference_key}"
+            ))
+        })?;
+        let digest = Sha256Digest::from_str(&artifact.digest)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let uploaded = uploads
+            .completed_upload_session_by_key(worker_id, &reference_key)
+            .map_err(artifact::upload_status)?
+            .ok_or_else(|| {
+                Status::failed_precondition(format!(
+                    "terminal Artifact {reference_key} is not finalized by worker {worker_id}"
+                ))
+            })?;
+        let uploaded_identity = uploaded.artifact.ok_or_else(|| {
+            Status::data_loss(format!(
+                "completed upload {reference_key} lacks its Artifact identity"
+            ))
+        })?;
+        if uploaded_identity.digest != digest
+            || uploaded_identity.size_bytes != artifact.size_bytes
+            || uploaded.media_type != artifact.media_type
+        {
+            return Err(Status::data_loss(format!(
+                "terminal Artifact {reference_key} does not match its finalized upload"
+            )));
+        }
+        uploads
+            .grant_reference(&GrantArtifactReference {
+                owner_id: worker_id.to_owned(),
+                reference_key,
+                digest,
+                kind,
+                purpose: purpose.to_owned(),
+                now_ms,
+                retained_until_ms: None,
+            })
+            .map_err(artifact::upload_status)?;
+    }
+    Ok(())
+}
+
 fn unique_seed() -> u64 {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1181,5 +1274,42 @@ mod tests {
                 .code(),
             tonic::Code::InvalidArgument
         );
+    }
+
+    #[test]
+    fn terminal_artifacts_must_be_finalized_by_the_reporting_worker() -> Result<(), Box<dyn Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let uploads = SqliteUploadStore::open(
+            directory.path().join("uploads.sqlite3"),
+            directory.path().join("uploads"),
+            1_024,
+            8,
+        )?;
+        let artifact = ArtifactRef {
+            digest: format!("sha256:{}", "a".repeat(64)),
+            size_bytes: 1,
+            media_type: "application/octet-stream".into(),
+        };
+        let error = validate_and_grant_finished_artifacts(
+            &uploads,
+            "worker-1",
+            "attempt-1",
+            &ExecutionFinished {
+                assignment_id: "assignment-1".into(),
+                attempt_id: "attempt-1".into(),
+                outcome: alloyport_proto::v1::AttemptOutcome::Succeeded.into(),
+                exit_code: Some(0),
+                elapsed_ms: 1,
+                receipt: Some(artifact.clone()),
+                stdout: Some(artifact.clone()),
+                stderr: Some(artifact),
+                detail: "untrusted terminal".into(),
+            },
+            1,
+        )
+        .expect_err("a wire digest cannot manufacture remote Artifact evidence");
+        assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+        Ok(())
     }
 }
