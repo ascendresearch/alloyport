@@ -3,6 +3,7 @@
 pub mod artifact;
 pub mod identity;
 pub mod interaction;
+pub mod interaction_service;
 pub mod storage;
 
 use alloyport_artifacts::Sha256Digest;
@@ -23,7 +24,10 @@ use alloyport_proto::v1::{
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR, ValidationError, validate_assignment};
 use identity::{ConnectionIdentityResolver, ResolvedConnectionIdentity};
-use interaction::{AppendOutcome, InteractionError, InteractionStore, SqliteInteractionStore};
+use interaction::{
+    AppendOutcome, InteractionError, InteractionHub, InteractionStore, RunGrantOutcome,
+    RunRevokeOutcome, SqliteInteractionStore,
+};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -47,6 +51,8 @@ const HEARTBEAT_INTERVAL_MS: u64 = 5_000;
 const ATTEMPT_LEASE_MS: u64 = 30_000;
 const LEASE_REAPER_INTERVAL_MS: u64 = 1_000;
 const OUTBOX_ORPHAN_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+const INTERACTION_LIVE_CAPACITY: usize = 1_024;
+const INTERACTION_REPLAY_BATCH_SIZE: usize = 256;
 
 pub use storage::{AttemptState as AssignmentState, LeaseRecord, ManualClock};
 
@@ -190,16 +196,36 @@ impl WorkerControlService {
     ///
     /// Returns a repository error if `SQLite` cannot open or migrate the database.
     pub fn open_sqlite(path: impl AsRef<Path>) -> Result<Self, RepositoryError> {
+        Self::open_sqlite_with_interaction_hub(path).map(|(service, _)| service)
+    }
+
+    /// Opens durable control state and a shared replay-to-live interaction hub.
+    ///
+    /// # Errors
+    ///
+    /// Returns a repository error if `SQLite` or the interaction hub cannot initialize.
+    pub fn open_sqlite_with_interaction_hub(
+        path: impl AsRef<Path>,
+    ) -> Result<(Self, Arc<InteractionHub>), RepositoryError> {
         let path = path.as_ref();
         let repository = Arc::new(SqliteControlRepository::open(path)?);
-        let interactions = SqliteInteractionStore::open(path).map_err(|error| {
-            RepositoryError::Corrupt(format!("initialize interaction store: {error}"))
-        })?;
-        Ok(Self::with_repositories(
-            repository,
-            Arc::new(interactions),
-            Arc::new(SystemClock),
-        ))
+        let durable: Arc<dyn InteractionStore> =
+            Arc::new(SqliteInteractionStore::open(path).map_err(|error| {
+                RepositoryError::Corrupt(format!("initialize interaction store: {error}"))
+            })?);
+        let hub = Arc::new(
+            InteractionHub::new(
+                durable,
+                INTERACTION_LIVE_CAPACITY,
+                INTERACTION_REPLAY_BATCH_SIZE,
+            )
+            .map_err(|error| {
+                RepositoryError::Corrupt(format!("initialize interaction hub: {error}"))
+            })?,
+        );
+        let interactions: Arc<dyn InteractionStore> = hub.clone();
+        let service = Self::with_repositories(repository, interactions, Arc::new(SystemClock));
+        Ok((service, hub))
     }
 
     /// Builds a service around an injected repository and clock.
@@ -361,6 +387,56 @@ impl WorkerControlService {
             return Ok(EnqueueOutcome::Pending);
         }
         Ok(EnqueueOutcome::Sent)
+    }
+
+    /// Grants one owner access to the run, then persists and dispatches its assignment.
+    ///
+    /// The explicit owner comes from the trusted controller call site, never from a worker frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnqueueError`] for invalid input, a terminally revoked grant, or enqueue failure.
+    pub async fn enqueue_assignment_for_owner(
+        &self,
+        owner_id: &str,
+        worker_id: impl Into<String>,
+        assignment: Assignment,
+    ) -> Result<EnqueueOutcome, EnqueueError> {
+        validate_assignment(&assignment)?;
+        self.interactions.grant_run_access(
+            &assignment.task_id,
+            owner_id,
+            self.clock.now_unix_ms(),
+        )?;
+        self.enqueue_assignment(worker_id, assignment).await
+    }
+
+    /// Adds an idempotent public-read grant for an existing or planned run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identities, storage failure, or a terminally revoked grant.
+    pub fn grant_interaction_access(
+        &self,
+        run_id: &str,
+        owner_id: &str,
+    ) -> Result<RunGrantOutcome, InteractionError> {
+        self.interactions
+            .grant_run_access(run_id, owner_id, self.clock.now_unix_ms())
+    }
+
+    /// Revokes an existing public-read grant idempotently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the grant is unknown or cannot be durably updated.
+    pub fn revoke_interaction_access(
+        &self,
+        run_id: &str,
+        owner_id: &str,
+    ) -> Result<RunRevokeOutcome, InteractionError> {
+        self.interactions
+            .revoke_run_access(run_id, owner_id, self.clock.now_unix_ms())
     }
 
     /// Creates and dispatches a new process attempt for one durably expired attempt.
@@ -1478,8 +1554,9 @@ fn worker_event(
     contract: &AssignmentContract,
     worker_id: &str,
     emitted_at_unix_ms: u64,
-    event: Event,
+    mut event: Event,
 ) -> ProducerEvent {
+    interaction::redact_worker_event(&mut event);
     let mut frame = ProducerEvent::new(
         contract.task_id.clone(),
         Producer::new("alloyport-worker", worker_id),
@@ -1500,6 +1577,8 @@ fn interaction_status(error: &InteractionError) -> Status {
         | InteractionError::ConflictingDedupKey(_)
         | InteractionError::ConflictingOutput { .. }
         | InteractionError::InvalidCursor { .. }
+        | InteractionError::RevokedRunGrant { .. }
+        | InteractionError::MissingRunGrant { .. }
         | InteractionError::ValueOutOfRange(_) => Status::invalid_argument(detail),
         InteractionError::Sqlite(_)
         | InteractionError::Serialization(_)

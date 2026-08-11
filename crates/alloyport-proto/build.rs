@@ -10,10 +10,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         &[
             "proto/alloyport/worker/v1/worker_control.proto",
             "proto/alloyport/artifact/v1/artifact_service.proto",
+            "proto/alloyport/interaction/v1/interaction_service.proto",
         ],
         &["proto"],
     )?;
     println!("cargo:rerun-if-changed=proto/alloyport/worker/v1/worker_control.proto");
     println!("cargo:rerun-if-changed=proto/alloyport/artifact/v1/artifact_service.proto");
+    println!("cargo:rerun-if-changed=proto/alloyport/interaction/v1/interaction_service.proto");
     Ok(())
 }

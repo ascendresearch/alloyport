@@ -149,10 +149,10 @@ explicitly translated into canonical SQLite-backed events with stable replay ide
 conflict detection, visible disconnect gaps, and controller-restart recovery. Design 0016 provides
 the content-addressed terminal output/receipt boundary used by those events.
 
-This does not make the design fully implemented. A durable cursor and bounded in-process
-replay-to-live subscription foundation now exist, but streaming provider adapters, the authorized
-public API, approvals, retention, redaction policy, and the interactive `ratatui` renderer remain
-open.
+Design 0019 adds the authorized public replay/subscription RPC, durable run grants, mTLS identity,
+bounded delivery, reconnect cursors, and the first controller redaction policy. This does not make
+the design fully implemented: streaming provider adapters, approvals, retention scheduling, richer
+redaction coverage, and the interactive `ratatui` renderer remain open.
 
 `authority` is one of:
 

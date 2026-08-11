@@ -46,10 +46,11 @@ automation, and replay; an agent's narrative remains distinct from verified migr
 - `alloyport-core`: dependency-light domain model and lifecycle invariants.
 - `alloyport-events`: versioned producer/canonical events, lifecycle reduction, JSONL, and plain
   rendering shared with the Python executor bridge.
-- `alloyport-proto`: versioned worker-control and Artifact Protobuf/gRPC protocols plus strict edge
-  validation.
+- `alloyport-proto`: versioned worker-control, Artifact, and interaction Protobuf/gRPC protocols plus
+  strict edge validation.
 - `alloyport-server`: worker connection registry, SQLite control repository, attempt leases, and gRPC
-  control service, plus the mTLS-authorized Artifact service and filesystem CAS.
+  control service, plus mTLS-authorized Artifact and canonical interaction services and the
+  filesystem CAS.
 - `alloyport-worker`: outbound worker client, local assignment admission, reconnect/heartbeat, and a
   typed deterministic fake executor with worker-local Artifact spooling.
 - `alloyport-cli`: command-line entry point; orchestration will grow here only until service
@@ -103,12 +104,13 @@ cargo run -p alloyport-server -- identity rotate WORKER_ID old.pem new.pem
 cargo run -p alloyport-server -- identity revoke client.pem
 ```
 
-Artifact RPCs require mTLS even when worker control uses permitted loopback plaintext. Remote worker
-control binds the verified certificate to `WorkerHello.worker_id`; rotation preserves the stable
-Artifact owner and revocation fails closed. The current slice proves registration, heartbeat,
-durable assignment admission, server/worker restart reconciliation, finished-result replay,
-cancellation ordering, server-side lease expiry, and enrolled artifact transfer. It does not yet
-expose an external scheduling API or execute assignments on devices.
+Artifact and interaction RPCs require mTLS even when worker control uses permitted loopback
+plaintext. Remote worker control binds the verified certificate to `WorkerHello.worker_id`; rotation
+preserves stable Artifact and run ownership, while revocation fails closed. The current slices prove
+registration, heartbeat, durable assignment admission, server/worker restart reconciliation,
+finished-result replay, cancellation ordering, server-side lease expiry, enrolled Artifact transfer,
+authorized event replay/subscription, and one fixed CUDA fixture on an explicitly configured Docker
+worker. There is no external scheduling API or Ascend execution contract yet.
 
 No license has been selected yet. Do not publish packages or redistribute the code until that
 decision is recorded.

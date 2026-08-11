@@ -94,18 +94,16 @@ terminal state are rejected.
 
 ## Deliberate limits
 
-There is no public replay/subscription RPC yet. The repository and bounded in-process subscription
-foundation are implemented, but the production control service is not yet wired through the hub.
-Public transport must first bind a durable run owner to an enrolled identity and apply controller
-redaction before returning persisted envelopes.
+Design 0019 adds the public replay/subscription RPC, durable owner/run grants, enrolled mTLS
+authorization and revocation, shared production hub wiring, and the first controller redaction pass.
 There is no `run.completed` translation because a task may contain multiple attempts and the task
 controller does not yet own a final run verdict. Rejection, cancellation-request, and lease-expiry
 diagnostics are not yet rendered as first-class interaction events.
 
-Output text currently applies UTF-8 lossy decoding and propagates the worker sanitization flag. A
-controller redaction/ANSI policy, preview coalescing budget, retention scheduler, public transport,
-and user/task ownership authorization remain future work. Canonical interaction rows do not replace
-immutable output Artifacts or audit/evidence records.
+Output text applies UTF-8 lossy decoding followed by controller terminal-control and common-secret
+redaction before persistence. A richer structured secret policy, preview coalescing budget,
+retention scheduler, and TUI remain future work. Canonical interaction rows do not replace immutable
+output Artifacts or audit/evidence records.
 
 ## Verification
 

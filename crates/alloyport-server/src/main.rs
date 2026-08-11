@@ -1,11 +1,16 @@
 use alloyport_artifacts::FilesystemArtifactStore;
 use alloyport_artifacts::upload::{SqliteUploadStore, UploadQuotas};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
+use alloyport_proto::interaction_v1::interaction_service_server::InteractionServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_server::WorkerControlService;
 use alloyport_server::artifact::{ArtifactServiceImpl, EnrolledArtifactAccessPolicy};
 use alloyport_server::identity::{
     ConnectionIdentityResolver, SqliteIdentityRegistry, certificate_fingerprint_from_pem,
+};
+use alloyport_server::interaction::InteractionStore;
+use alloyport_server::interaction_service::{
+    EnrolledInteractionAccessPolicy, InteractionServiceImpl,
 };
 use alloyport_server::storage::{Clock, SystemClock};
 use std::env;
@@ -50,17 +55,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &artifact_root,
     ))?);
     let artifact = artifact_runtime(&artifact_root, Arc::clone(&identities))?;
-    let mut control_service = WorkerControlService::open_sqlite(database)?
-        .with_artifact_metadata(Arc::clone(&artifact.uploads));
+    let (control_service, interaction_hub) =
+        WorkerControlService::open_sqlite_with_interaction_hub(database)?;
+    let mut control_service = control_service.with_artifact_metadata(Arc::clone(&artifact.uploads));
     if require_enrollment {
         let resolver: Arc<dyn ConnectionIdentityResolver> = identities.clone();
         control_service = control_service.require_identity_resolver(resolver);
     }
+    let interaction_store: Arc<dyn InteractionStore> = interaction_hub.clone();
+    let interaction_resolver: Arc<dyn ConnectionIdentityResolver> = identities.clone();
+    let interaction_service = InteractionServiceImpl::new(
+        interaction_hub,
+        Arc::new(EnrolledInteractionAccessPolicy::new(
+            interaction_store,
+            interaction_resolver,
+        )),
+    );
     let mut server = Server::builder();
     if let Some(tls) = tls {
         server = server.tls_config(tls)?;
     }
-    println!("AlloyPort worker control and artifact services listening on {address}");
+    println!("AlloyPort worker control, artifact, and interaction services listening on {address}");
     let reaper_service = control_service.clone();
     let mut lease_reaper = tokio::spawn(async move { reaper_service.run_lease_reaper().await });
     let serve = server
@@ -69,6 +84,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             ArtifactServiceServer::new(artifact.service)
                 .max_decoding_message_size(artifact.max_decoding_message_bytes),
         )
+        .add_service(InteractionServiceServer::new(interaction_service))
         .serve(address);
     tokio::select! {
         serve_result = serve => {

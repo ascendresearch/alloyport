@@ -10,6 +10,7 @@ use alloyport_proto::v1::{
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use alloyport_server::artifact::{ArtifactAccessPolicy, ArtifactServiceImpl};
+use alloyport_server::interaction::InteractionStore;
 use alloyport_server::storage::SqliteControlRepository;
 use alloyport_server::{
     AssignmentState, CancelOutcome, EnqueueOutcome, ManualClock, WorkerControlService,
@@ -25,6 +26,32 @@ use tokio::sync::oneshot;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::{Endpoint, Server};
 use tonic::{Extensions, Status};
+
+#[tokio::test]
+async fn owner_enqueue_publishes_through_shared_hub_and_grant_survives_restart()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("control.sqlite3");
+    let (service, hub) = WorkerControlService::open_sqlite_with_interaction_hub(&database)?;
+    let mut subscription = hub.subscribe("task-1", 0)?;
+
+    assert_eq!(
+        service
+            .enqueue_assignment_for_owner("owner-a", "cuda-1", assignment())
+            .await?,
+        EnqueueOutcome::Pending
+    );
+    let started = tokio::time::timeout(Duration::from_secs(1), subscription.recv()).await??;
+    assert_eq!(started.run_id, "task-1");
+    assert_eq!(started.sequence, 1);
+    assert!(hub.can_read_run("task-1", "owner-a")?);
+    drop(service);
+    drop(hub);
+
+    let (_, reopened_hub) = WorkerControlService::open_sqlite_with_interaction_hub(database)?;
+    assert!(reopened_hub.can_read_run("task-1", "owner-a")?);
+    Ok(())
+}
 
 #[tokio::test]
 async fn worker_handshake_assignment_and_duplicate_suppression() -> Result<(), Box<dyn Error>> {

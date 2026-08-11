@@ -2,11 +2,15 @@ use alloyport_artifacts::upload::{
     ArtifactReferenceKind, GrantArtifactReference, SqliteUploadStore,
 };
 use alloyport_artifacts::{FilesystemArtifactStore, Sha256Digest};
+use alloyport_events::{Event, EventEnvelope, Producer, ProducerEvent};
 use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient;
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::artifact_v1::{
     BeginUploadRequest, DownloadRequest, FinalizeUploadRequest, GetUploadRequest, UploadChunk,
 };
+use alloyport_proto::interaction_v1::interaction_service_client::InteractionServiceClient;
+use alloyport_proto::interaction_v1::interaction_service_server::InteractionServiceServer;
+use alloyport_proto::interaction_v1::{CanonicalEvent, ReplayRunRequest, SubscribeRunRequest};
 use alloyport_proto::v1::worker_control_client::WorkerControlClient;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_proto::v1::{
@@ -17,6 +21,10 @@ use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use alloyport_server::artifact::{ArtifactServiceImpl, EnrolledArtifactAccessPolicy};
 use alloyport_server::identity::{
     ConnectionIdentityResolver, SqliteIdentityRegistry, certificate_fingerprint_from_pem,
+};
+use alloyport_server::interaction::{InteractionHub, InteractionStore, SqliteInteractionStore};
+use alloyport_server::interaction_service::{
+    EnrolledInteractionAccessPolicy, InteractionServiceImpl,
 };
 use alloyport_server::{ManualClock, WorkerControlService};
 use rcgen::{
@@ -52,11 +60,21 @@ async fn client_certificate_owns_sessions_and_completed_artifacts() -> Result<()
     let identities = Arc::new(SqliteIdentityRegistry::open(
         directory.path().join("identities.sqlite3"),
     )?);
-    let fingerprint_a = certificate_fingerprint_from_pem(pki.client_a.certificate.as_bytes())?;
-    let fingerprint_b = certificate_fingerprint_from_pem(pki.client_b.certificate.as_bytes())?;
-    let fingerprint_c = certificate_fingerprint_from_pem(pki.client_c.certificate.as_bytes())?;
-    identities.enroll("worker-a", fingerprint_a, 1)?;
-    identities.enroll("worker-b", fingerprint_b, 1)?;
+    let (fingerprint_a, fingerprint_c) = enroll_test_identities(&identities, &pki)?;
+    let durable_interactions: Arc<dyn InteractionStore> =
+        Arc::new(SqliteInteractionStore::in_memory()?);
+    let interaction_hub = Arc::new(InteractionHub::new(durable_interactions, 8, 2)?);
+    interaction_hub.grant_run_access("run-1", "worker-a", 1)?;
+    append_interaction(&interaction_hub, 1)?;
+    let interaction_store: Arc<dyn InteractionStore> = interaction_hub.clone();
+    let interaction_resolver: Arc<dyn ConnectionIdentityResolver> = identities.clone();
+    let interaction_service = InteractionServiceImpl::new(
+        Arc::clone(&interaction_hub),
+        Arc::new(EnrolledInteractionAccessPolicy::new(
+            interaction_store,
+            interaction_resolver,
+        )),
+    );
     let artifact_resolver: Arc<dyn ConnectionIdentityResolver> = identities.clone();
     let artifact_service = ArtifactServiceImpl::new(
         Arc::clone(&uploads),
@@ -80,6 +98,7 @@ async fn client_certificate_owns_sessions_and_completed_artifacts() -> Result<()
             .tls_config(server_tls)?
             .add_service(ArtifactServiceServer::new(artifact_service))
             .add_service(WorkerControlServer::new(control_service))
+            .add_service(InteractionServiceServer::new(interaction_service))
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 let _ = shutdown_receive.await;
             })
@@ -88,11 +107,66 @@ async fn client_certificate_owns_sessions_and_completed_artifacts() -> Result<()
 
     let mut client_a = artifact_client(address, &pki.ca_certificate, &pki.client_a).await?;
     let mut client_b = artifact_client(address, &pki.ca_certificate, &pki.client_b).await?;
+    let mut active_interaction =
+        open_authorized_interaction(address, &pki.ca_certificate, &pki.client_a, &pki.client_b)
+            .await?;
     let forged_worker_channel = tls_channel(address, &pki.ca_certificate, &pki.client_a).await?;
     assert_forged_worker_hello_denied(forged_worker_channel).await?;
     let active_worker_channel = tls_channel(address, &pki.ca_certificate, &pki.client_a).await?;
     let mut active_worker = open_worker_stream(active_worker_channel, "worker-a").await?;
     let digest = "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+    assert_artifact_access_before_rotation(&uploads, &mut client_a, &mut client_b, digest).await?;
+
+    identities.rotate("worker-a", fingerprint_a, fingerprint_c, 2)?;
+    append_interaction(&interaction_hub, 2)?;
+    let interaction_error = active_interaction
+        .message()
+        .await
+        .expect_err("certificate rotation must terminate an existing interaction stream");
+    assert_eq!(interaction_error.code(), Code::PermissionDenied);
+    assert_rotated_worker_stream_closes(&mut active_worker).await?;
+    assert_download_denied(&mut client_a, digest).await?;
+    let mut client_c = artifact_client(address, &pki.ca_certificate, &pki.client_c).await?;
+    let mut interaction_c = InteractionServiceClient::new(
+        tls_channel(address, &pki.ca_certificate, &pki.client_c).await?,
+    );
+    assert_eq!(download_bytes(&mut client_c, digest).await?, b"hello world");
+    assert_eq!(replay_interaction(&mut interaction_c).await?, 1);
+    identities.revoke(fingerprint_c, 3)?;
+    assert_download_denied(&mut client_c, digest).await?;
+    let revoked = interaction_c
+        .replay_run(ReplayRunRequest {
+            run_id: "run-1".into(),
+            after_sequence: 0,
+            limit: 1,
+        })
+        .await
+        .expect_err("revoked certificate cannot replay interaction events");
+    assert_eq!(revoked.code(), Code::PermissionDenied);
+
+    let _ = shutdown_send.send(());
+    server_task.await??;
+    Ok(())
+}
+
+fn enroll_test_identities(
+    identities: &SqliteIdentityRegistry,
+    pki: &TestPki,
+) -> Result<(Sha256Digest, Sha256Digest), Box<dyn Error>> {
+    let fingerprint_a = certificate_fingerprint_from_pem(pki.client_a.certificate.as_bytes())?;
+    let fingerprint_b = certificate_fingerprint_from_pem(pki.client_b.certificate.as_bytes())?;
+    let fingerprint_c = certificate_fingerprint_from_pem(pki.client_c.certificate.as_bytes())?;
+    identities.enroll("worker-a", fingerprint_a, 1)?;
+    identities.enroll("worker-b", fingerprint_b, 1)?;
+    Ok((fingerprint_a, fingerprint_c))
+}
+
+async fn assert_artifact_access_before_rotation(
+    uploads: &SqliteUploadStore,
+    client_a: &mut ArtifactServiceClient<Channel>,
+    client_b: &mut ArtifactServiceClient<Channel>,
+    digest: &str,
+) -> Result<(), Box<dyn Error>> {
     let session = client_a
         .begin_upload(forged_owner(BeginUploadRequest {
             upload_key: "attempt-1:stdout".to_owned(),
@@ -115,7 +189,6 @@ async fn client_certificate_owns_sessions_and_completed_artifacts() -> Result<()
             upload_id: session.upload_id.clone(),
         }))
         .await?;
-
     let session_error = client_b
         .get_upload(forged_owner(GetUploadRequest {
             upload_id: session.upload_id,
@@ -123,22 +196,70 @@ async fn client_certificate_owns_sessions_and_completed_artifacts() -> Result<()
         .await
         .expect_err("a second certificate cannot claim the first certificate's session");
     assert_eq!(session_error.code(), Code::PermissionDenied);
-    assert_download_denied(&mut client_b, digest).await?;
-    assert_eq!(download_bytes(&mut client_a, digest).await?, b"hello world");
+    assert_download_denied(client_b, digest).await?;
+    assert_eq!(download_bytes(client_a, digest).await?, b"hello world");
+    assert_controller_grant_and_revoke(uploads, client_b, digest).await
+}
 
-    assert_controller_grant_and_revoke(&uploads, &mut client_b, digest).await?;
+async fn open_authorized_interaction(
+    address: std::net::SocketAddr,
+    ca_certificate: &str,
+    client_a: &PemIdentity,
+    client_b: &PemIdentity,
+) -> Result<Streaming<CanonicalEvent>, Box<dyn Error>> {
+    let mut authorized =
+        InteractionServiceClient::new(tls_channel(address, ca_certificate, client_a).await?);
+    let mut denied =
+        InteractionServiceClient::new(tls_channel(address, ca_certificate, client_b).await?);
+    assert_eq!(replay_interaction(&mut authorized).await?, 1);
+    let error = denied
+        .replay_run(ReplayRunRequest {
+            run_id: "run-1".into(),
+            after_sequence: 0,
+            limit: 1,
+        })
+        .await
+        .expect_err("another enrolled owner cannot replay the run");
+    assert_eq!(error.code(), Code::PermissionDenied);
+    Ok(authorized
+        .subscribe_run(SubscribeRunRequest {
+            run_id: "run-1".into(),
+            after_sequence: 1,
+        })
+        .await?
+        .into_inner())
+}
 
-    identities.rotate("worker-a", fingerprint_a, fingerprint_c, 2)?;
-    assert_rotated_worker_stream_closes(&mut active_worker).await?;
-    assert_download_denied(&mut client_a, digest).await?;
-    let mut client_c = artifact_client(address, &pki.ca_certificate, &pki.client_c).await?;
-    assert_eq!(download_bytes(&mut client_c, digest).await?, b"hello world");
-    identities.revoke(fingerprint_c, 3)?;
-    assert_download_denied(&mut client_c, digest).await?;
-
-    let _ = shutdown_send.send(());
-    server_task.await??;
+fn append_interaction(hub: &InteractionHub, sequence: u64) -> Result<(), Box<dyn Error>> {
+    let mut frame = ProducerEvent::new(
+        "run-1",
+        Producer::new("controller", "mtls-test"),
+        Event::Warning {
+            message: format!("warning {sequence}"),
+        },
+    );
+    frame.task_id = Some("run-1".into());
+    hub.append(&format!("warning:{sequence}"), &frame)?;
     Ok(())
+}
+
+async fn replay_interaction(
+    client: &mut InteractionServiceClient<Channel>,
+) -> Result<u64, Box<dyn Error>> {
+    let mut stream = client
+        .replay_run(ReplayRunRequest {
+            run_id: "run-1".into(),
+            after_sequence: 0,
+            limit: 1,
+        })
+        .await?
+        .into_inner();
+    let wire = stream
+        .message()
+        .await?
+        .ok_or("interaction replay is empty")?;
+    let envelope: EventEnvelope = serde_json::from_slice(&wire.envelope_json)?;
+    Ok(envelope.sequence)
 }
 
 async fn assert_controller_grant_and_revoke(

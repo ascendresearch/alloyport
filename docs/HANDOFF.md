@@ -41,6 +41,12 @@ Read these documents before changing architecture or implementation:
 13. [`design/0018-fixed-cuda-container-contract.md`](design/0018-fixed-cuda-container-contract.md)
     for the fixed CUDA fixture, local allowlisting, bundle materialization, derived Docker plan, and
     engine-neutral durable supervisor.
+14. [`design/0019-authorized-interaction-replay-and-subscription.md`](design/0019-authorized-interaction-replay-and-subscription.md)
+    for public canonical replay, stable run ownership, mTLS authorization, bounded subscription,
+    revocation, and controller redaction.
+15. [`design/0020-worker-supervisor-placement-and-attempt-isolation.md`](design/0020-worker-supervisor-placement-and-attempt-isolation.md)
+    for the decision to keep the trusted worker supervisor outside per-attempt candidate sandboxes,
+    including acceptable containerized-supervisor deployments and reconsideration criteria.
 
 Design documents state intended behavior. Tests and code state what this revision actually implements.
 
@@ -163,12 +169,13 @@ does not yet call the worker scheduler.
 
 ### `alloyport-proto`
 
-Defines `alloyport.worker.v1` and `alloyport.artifact.v1`, and generates Rust client/server bindings
-with `tonic` and `prost`.
+Defines `alloyport.worker.v1`, `alloyport.artifact.v1`, and `alloyport.interaction.v1`, and generates
+Rust client/server bindings with `tonic` and `prost`.
 Important files:
 
 - `crates/alloyport-proto/proto/alloyport/worker/v1/worker_control.proto`
 - `crates/alloyport-proto/proto/alloyport/artifact/v1/artifact_service.proto`
+- `crates/alloyport-proto/proto/alloyport/interaction/v1/interaction_service.proto`
 - `crates/alloyport-proto/build.rs`
 - `crates/alloyport-proto/src/lib.rs`
 
@@ -225,6 +232,13 @@ Current behavior:
   replay-to-live subscription foundation that attaches before capturing the SQLite high-water mark;
 - terminates lagged subscribers with an explicit resumable cursor, rejects future cursors and
   sequence gaps, and isolates one run's notification pressure from another without blocking append;
+- persists idempotent multi-owner run grants with terminal revocation and exposes a trusted
+  owner-aware enqueue path that never accepts ownership from worker or public request bodies;
+- registers mTLS-authorized bounded replay and replay-to-live RPCs that stream exact canonical
+  envelope JSON, revalidate certificate and grant state, and fail slow consumers with a resumable
+  cursor;
+- applies controller terminal-control and common-credential redaction to worker display text before
+  canonical persistence while retaining raw terminal Artifacts as complete output authority;
 - renews active leases from heartbeats, expires them with a periodic reaper, and retains a late
   finished observation as stale rather than replacing the expired attempt state;
 - recovers queued and non-terminal assignments after a server process restart when the worker
@@ -458,7 +472,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 102 Rust tests, one ignored by default because it explicitly requires Docker and a CUDA
+There are 108 Rust tests, one ignored by default because it explicitly requires Docker and a CUDA
 device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -496,7 +510,8 @@ Interaction repository coverage includes transactional per-run sequencing, seman
 changed timestamps and producer instances, conflicting deduplication keys, exact raw output replay,
 changed and overlapping output rejection, visible forward gaps, SQLite close/reopen recovery,
 bounded cursor paging, replay-to-live handoff, explicit slow-consumer termination and resume,
-future-cursor rejection, and per-run notification-pressure isolation.
+future-cursor rejection, per-run notification-pressure isolation, durable owner grants and terminal
+revocation, authorized public paging, public delivery timeout, and controller display redaction.
 
 Fake executor coverage includes independent output offsets, bounded preview backpressure, timeout,
 cancellation, output exhaustion, deterministic elapsed time, stdout/stderr/receipt CAS spooling,
@@ -534,9 +549,9 @@ stdout/stderr preview offsets, a shared combined byte budget, nonblocking drop u
 pressure, terminal CAS independence, and no duplicate terminal preview emission.
 
 An end-to-end mutual-TLS test creates one CA, a server identity, and three client identities. It
-proves forged worker hello rejection, cross-owner upload/download isolation, termination of an old
-live stream after rotation, preservation of existing-artifact access through the replacement
-certificate, explicit controller grant/revoke to another enrolled owner, and denial after revocation.
+proves forged worker hello rejection, cross-owner Artifact and interaction isolation, termination of
+old worker and interaction streams after rotation, preservation of existing Artifact/run access
+through the replacement certificate, explicit controller grant/revoke, and denial after revocation.
 Identity unit and command integration tests cover durable reopen, idempotency, conflicts, replacement
 state, and offline enrollment administration.
 Quota coverage includes reservation recovery after restart, idempotent and concurrent begin,
@@ -600,11 +615,11 @@ cargo test -p alloyport-server --test cuda_control_plane \
   workers with no executor attached still terminate cancelled admitted attempts directly.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
 - Assigned worker lifecycle and raw previews are durably translated into observed canonical events.
-  A bounded per-run replay/subscription hub with canonical reconnect cursors now exists at the
-  library boundary, but it is not yet wired into the production control service and there is no
-  public RPC, durable run-owner authorization, retention/redaction scheduler, or terminal UI worker
-  view. Preview gaps are visible and final Artifacts retain the complete bytes; preview coalescing is
-  not implemented.
+  The production service now shares a bounded per-run hub with mTLS-authorized replay/subscription
+  RPCs and durable run grants. There is no interaction retention scheduler, cursor-expired response,
+  terminal UI worker view, or general redaction policy for future non-worker producer adapters.
+  Preview gaps are visible and final Artifacts retain the complete bytes; preview coalescing is not
+  implemented.
 - No external scheduling API or task controller integration. The worker translator intentionally
   does not emit `run.completed`, gate verdicts, or audited transitions because it does not own those
   decisions.
@@ -639,10 +654,10 @@ subscription.
 
 ### 2. Public event replay and subscription
 
-The durable cursor and bounded per-run replay-to-live hub are implemented. Next, bind runs to stable
-owners, apply controller redaction, wire worker ingestion through the shared hub, and expose the
-authorized replay/subscription RPC. Define retention-expired cursor behavior before attaching a TUI;
-the transport must not become a second event type system.
+Durable run grants, controller redaction, shared production hub wiring, and mTLS-authorized replay and
+subscription RPCs are implemented. Before attaching a TUI, add retention scheduling and an explicit
+cursor-expired response containing the earliest retained sequence. The transport remains a carrier
+for canonical envelope JSON rather than a second event type system.
 
 ### 3. One Ascend vertical slice
 
@@ -660,10 +675,9 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Add durable run ownership and the authorized public event transport:
+Start the first Ascend worker contract slice:
 
-> Read `docs/HANDOFF.md` and Designs 0010, 0011, and 0017. Persist idempotent owner/run grants, resolve
-> the caller from verified enrolled mTLS identity, apply controller redaction, and wire both worker
-> ingestion and a new replay/subscription RPC through `InteractionHub`. Preserve its canonical
-> reconnect cursor and explicit slow-consumer termination. Define retention-expired cursor status
-> before attaching a TUI; do not create a second event model or treat previews as authority.
+> Read `docs/HANDOFF.md` and Designs 0007, 0009, 0011, 0016, 0018, and 0019. Define the first fixed
+> Ascend worker execution contract: explicit CANN/driver and device identity, enumerated device-node
+> policy, occupancy/health reporting, and a durable device lease. Keep CUDA reference and Ascend
+> target receipts independent; do not add an oracle verdict or release transition to the worker.

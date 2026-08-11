@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package alloyport.interaction.v1;
+
+service InteractionService {
+  rpc ReplayRun(ReplayRunRequest) returns (stream CanonicalEvent);
+  rpc SubscribeRun(SubscribeRunRequest) returns (stream CanonicalEvent);
+}
+
+message ReplayRunRequest {
+  string run_id = 1;
+  // The last canonical sequence already applied by the client. Zero starts at the beginning.
+  uint64 after_sequence = 2;
+  // Zero selects the server default. The server enforces an upper bound.
+  uint32 limit = 3;
+}
+
+message SubscribeRunRequest {
+  string run_id = 1;
+  // The last canonical sequence already applied by the client. Zero starts at the beginning.
+  uint64 after_sequence = 2;
+}
+
+// The JSON bytes are one alloyport-events EventEnvelope. The transport does not define a second
+// semantic event vocabulary; clients obtain event_id and sequence from this canonical envelope.
+message CanonicalEvent {
+  bytes envelope_json = 1;
+}

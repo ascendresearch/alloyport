@@ -25,6 +25,9 @@ probe, not the final minimal worker image.
 
 ## Decision
 
+Design 0020 formalizes the placement boundary used here: the trusted worker supervisor remains
+outside candidate execution, even if operations later packages that supervisor in its own container.
+
 Protocol minor 3 adds `EXECUTOR_KIND_CUDA_FIXTURE`. It is not an alias for generic container
 execution. Default worker policy rejects it, and an operator must explicitly enable it. The first
 accepted fixture is `cuda-vectoradd-v1`, a self-contained `.cu` program with device code, host launch,

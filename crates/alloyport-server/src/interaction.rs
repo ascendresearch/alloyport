@@ -43,8 +43,151 @@ CREATE TABLE IF NOT EXISTS interaction_output_offsets (
     next_offset INTEGER NOT NULL,
     PRIMARY KEY(attempt_id, stream)
 );
+CREATE TABLE IF NOT EXISTS interaction_run_grants (
+    run_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    state INTEGER NOT NULL,
+    granted_at_ms INTEGER NOT NULL,
+    revoked_at_ms INTEGER,
+    PRIMARY KEY(run_id, owner_id)
+);
 COMMIT;
 ";
+
+/// Applies the controller's fail-closed display policy before an observed worker event is persisted.
+pub(crate) fn redact_worker_event(event: &mut Event) {
+    match event {
+        Event::CommandStarted {
+            command,
+            cwd,
+            description,
+            ..
+        } => {
+            *command = sanitize_display_text(command);
+            if let Some(cwd) = cwd {
+                *cwd = strip_terminal_sequences(cwd);
+            }
+            if let Some(description) = description {
+                *description = sanitize_display_text(description);
+            }
+        }
+        Event::CommandOutput {
+            text,
+            display_sanitized,
+            ..
+        } => {
+            *text = sanitize_display_text(text);
+            *display_sanitized = true;
+        }
+        Event::Warning { message } | Event::Error { message } => {
+            *message = sanitize_display_text(message);
+        }
+        _ => {}
+    }
+}
+
+fn sanitize_display_text(input: &str) -> String {
+    let stripped = strip_terminal_sequences(input);
+    let mut output = String::with_capacity(stripped.len());
+    let mut redact_next = false;
+    for segment in stripped.split_inclusive(char::is_whitespace) {
+        let word = segment.trim_end_matches(char::is_whitespace);
+        let whitespace = &segment[word.len()..];
+        if word.is_empty() {
+            output.push_str(segment);
+            continue;
+        }
+        if redact_next {
+            output.push_str("[REDACTED]");
+            redact_next = false;
+        } else if word.eq_ignore_ascii_case("bearer") {
+            output.push_str(word);
+            redact_next = true;
+        } else if let Some((key, _)) = word.split_once('=') {
+            if is_sensitive_key(key) {
+                output.push_str(key);
+                output.push_str("=[REDACTED]");
+            } else {
+                output.push_str(word);
+            }
+        } else {
+            output.push_str(word);
+            redact_next = looks_like_sensitive_label(word);
+        }
+        output.push_str(whitespace);
+    }
+    output
+}
+
+fn looks_like_sensitive_label(value: &str) -> bool {
+    is_sensitive_key(value)
+        && (value.starts_with('-')
+            || value.ends_with(':')
+            || value
+                .chars()
+                .all(|character| character.is_ascii_uppercase() || character == '_'))
+}
+
+fn is_sensitive_key(value: &str) -> bool {
+    let normalized = value
+        .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .to_ascii_lowercase();
+    [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "api_key",
+        "apikey",
+        "access_key",
+        "private_key",
+        "authorization",
+        "cookie",
+    ]
+    .iter()
+    .any(|sensitive| normalized.contains(sensitive))
+}
+
+fn strip_terminal_sequences(input: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum State {
+        Text,
+        Escape,
+        ControlSequence,
+        OperatingSystemCommand,
+        OperatingSystemCommandEscape,
+    }
+
+    let mut state = State::Text;
+    let mut output = String::with_capacity(input.len());
+    for character in input.chars() {
+        state = match state {
+            State::Text if character == '\u{1b}' => State::Escape,
+            State::Text => {
+                if !character.is_control() || matches!(character, '\n' | '\t') {
+                    output.push(character);
+                }
+                State::Text
+            }
+            State::Escape if character == '[' => State::ControlSequence,
+            State::Escape if character == ']' => State::OperatingSystemCommand,
+            State::Escape => State::Text,
+            State::ControlSequence if ('@'..='~').contains(&character) => State::Text,
+            State::ControlSequence => State::ControlSequence,
+            State::OperatingSystemCommand if character == '\u{7}' => State::Text,
+            State::OperatingSystemCommandEscape if character == '\\' => State::Text,
+            State::OperatingSystemCommand | State::OperatingSystemCommandEscape
+                if character == '\u{1b}' =>
+            {
+                State::OperatingSystemCommandEscape
+            }
+            State::OperatingSystemCommand | State::OperatingSystemCommandEscape => {
+                State::OperatingSystemCommand
+            }
+        };
+    }
+    output
+}
 
 #[derive(Debug)]
 pub enum InteractionError {
@@ -61,6 +204,14 @@ pub enum InteractionError {
         run_id: String,
         after_sequence: u64,
         latest_sequence: u64,
+    },
+    RevokedRunGrant {
+        run_id: String,
+        owner_id: String,
+    },
+    MissingRunGrant {
+        run_id: String,
+        owner_id: String,
     },
     ValueOutOfRange(u64),
     InvalidSubscriptionCapacity,
@@ -95,6 +246,14 @@ impl Display for InteractionError {
                 formatter,
                 "interaction cursor {after_sequence} is beyond run {run_id} high-water mark {latest_sequence}"
             ),
+            Self::RevokedRunGrant { run_id, owner_id } => write!(
+                formatter,
+                "interaction access for owner {owner_id} to run {run_id} was revoked"
+            ),
+            Self::MissingRunGrant { run_id, owner_id } => write!(
+                formatter,
+                "interaction access for owner {owner_id} to run {run_id} does not exist"
+            ),
             Self::ValueOutOfRange(value) => {
                 write!(formatter, "interaction value {value} exceeds SQLite range")
             }
@@ -118,6 +277,8 @@ impl Error for InteractionError {
             | Self::ConflictingDedupKey(_)
             | Self::ConflictingOutput { .. }
             | Self::InvalidCursor { .. }
+            | Self::RevokedRunGrant { .. }
+            | Self::MissingRunGrant { .. }
             | Self::ValueOutOfRange(_)
             | Self::InvalidSubscriptionCapacity
             | Self::LockPoisoned => None,
@@ -156,6 +317,18 @@ impl AppendOutcome {
 pub struct OutputAppend {
     pub outcome: AppendOutcome,
     pub missing_bytes_before: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunGrantOutcome {
+    Granted,
+    Duplicate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunRevokeOutcome {
+    Revoked,
+    Duplicate,
 }
 
 pub trait InteractionStore: Debug + Send + Sync {
@@ -210,6 +383,37 @@ pub trait InteractionStore: Debug + Send + Sync {
     ///
     /// Returns an error if the durable cursor cannot be read.
     fn latest_sequence(&self, run_id: &str) -> Result<Option<u64>, InteractionError>;
+
+    /// Grants one stable owner read access to a run. Revoked grant identities cannot be reused.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identities, storage failure, or a terminally revoked grant.
+    fn grant_run_access(
+        &self,
+        run_id: &str,
+        owner_id: &str,
+        now_ms: u64,
+    ) -> Result<RunGrantOutcome, InteractionError>;
+
+    /// Revokes one existing run grant idempotently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the grant does not exist or cannot be durably updated.
+    fn revoke_run_access(
+        &self,
+        run_id: &str,
+        owner_id: &str,
+        now_ms: u64,
+    ) -> Result<RunRevokeOutcome, InteractionError>;
+
+    /// Checks one stable owner's active run access without revealing event contents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if authorization state cannot be read.
+    fn can_read_run(&self, run_id: &str, owner_id: &str) -> Result<bool, InteractionError>;
 }
 
 /// Append-through store that publishes only newly inserted canonical envelopes.
@@ -343,6 +547,28 @@ impl InteractionStore for InteractionHub {
 
     fn latest_sequence(&self, run_id: &str) -> Result<Option<u64>, InteractionError> {
         self.store.latest_sequence(run_id)
+    }
+
+    fn grant_run_access(
+        &self,
+        run_id: &str,
+        owner_id: &str,
+        now_ms: u64,
+    ) -> Result<RunGrantOutcome, InteractionError> {
+        self.store.grant_run_access(run_id, owner_id, now_ms)
+    }
+
+    fn revoke_run_access(
+        &self,
+        run_id: &str,
+        owner_id: &str,
+        now_ms: u64,
+    ) -> Result<RunRevokeOutcome, InteractionError> {
+        self.store.revoke_run_access(run_id, owner_id, now_ms)
+    }
+
+    fn can_read_run(&self, run_id: &str, owner_id: &str) -> Result<bool, InteractionError> {
+        self.store.can_read_run(run_id, owner_id)
     }
 }
 
@@ -659,6 +885,99 @@ impl InteractionStore for SqliteInteractionStore {
             .map(from_i64)
             .transpose()
     }
+
+    fn grant_run_access(
+        &self,
+        run_id: &str,
+        owner_id: &str,
+        now_ms: u64,
+    ) -> Result<RunGrantOutcome, InteractionError> {
+        validate_run_owner(run_id, owner_id)?;
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(state) = transaction
+            .query_row(
+                "SELECT state FROM interaction_run_grants WHERE run_id = ?1 AND owner_id = ?2",
+                params![run_id, owner_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+        {
+            if state == 1 {
+                transaction.commit()?;
+                return Ok(RunGrantOutcome::Duplicate);
+            }
+            if state == 2 {
+                return Err(InteractionError::RevokedRunGrant {
+                    run_id: run_id.into(),
+                    owner_id: owner_id.into(),
+                });
+            }
+            return Err(InteractionError::InvalidFrame(format!(
+                "run grant has unknown state {state}"
+            )));
+        }
+        transaction.execute(
+            "INSERT INTO interaction_run_grants(
+                run_id, owner_id, state, granted_at_ms
+             ) VALUES (?1, ?2, 1, ?3)",
+            params![run_id, owner_id, to_i64(now_ms)?],
+        )?;
+        transaction.commit()?;
+        Ok(RunGrantOutcome::Granted)
+    }
+
+    fn revoke_run_access(
+        &self,
+        run_id: &str,
+        owner_id: &str,
+        now_ms: u64,
+    ) -> Result<RunRevokeOutcome, InteractionError> {
+        validate_run_owner(run_id, owner_id)?;
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = transaction
+            .query_row(
+                "SELECT state FROM interaction_run_grants WHERE run_id = ?1 AND owner_id = ?2",
+                params![run_id, owner_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .ok_or_else(|| InteractionError::MissingRunGrant {
+                run_id: run_id.into(),
+                owner_id: owner_id.into(),
+            })?;
+        if state == 2 {
+            transaction.commit()?;
+            return Ok(RunRevokeOutcome::Duplicate);
+        }
+        if state != 1 {
+            return Err(InteractionError::InvalidFrame(format!(
+                "run grant has unknown state {state}"
+            )));
+        }
+        transaction.execute(
+            "UPDATE interaction_run_grants
+             SET state = 2, revoked_at_ms = ?3
+             WHERE run_id = ?1 AND owner_id = ?2",
+            params![run_id, owner_id, to_i64(now_ms)?],
+        )?;
+        transaction.commit()?;
+        Ok(RunRevokeOutcome::Revoked)
+    }
+
+    fn can_read_run(&self, run_id: &str, owner_id: &str) -> Result<bool, InteractionError> {
+        validate_run_owner(run_id, owner_id)?;
+        let database = self.connection()?;
+        Ok(database
+            .query_row(
+                "SELECT state FROM interaction_run_grants WHERE run_id = ?1 AND owner_id = ?2",
+                params![run_id, owner_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            == Some(1))
+    }
 }
 
 #[derive(Serialize)]
@@ -705,6 +1024,20 @@ fn validate_input(dedup_key: &str, frame: &ProducerEvent) -> Result<(), Interact
     if frame.run_id.trim().is_empty() {
         return Err(InteractionError::InvalidFrame(
             "run identity is missing".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_run_owner(run_id: &str, owner_id: &str) -> Result<(), InteractionError> {
+    if run_id.trim().is_empty() {
+        return Err(InteractionError::InvalidFrame(
+            "run grant identity is missing".into(),
+        ));
+    }
+    if owner_id.trim().is_empty() {
+        return Err(InteractionError::InvalidFrame(
+            "run grant owner is missing".into(),
         ));
     }
     Ok(())
@@ -1037,6 +1370,68 @@ mod tests {
             })
         ));
         Ok(())
+    }
+
+    #[test]
+    fn run_grants_are_durable_idempotent_and_revocation_is_terminal() -> Result<(), Box<dyn Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("events.sqlite3");
+        let store = SqliteInteractionStore::open(&database)?;
+        assert_eq!(
+            store.grant_run_access("task-1", "owner-a", 1)?,
+            RunGrantOutcome::Granted
+        );
+        assert_eq!(
+            store.grant_run_access("task-1", "owner-a", 99)?,
+            RunGrantOutcome::Duplicate
+        );
+        assert!(store.can_read_run("task-1", "owner-a")?);
+        assert!(!store.can_read_run("task-1", "owner-b")?);
+        assert_eq!(
+            store.revoke_run_access("task-1", "owner-a", 2)?,
+            RunRevokeOutcome::Revoked
+        );
+        assert_eq!(
+            store.revoke_run_access("task-1", "owner-a", 3)?,
+            RunRevokeOutcome::Duplicate
+        );
+        assert!(!store.can_read_run("task-1", "owner-a")?);
+        assert!(matches!(
+            store.grant_run_access("task-1", "owner-a", 4),
+            Err(InteractionError::RevokedRunGrant { .. })
+        ));
+        drop(store);
+
+        let reopened = SqliteInteractionStore::open(database)?;
+        assert!(!reopened.can_read_run("task-1", "owner-a")?);
+        assert_eq!(
+            reopened.grant_run_access("task-1", "owner-b", 5)?,
+            RunGrantOutcome::Granted
+        );
+        assert!(reopened.can_read_run("task-1", "owner-b")?);
+        Ok(())
+    }
+
+    #[test]
+    fn controller_redaction_strips_terminal_controls_and_common_credentials() {
+        let mut event = Event::CommandOutput {
+            stream: OutputStream::Stdout,
+            byte_offset: 0,
+            text: "\u{1b}[31mTOKEN=top-secret\u{1b}[0m\nBearer credential\nordinary secret text"
+                .into(),
+            display_sanitized: false,
+        };
+        redact_worker_event(&mut event);
+        assert_eq!(
+            event,
+            Event::CommandOutput {
+                stream: OutputStream::Stdout,
+                byte_offset: 0,
+                text: "TOKEN=[REDACTED]\nBearer [REDACTED]\nordinary secret text".into(),
+                display_sanitized: true,
+            }
+        );
     }
 
     fn frame(event: Event) -> ProducerEvent {
