@@ -220,6 +220,9 @@ Worker registration, replay reconstruction, inbound stream consumption, identity
 disconnect handling live in a dedicated session-lifecycle module outside the service facade.
 Assignment admission/reassignment/cancellation, durable frame preparation with connection sequence
 and lease allocation, and abandoned-preparation reconciliation are three separate use-case modules.
+Inbound frame sequence/ACK persistence, durable attempt-state observation, and canonical
+Interaction projection are likewise separate modules, so transport replay mechanics do not own
+user-visible event construction.
 
 Current behavior:
 

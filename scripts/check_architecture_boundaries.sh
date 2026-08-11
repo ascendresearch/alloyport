@@ -89,6 +89,16 @@ if server_session_boundary=$(rg -n \
     crates/alloyport-server/src/lib.rs); then
     violations+=("worker connection session lifecycle returned to the server facade: ${server_session_boundary}")
 fi
+if observation_transport=$(rg -n \
+    '^    pub\(super\) async fn ingest|^    pub\(super\) async fn prepare_transport_ack|validate_worker_acknowledgement|expected_worker_message_id' \
+    crates/alloyport-server/src/attempt_observer.rs); then
+    violations+=("worker frame sequencing or transport acknowledgement returned to attempt observation: ${observation_transport}")
+fi
+if observation_projection=$(rg -n \
+    '^    pub\(super\) fn record_run_started|^    pub\(super\) fn record_command_started|^    pub\(super\) fn record_command_finished|^    pub\(super\) fn observe_output' \
+    crates/alloyport-server/src/attempt_observer.rs); then
+    violations+=("canonical interaction projection returned to attempt observation: ${observation_projection}")
+fi
 if interaction_store_capability=$(rg -n \
     'impl InteractionEventWriter|impl InteractionEventReader|impl InteractionRunAccessStore' \
     crates/alloyport-server/src/adapters/sqlite/interaction_store.rs); then

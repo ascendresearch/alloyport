@@ -286,11 +286,13 @@ directories (including their migration and adapter-test files).
   422 lines (down from a 2,204-line mixed implementation), metadata/references are 201 lines, and
   authorized reader leases/garbage collection are 126 lines. Schema/migrations, quota accounting,
   record mapping/staging helpers, and adapter tests remain separate modules.
-- [x] Server control coordinator split by use case: `lib.rs` is 488 lines (down from 2,030), with
+- [x] Server control coordinator split by use case: `lib.rs` is 492 lines (down from 2,030), with
   assignment admission/reassignment/cancellation (281), durable delivery/connection sequencing
-  (175), abandoned-preparation reconciliation (144), attempt observation/projection (552), worker
-  session lifecycle (161), and gRPC transport/wire mapping (310) isolated in cohesive modules.
-  Protobuf/domain conversion lives at the transport edge.
+  (175), abandoned-preparation reconciliation (144), inbound frame sequencing/ACK persistence
+  (164), attempt-state observation (199), canonical Interaction projection (204), worker session
+  lifecycle (161), and gRPC transport/wire mapping (310) isolated in cohesive modules. Protobuf/
+  domain conversion lives at the transport edge; CI prevents transport and projection concerns
+  returning to attempt observation.
 - [x] Worker outbound coordinator split by use case: `lib.rs` is 440 lines (down from 1,838), with
   local admission/journal state (356), control-session framing (289), attempt execution coordination
   (513), wire/journal mapping (188), and tests (340) isolated in cohesive modules. No module in this
@@ -312,7 +314,7 @@ directories (including their migration and adapter-test files).
   schema module.
 - [x] Repository-wide production module size gate reached: tests were separated from CUDA Docker,
   CUDA supervisor/runtime, Artifact CAS, and event reducer modules. The largest production Rust
-  module is now 552 lines; no production module exceeds the 800-line review threshold.
+  module is now 517 lines; no production module exceeds the 800-line review threshold.
 - [x] First R6 async-persistence slice: worker control and execution paths use an immutable shared
   state handle and route journal operations through a four-permit bounded blocking adapter. No
   SQLite-backed journal call runs while holding a Tokio state mutex; a slow-operation concurrency
