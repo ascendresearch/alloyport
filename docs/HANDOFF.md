@@ -370,6 +370,8 @@ Current behavior:
 
 The worker library also implements the Design 0015 deterministic fake executor runtime:
 
+- keeps Artifact publication contracts/local spooling and canonical event projection in shared
+  modules used by both fake and CUDA runtimes, outside the fake execution coordinator;
 - translates only validated, journal-stored assignments into typed executor inputs with logical
   paths, argv, environment, timeout, and output limits;
 - produces independently offset stdout/stderr chunks through a bounded channel and classifies

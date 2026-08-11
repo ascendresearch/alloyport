@@ -2,13 +2,16 @@
 
 use super::*;
 use crate::AdmissionPolicy;
+use alloyport_artifacts::upload::ArtifactReferenceKind;
 use alloyport_artifacts::{
     ArtifactIdentity, ArtifactReader, ArtifactStoreError, FilesystemArtifactStore,
     IngestDisposition, IngestRequest, IngestResult, Sha256Digest,
 };
-use alloyport_events::Event;
+use alloyport_events::{Event, OutputStream as EventOutputStream};
 use alloyport_proto::v1::{ArtifactRef, ExecutionSpec, ExecutorKind, ResourceLimits};
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;

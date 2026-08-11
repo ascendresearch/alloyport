@@ -1,28 +1,29 @@
 //! Typed executor boundary and deterministic fake runtime.
 
+mod artifact_coordination;
+mod event_projection;
+
+pub use artifact_coordination::{
+    ArtifactPublicationError, ArtifactPublisher, ArtifactReferenceIntent,
+};
+pub(crate) use artifact_coordination::{
+    RECEIPT_MEDIA_TYPE, STDERR_MEDIA_TYPE, STDOUT_MEDIA_TYPE, store_artifact,
+    terminal_reference_intents,
+};
+pub(crate) use event_projection::{event_artifact, output_event, producer_event};
+
 use crate::artifact_input::ArtifactInputError;
 use crate::journal::{LocalAttemptPhase, StoredArtifact, StoredFinished};
 use crate::{WorkerError, WorkerState};
-use alloyport_artifacts::upload::ArtifactReferenceKind;
-use alloyport_artifacts::{ArtifactStore, ArtifactStoreError, IngestRequest};
-use alloyport_events::{
-    ArtifactRef as EventArtifactRef, Authority, Event, OutputStream as EventOutputStream, Producer,
-    ProducerEvent, Visibility,
-};
+use alloyport_artifacts::{ArtifactStore, ArtifactStoreError};
+use alloyport_events::{Event, ProducerEvent};
 use alloyport_proto::v1::AttemptOutcome;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::future::Future;
-use std::io::Cursor;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-
-pub(crate) const STDOUT_MEDIA_TYPE: &str = "application/vnd.alloyport.stdout";
-pub(crate) const STDERR_MEDIA_TYPE: &str = "application/vnd.alloyport.stderr";
-pub(crate) const RECEIPT_MEDIA_TYPE: &str = "application/vnd.alloyport.run-receipt+json";
 
 pub use crate::fake_executor::{
     CancellationToken, ExecutionChunk, ExecutionObservation, ExecutionStream, ExecutorInput,
@@ -132,48 +133,6 @@ pub struct ExecutionRun {
     pub events: Vec<ProducerEvent>,
     pub reference_intents: Vec<ArtifactReferenceIntent>,
     pub replayed_terminal: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArtifactReferenceIntent {
-    pub reference_key: String,
-    pub kind: ArtifactReferenceKind,
-    pub purpose: String,
-    pub artifact: StoredArtifact,
-}
-
-/// Stable failure categories exposed by pluggable Artifact publishers.
-///
-/// Adapter-specific errors stay behind the publisher boundary. Callers may make retry and
-/// observability decisions from these variants without parsing an implementation's error text.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ArtifactPublicationError {
-    LocalArtifact(String),
-    Unavailable(String),
-    Rejected(String),
-    Internal(String),
-}
-
-impl Display for ArtifactPublicationError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::LocalArtifact(detail) => write!(formatter, "local Artifact failure: {detail}"),
-            Self::Unavailable(detail) => write!(formatter, "publisher unavailable: {detail}"),
-            Self::Rejected(detail) => write!(formatter, "publication rejected: {detail}"),
-            Self::Internal(detail) => write!(formatter, "publisher internal failure: {detail}"),
-        }
-    }
-}
-
-impl Error for ArtifactPublicationError {}
-
-/// Publishes worker-local execution artifacts before terminal lifecycle state becomes reportable.
-pub trait ArtifactPublisher: Debug + Send + Sync {
-    /// Publishes every reference intent, idempotently resuming any prior partial publication.
-    fn publish<'a>(
-        &'a self,
-        references: &'a [ArtifactReferenceIntent],
-    ) -> Pin<Box<dyn Future<Output = Result<(), ArtifactPublicationError>> + Send + 'a>>;
 }
 
 pub struct FakeExecutionRuntime {
@@ -535,109 +494,6 @@ struct FakeRunReceipt<'a> {
     stdout_digest: &'a str,
     stderr_digest: &'a str,
     detail: &'a str,
-}
-
-pub(crate) async fn store_artifact(
-    artifacts: Arc<dyn ArtifactStore>,
-    bytes: Vec<u8>,
-    media_type: &'static str,
-) -> Result<StoredArtifact, ExecutionRuntimeError> {
-    let result = tokio::task::spawn_blocking(move || {
-        let mut source = Cursor::new(bytes);
-        artifacts.ingest(&mut source, IngestRequest::unverified())
-    })
-    .await
-    .map_err(ExecutionRuntimeError::TaskJoin)??;
-    Ok(StoredArtifact {
-        digest: result.artifact.digest.to_string(),
-        size_bytes: result.artifact.size_bytes,
-        media_type: media_type.into(),
-    })
-}
-
-pub(crate) fn producer_event(
-    worker_id: &str,
-    input: &ExecutorInput,
-    event: Event,
-) -> ProducerEvent {
-    let mut frame = ProducerEvent::new(
-        input.task_id.clone(),
-        Producer::new("alloyport-worker", worker_id),
-        event,
-    );
-    frame.task_id = Some(input.task_id.clone());
-    frame.operation_id = Some(input.attempt_id.clone());
-    frame.authority = Authority::Observed;
-    frame.visibility = Visibility::User;
-    frame
-}
-
-pub(crate) fn output_event(
-    worker_id: &str,
-    input: &ExecutorInput,
-    chunk: &ExecutionChunk,
-) -> ProducerEvent {
-    let text = String::from_utf8_lossy(&chunk.bytes);
-    let display_sanitized = matches!(text, std::borrow::Cow::Owned(_));
-    producer_event(
-        worker_id,
-        input,
-        Event::CommandOutput {
-            stream: match chunk.stream {
-                ExecutionStream::Stdout => EventOutputStream::Stdout,
-                ExecutionStream::Stderr => EventOutputStream::Stderr,
-            },
-            byte_offset: chunk.byte_offset,
-            text: text.into_owned(),
-            display_sanitized,
-        },
-    )
-}
-
-pub(crate) fn event_artifact(artifact: &StoredArtifact, reference: &str) -> EventArtifactRef {
-    EventArtifactRef {
-        digest: artifact.digest.clone(),
-        media_type: artifact.media_type.clone(),
-        size_bytes: artifact.size_bytes,
-        reference: reference.into(),
-    }
-}
-
-pub(crate) fn terminal_reference_intents(
-    attempt_id: &str,
-    finished: &StoredFinished,
-) -> Vec<ArtifactReferenceIntent> {
-    let mut references = Vec::new();
-    for (artifact, suffix, purpose) in [
-        (
-            finished.stdout.as_ref(),
-            "stdout",
-            "complete attempt stdout",
-        ),
-        (
-            finished.stderr.as_ref(),
-            "stderr",
-            "complete attempt stderr",
-        ),
-    ] {
-        if let Some(artifact) = artifact {
-            references.push(ArtifactReferenceIntent {
-                reference_key: format!("output:{attempt_id}:{suffix}"),
-                kind: ArtifactReferenceKind::AssignmentOutput,
-                purpose: purpose.into(),
-                artifact: artifact.clone(),
-            });
-        }
-    }
-    if let Some(receipt) = finished.receipt.as_ref() {
-        references.push(ArtifactReferenceIntent {
-            reference_key: format!("receipt:{attempt_id}"),
-            kind: ArtifactReferenceKind::Receipt,
-            purpose: "attempt run receipt".into(),
-            artifact: receipt.clone(),
-        });
-    }
-    references
 }
 
 #[cfg(test)]

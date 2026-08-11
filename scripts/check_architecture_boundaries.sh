@@ -64,6 +64,11 @@ if worker_store_capability=$(rg -n \
     crates/alloyport-worker/src/adapters/sqlite/attempt_store.rs); then
     violations+=("worker persistence capability SQL returned to the SQLite composition shell: ${worker_store_capability}")
 fi
+if executor_artifact_boundary=$(rg -n \
+    'pub trait ArtifactPublisher|pub enum ArtifactPublicationError|pub struct ArtifactReferenceIntent|pub\(crate\) async fn store_artifact|pub\(crate\) fn producer_event' \
+    crates/alloyport-worker/src/executor.rs); then
+    violations+=("Artifact publication or event projection returned to the fake runtime coordinator: ${executor_artifact_boundary}")
+fi
 if ! rg -q 'pub trait AttemptLifecycleStore' crates/alloyport-worker/src/journal.rs \
     || ! rg -q 'pub trait WorkerOutboxStore' crates/alloyport-worker/src/journal.rs; then
     violations+=("worker journal capability ports are missing")

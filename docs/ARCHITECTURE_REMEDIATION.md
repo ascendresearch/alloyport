@@ -290,10 +290,11 @@ directories (including their migration and adapter-test files).
 - [x] First R4 execution-backend slice: closed Fake/CUDA dispatch replaced by an executor-kind
   registry and public `ExecutionBackend` composition port, including duplicate-capability and
   third-party probe-backend coverage.
-- [x] Worker executor responsibilities split: durable execution/Artifact coordination is 645 lines
-  (down from a 1,395-line mixed module), deterministic fake process behavior is 344 lines, and its
-  560-line behavioral suite is isolated from production code. Existing `executor::*` imports remain
-  source-compatible through explicit re-exports.
+- [x] Worker executor responsibilities split: the durable fake execution coordinator is 501 lines
+  (down from a 1,395-line mixed module), the shared local-spool/remote-publication boundary is 113
+  lines, canonical event projection is 56 lines, and deterministic fake process behavior is 344
+  lines. Its behavioral suite remains isolated from production code, and existing `executor::*`
+  imports stay source-compatible through explicit re-exports.
 - [x] Worker Artifact input port: execution backends depend on `ArtifactInputProvider`, while the
   remote downloader maps adapter-specific failures into typed Invalid/Policy/Unavailable/Integrity/
   Internal categories.
@@ -303,7 +304,7 @@ directories (including their migration and adapter-test files).
   schema module.
 - [x] Repository-wide production module size gate reached: tests were separated from CUDA Docker,
   CUDA supervisor/runtime, Artifact CAS, and event reducer modules. The largest production Rust
-  module is now 645 lines; no production module exceeds the 800-line review threshold.
+  module is now 644 lines; no production module exceeds the 800-line review threshold.
 - [x] First R6 async-persistence slice: worker control and execution paths use an immutable shared
   state handle and route journal operations through a four-permit bounded blocking adapter. No
   SQLite-backed journal call runs while holding a Tokio state mutex; a slow-operation concurrency
