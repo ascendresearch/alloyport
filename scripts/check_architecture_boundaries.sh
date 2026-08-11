@@ -74,6 +74,11 @@ if docker_process_boundary=$(rg -n \
     crates/alloyport-worker/src/cuda_docker.rs); then
     violations+=("Docker process or bounded-I/O implementation returned to the engine adapter: ${docker_process_boundary}")
 fi
+if server_session_boundary=$(rg -n \
+    '^    async fn register|^    async fn disconnect|^    async fn consume_stream' \
+    crates/alloyport-server/src/lib.rs); then
+    violations+=("worker connection session lifecycle returned to the server facade: ${server_session_boundary}")
+fi
 if ! rg -q 'pub trait AttemptLifecycleStore' crates/alloyport-worker/src/journal.rs \
     || ! rg -q 'pub trait WorkerOutboxStore' crates/alloyport-worker/src/journal.rs; then
     violations+=("worker journal capability ports are missing")

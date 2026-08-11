@@ -213,6 +213,8 @@ in dedicated implementation modules, as do assignment and attempt/lease operatio
 repository shell now owns only connection creation, migrations, and locking.
 Canonical Interaction persistence contracts, the replay-to-live broadcast decorator, and worker
 display sanitization are also separate modules; SQLite remains confined to its adapter.
+Worker registration, replay reconstruction, inbound stream consumption, identity revalidation, and
+disconnect handling live in a dedicated session-lifecycle module outside the service facade.
 
 Current behavior:
 
