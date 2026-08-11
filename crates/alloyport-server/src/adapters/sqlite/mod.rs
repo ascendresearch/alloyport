@@ -1,6 +1,8 @@
 //! `SQLite` implementations of server application ports.
 
 pub(crate) mod assignment_delivery;
+mod control_assignments;
+mod control_attempts;
 mod control_connections;
 mod control_outbox;
 mod control_records;

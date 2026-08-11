@@ -254,8 +254,9 @@ directories (including their migration and adapter-test files).
   SQL or database-driver types.
 - [x] Server control port segregated by capability: worker connections, assignment coordination,
   attempt/lease lifecycle, and server outbox have narrow traits, while `ControlRepository` remains a
-  compatibility composition. SQLite connection and outbox implementations are separate 87- and
-  82-line modules; the assignment/attempt implementation is 535 lines rather than 682.
+  compatibility composition. The SQLite composition/migration shell is 76 lines; assignment,
+  attempt/lease, connection, and outbox implementations are separate 216-, 252-, 87-, and 82-line
+  modules rather than one 682-line implementation.
 - [x] Worker journal domain/port separated from `SqliteAttemptStore`; `journal.rs` contains no SQL
   or database-driver types.
 - [x] Interaction model/port/live hub separated from `SqliteInteractionStore`; `interaction.rs`

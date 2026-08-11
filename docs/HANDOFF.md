@@ -206,7 +206,8 @@ non-terminal replay, attempt leases, and worker lifecycle classification. Genera
 are translated at the RPC edge into separate storage-domain records. Persistence capabilities are
 segregated into worker-connection, assignment, attempt/lease, and server-outbox ports; the complete
 service consumes their `ControlRepository` composition. SQLite connection and outbox operations live
-in dedicated implementation modules.
+in dedicated implementation modules, as do assignment and attempt/lease operations; the shared
+repository shell now owns only connection creation, migrations, and locking.
 
 Current behavior:
 
