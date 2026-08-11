@@ -3,7 +3,7 @@
 use super::upload_gc::{artifact_is_reachable, pending_garbage, stage_garbage_candidates};
 use super::upload_store::SqliteUploadStore;
 use crate::upload::{GarbageCollectionReport, UploadError};
-use crate::{ArtifactReader, ArtifactStore, FilesystemArtifactStore, Sha256Digest};
+use crate::{ArtifactReader, ArtifactRetentionStore, ArtifactStore, Sha256Digest};
 use rusqlite::TransactionBehavior;
 use std::collections::BTreeMap;
 use std::io::{self, Read};
@@ -68,7 +68,7 @@ impl SqliteUploadStore {
 
     pub fn collect_garbage(
         &self,
-        artifacts: &FilesystemArtifactStore,
+        artifacts: &dyn ArtifactRetentionStore,
         now_ms: u64,
         limit: usize,
     ) -> Result<GarbageCollectionReport, UploadError> {

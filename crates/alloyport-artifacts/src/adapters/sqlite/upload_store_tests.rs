@@ -5,14 +5,15 @@ use crate::upload::{
     ArtifactReferenceKind, GarbageCollectionReport, GrantArtifactReference, QuotaScope,
 };
 use crate::{
-    ArtifactReader, ArtifactStore, ArtifactStoreError, FilesystemArtifactStore, IngestResult,
+    ArtifactReader, ArtifactRetentionStore, ArtifactStore, ArtifactStoreError,
+    FilesystemArtifactStore, IngestResult,
 };
 use ring::digest::{Context, SHA256};
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 
 #[test]
@@ -589,6 +590,33 @@ fn garbage_collection_skips_an_active_reader_then_collects() -> Result<(), Box<d
 }
 
 #[test]
+fn garbage_collection_accepts_a_non_filesystem_retention_port() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let uploads = SqliteUploadStore::open(
+        directory.path().join("uploads.sqlite3"),
+        directory.path().join("uploads"),
+        100,
+        100,
+    )?;
+    let cas = FilesystemArtifactStore::open(directory.path().join("cas"), 100)?;
+    let (session, artifact) = complete_upload(&uploads, &cas, "worker-1", "source", b"data")?;
+    uploads.revoke_reference("worker-1", &format!("upload:{}", session.upload_id), 10)?;
+    let retention = RecordingRetentionStore::default();
+
+    assert_eq!(
+        uploads
+            .collect_garbage(&retention, 11, 10)?
+            .collected_objects,
+        1
+    );
+    assert_eq!(
+        *retention.removed.lock().expect("retention fixture lock"),
+        vec![artifact.digest]
+    );
+    Ok(())
+}
+
+#[test]
 fn pending_gc_recovers_after_restart_without_resurrecting_metadata() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("uploads.sqlite3");
@@ -689,6 +717,24 @@ fn digest(bytes: &[u8]) -> Sha256Digest {
 struct FlakyStore {
     inner: FilesystemArtifactStore,
     fail_next: AtomicBool,
+}
+
+#[derive(Debug, Default)]
+struct RecordingRetentionStore {
+    removed: Mutex<Vec<Sha256Digest>>,
+}
+
+impl ArtifactRetentionStore for RecordingRetentionStore {
+    fn remove_unreachable(&self, digest: Sha256Digest) -> Result<bool, ArtifactStoreError> {
+        self.removed
+            .lock()
+            .map_err(|_| ArtifactStoreError::Io {
+                operation: "lock retention fixture",
+                source: io::Error::other("retention fixture lock poisoned"),
+            })?
+            .push(digest);
+        Ok(true)
+    }
 }
 
 impl ArtifactStore for FlakyStore {

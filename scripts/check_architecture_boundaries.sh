@@ -36,6 +36,10 @@ if concrete=$(rg -n 'SqliteUploadStore|FilesystemArtifactStore' \
     "${server_application_files[@]}" "${worker_application_files[@]}"); then
     violations+=("concrete Artifact adapter escaped into application code: ${concrete}")
 fi
+if concrete=$(rg -n 'FilesystemArtifactStore' \
+    crates/alloyport-artifacts/src/adapters/sqlite/upload_access_gc.rs); then
+    violations+=("Artifact garbage collection regained a concrete filesystem dependency: ${concrete}")
+fi
 if string_error=$(rg -n 'Future<Output = Result<\(\), String>>' \
     crates/alloyport-worker/src/executor.rs); then
     violations+=("Artifact publisher port regained an untyped String error: ${string_error}")

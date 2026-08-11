@@ -196,6 +196,12 @@ pub trait ArtifactStore: Debug + Send + Sync {
     fn contains(&self, digest: Sha256Digest) -> Result<bool, ArtifactStoreError>;
 }
 
+/// Administrative removal port used only after metadata proves an immutable object unreachable.
+#[allow(clippy::missing_errors_doc)]
+pub trait ArtifactRetentionStore: Debug + Send + Sync {
+    fn remove_unreachable(&self, digest: Sha256Digest) -> Result<bool, ArtifactStoreError>;
+}
+
 #[derive(Debug)]
 pub enum ArtifactStoreError {
     Io {
@@ -553,6 +559,12 @@ impl ArtifactStore for FilesystemArtifactStore {
                 source,
             }),
         }
+    }
+}
+
+impl ArtifactRetentionStore for FilesystemArtifactStore {
+    fn remove_unreachable(&self, digest: Sha256Digest) -> Result<bool, ArtifactStoreError> {
+        Self::remove_unreachable(self, digest)
     }
 }
 
