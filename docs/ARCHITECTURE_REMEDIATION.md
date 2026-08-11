@@ -258,24 +258,24 @@ directories (including their migration and adapter-test files).
   contains no SQL or database-driver types.
 - [x] Artifact upload model separated from `SqliteUploadStore`; `upload.rs` contains no SQL or
   database-driver types.
-- [x] Artifact SQLite implementation split by responsibility: the lifecycle orchestrator is 678
+- [x] Artifact SQLite implementation split by responsibility: the lifecycle orchestrator is 744
   lines (down from 2,204), while schema/migrations, quota accounting, durable references, garbage
   collection, record mapping/staging helpers, and adapter tests live in separate modules. No
   production module in this adapter exceeds the 800-line review threshold.
-- [x] Server control coordinator split by use case: `lib.rs` is 616 lines (down from 2,030), with
-  assignment coordination (464), attempt observation/projection (488), gRPC transport and wire
-  mapping (311), and tests (211) isolated in cohesive modules. Protobuf/domain conversion now lives
+- [x] Server control coordinator split by use case: `lib.rs` is 641 lines (down from 2,030), with
+  assignment coordination (585), attempt observation/projection (552), gRPC transport and wire
+  mapping (310), and tests (211) isolated in cohesive modules. Protobuf/domain conversion now lives
   at the transport edge, and no module in this slice exceeds the 800-line review threshold.
-- [x] Worker outbound coordinator split by use case: `lib.rs` is 391 lines (down from 1,838), with
-  local admission/journal state (230), control-session framing (272), attempt execution coordination
-  (537), wire/journal mapping (188), and tests (289) isolated in cohesive modules. No module in this
+- [x] Worker outbound coordinator split by use case: `lib.rs` is 440 lines (down from 1,838), with
+  local admission/journal state (356), control-session framing (289), attempt execution coordination
+  (513), wire/journal mapping (188), and tests (340) isolated in cohesive modules. No module in this
   slice exceeds the 800-line review threshold.
 - [x] First R4 execution-backend slice: closed Fake/CUDA dispatch replaced by an executor-kind
   registry and public `ExecutionBackend` composition port, including duplicate-capability and
   third-party probe-backend coverage.
-- [x] Worker executor responsibilities split: durable execution/Artifact coordination is 606 lines
+- [x] Worker executor responsibilities split: durable execution/Artifact coordination is 645 lines
   (down from a 1,395-line mixed module), deterministic fake process behavior is 344 lines, and its
-  460-line behavioral suite is isolated from production code. Existing `executor::*` imports remain
+  560-line behavioral suite is isolated from production code. Existing `executor::*` imports remain
   source-compatible through explicit re-exports.
 - [x] Worker Artifact input port: execution backends depend on `ArtifactInputProvider`, while the
   remote downloader maps adapter-specific failures into typed Invalid/Policy/Unavailable/Integrity/
