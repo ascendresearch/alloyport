@@ -211,6 +211,8 @@ segregated into worker-connection, assignment, attempt/lease, and server-outbox 
 service consumes their `ControlRepository` composition. SQLite connection and outbox operations live
 in dedicated implementation modules, as do assignment and attempt/lease operations; the shared
 repository shell now owns only connection creation, migrations, and locking.
+The public `storage::*` contract is a compatibility facade over separate clock policy,
+transport-independent model, and capability-port/error modules.
 Canonical Interaction persistence is capability-segregated into event-write, event-read, and
 run-access ports. Its SQLite schema shell, event/output log, and authorization grants are separate
 implementation modules, alongside independent replay-to-live broadcast and display sanitization.

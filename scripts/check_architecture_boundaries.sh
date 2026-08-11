@@ -99,6 +99,16 @@ if observation_projection=$(rg -n \
     crates/alloyport-server/src/attempt_observer.rs); then
     violations+=("canonical interaction projection returned to attempt observation: ${observation_projection}")
 fi
+if storage_responsibility=$(rg -n \
+    '^pub trait Clock|^pub struct WorkerRegistration|^pub enum AttemptState|^pub enum RepositoryError|^pub trait WorkerConnectionRepository|^pub trait ControlRepository' \
+    crates/alloyport-server/src/storage.rs); then
+    violations+=("control model, clock policy, or repository port returned to the storage facade: ${storage_responsibility}")
+fi
+if ! rg -q '^pub trait ControlRepository' crates/alloyport-server/src/storage/repository.rs \
+    || ! rg -q '^pub struct WorkerRegistration' crates/alloyport-server/src/storage/model.rs \
+    || ! rg -q '^pub trait Clock' crates/alloyport-server/src/storage/clock.rs; then
+    violations+=("control storage model/clock/repository layering is incomplete")
+fi
 if interaction_store_capability=$(rg -n \
     'impl InteractionEventWriter|impl InteractionEventReader|impl InteractionRunAccessStore' \
     crates/alloyport-server/src/adapters/sqlite/interaction_store.rs); then

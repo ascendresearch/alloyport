@@ -293,6 +293,10 @@ directories (including their migration and adapter-test files).
   lifecycle (161), and gRPC transport/wire mapping (310) isolated in cohesive modules. Protobuf/
   domain conversion lives at the transport edge; CI prevents transport and projection concerns
   returning to attempt observation.
+- [x] Server control storage contract split without breaking `storage::*`: the public facade is 21
+  lines, clock policy is 50 lines, transport-independent records/lifecycle values are 260 lines,
+  and capability-segregated repository ports plus typed errors are 216 lines. CI prevents these
+  definitions returning to the compatibility facade.
 - [x] Worker outbound coordinator split by use case: `lib.rs` is 440 lines (down from 1,838), with
   local admission/journal state (356), control-session framing (289), attempt execution coordination
   (513), wire/journal mapping (188), and tests (340) isolated in cohesive modules. No module in this
@@ -314,7 +318,7 @@ directories (including their migration and adapter-test files).
   schema module.
 - [x] Repository-wide production module size gate reached: tests were separated from CUDA Docker,
   CUDA supervisor/runtime, Artifact CAS, and event reducer modules. The largest production Rust
-  module is now 517 lines; no production module exceeds the 800-line review threshold.
+  module is now 513 lines; no production module exceeds the 800-line review threshold.
 - [x] First R6 async-persistence slice: worker control and execution paths use an immutable shared
   state handle and route journal operations through a four-permit bounded blocking adapter. No
   SQLite-backed journal call runs while holding a Tokio state mutex; a slow-operation concurrency
