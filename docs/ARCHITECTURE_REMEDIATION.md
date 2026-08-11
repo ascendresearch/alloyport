@@ -160,8 +160,8 @@ services. Replace string errors at plugin boundaries with typed categories.
 ### R8 — Persistence implementation isolation (P1, with P0 transaction slices)
 
 Migrate the five originally mixed database modules into model/port/application and SQLite adapter
-code. Identity, server control, and worker journal are now separated; two legacy mixed modules
-remain:
+code. Identity, server control, worker journal, and interactions are now separated; only Artifact
+metadata remains a legacy mixed module:
 
 | Context | Application port | SQLite adapter |
 | --- | --- | --- |
@@ -232,7 +232,9 @@ directories (including their migration and adapter-test files).
   SQL or database-driver types.
 - [x] Worker journal domain/port separated from `SqliteAttemptStore`; `journal.rs` contains no SQL
   or database-driver types.
-- [x] Transitional SQL-location architecture check; two legacy mixed modules remain allowlisted.
+- [x] Interaction model/port/live hub separated from `SqliteInteractionStore`; `interaction.rs`
+  contains no SQL or database-driver types.
+- [x] Transitional SQL-location architecture check; one legacy mixed module remains allowlisted.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.
 - [ ] Remaining workstreams.

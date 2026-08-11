@@ -343,8 +343,8 @@ fn interaction_status(error: &InteractionError) -> Status {
         | InteractionError::RevokedRunGrant { .. }
         | InteractionError::MissingRunGrant { .. }
         | InteractionError::ValueOutOfRange(_) => Status::invalid_argument(detail),
-        InteractionError::Sqlite(_)
-        | InteractionError::Serialization(_)
+        InteractionError::Storage(_)
+        | InteractionError::Encoding(_)
         | InteractionError::InvalidSubscriptionCapacity
         | InteractionError::LockPoisoned => Status::internal(detail),
     }
@@ -353,7 +353,7 @@ fn interaction_status(error: &InteractionError) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interaction::SqliteInteractionStore;
+    use crate::adapters::sqlite::SqliteInteractionStore;
     use alloyport_events::{Event, Producer, ProducerEvent};
     use tokio_stream::StreamExt;
     use tonic::Code;

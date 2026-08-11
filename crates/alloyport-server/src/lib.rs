@@ -7,7 +7,7 @@ pub mod interaction;
 pub mod interaction_service;
 pub mod storage;
 
-use adapters::sqlite::SqliteControlRepository;
+use adapters::sqlite::{SqliteControlRepository, SqliteInteractionStore};
 use alloyport_artifacts::Sha256Digest;
 use alloyport_artifacts::upload::{
     ArtifactReferenceKind, GrantArtifactReference, SqliteUploadStore,
@@ -28,7 +28,7 @@ use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR, ValidationError, validate_
 use identity::{ConnectionIdentityResolver, ResolvedConnectionIdentity};
 use interaction::{
     AppendOutcome, InteractionError, InteractionHub, InteractionStore, RunGrantOutcome,
-    RunRevokeOutcome, SqliteInteractionStore,
+    RunRevokeOutcome,
 };
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -1716,8 +1716,8 @@ fn interaction_status(error: &InteractionError) -> Status {
         | InteractionError::RevokedRunGrant { .. }
         | InteractionError::MissingRunGrant { .. }
         | InteractionError::ValueOutOfRange(_) => Status::invalid_argument(detail),
-        InteractionError::Sqlite(_)
-        | InteractionError::Serialization(_)
+        InteractionError::Storage(_)
+        | InteractionError::Encoding(_)
         | InteractionError::InvalidSubscriptionCapacity
         | InteractionError::LockPoisoned => Status::internal(detail),
     }

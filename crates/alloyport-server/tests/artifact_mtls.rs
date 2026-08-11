@@ -19,12 +19,13 @@ use alloyport_proto::v1::{
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use alloyport_server::adapters::sqlite::SqliteIdentityRegistry;
+use alloyport_server::adapters::sqlite::SqliteInteractionStore;
 use alloyport_server::artifact::{ArtifactServiceImpl, EnrolledArtifactAccessPolicy};
 use alloyport_server::identity::{
     ConnectionIdentityResolver, IdentityRegistry, MtlsConnectionIdentityResolver,
     certificate_fingerprint_from_pem,
 };
-use alloyport_server::interaction::{InteractionHub, InteractionStore, SqliteInteractionStore};
+use alloyport_server::interaction::{InteractionHub, InteractionStore};
 use alloyport_server::interaction_service::{
     EnrolledInteractionAccessPolicy, InteractionServiceImpl,
 };

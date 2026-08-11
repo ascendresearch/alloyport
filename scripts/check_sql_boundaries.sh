@@ -4,12 +4,11 @@ set -euo pipefail
 sql_pattern='SELECT |INSERT |UPDATE |DELETE |CREATE TABLE|ALTER TABLE|PRAGMA |BEGIN IMMEDIATE|COMMIT;'
 driver_pattern='(^|[^[:alnum:]_])rusqlite(::|\{)|use[[:space:]]+rusqlite'
 
-# These two mixed modules are acknowledged migration debt. Remove each entry when its SQL moves
+# This mixed module is acknowledged migration debt. Remove it when its SQL moves
 # beneath an adapters/sqlite directory. No new legacy location may be added.
 is_legacy_database_module() {
     case "$1" in
-        crates/alloyport-artifacts/src/upload.rs | \
-        crates/alloyport-server/src/interaction.rs)
+        crates/alloyport-artifacts/src/upload.rs)
             return 0
             ;;
         *)
@@ -48,4 +47,4 @@ if ((${#violations[@]} != 0)); then
     exit 1
 fi
 
-printf 'SQL boundary check passed; legacy database modules remaining: 2\n'
+printf 'SQL boundary check passed; legacy database modules remaining: 1\n'

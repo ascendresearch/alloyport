@@ -5,6 +5,8 @@ mod control_records;
 mod control_repository;
 mod control_schema;
 mod identity_registry;
+mod interaction_store;
 
 pub use control_repository::SqliteControlRepository;
 pub use identity_registry::SqliteIdentityRegistry;
+pub use interaction_store::SqliteInteractionStore;
