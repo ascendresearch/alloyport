@@ -1,6 +1,6 @@
 //! Resumable publication of worker-local execution artifacts through the Artifact RPC.
 
-use crate::executor::{ArtifactPublisher, ArtifactReferenceIntent};
+use crate::executor::{ArtifactPublicationError, ArtifactPublisher, ArtifactReferenceIntent};
 use alloyport_artifacts::{ArtifactStore, ArtifactStoreError, DigestParseError, Sha256Digest};
 use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient;
 use alloyport_proto::artifact_v1::{
@@ -214,11 +214,13 @@ impl ArtifactPublisher for RemoteArtifactPublisher {
     fn publish<'a>(
         &'a self,
         references: &'a [ArtifactReferenceIntent],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ArtifactPublicationError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             self.publish_references(references)
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(Into::into)
         })
     }
 }
@@ -332,3 +334,36 @@ impl From<tonic::Status> for RemoteArtifactUploadError {
         Self::Rpc(error)
     }
 }
+
+impl From<RemoteArtifactUploadError> for ArtifactPublicationError {
+    fn from(error: RemoteArtifactUploadError) -> Self {
+        let detail = error.to_string();
+        match error {
+            RemoteArtifactUploadError::InvalidDigest(_)
+            | RemoteArtifactUploadError::LocalArtifact(_)
+            | RemoteArtifactUploadError::LocalRead(_) => Self::LocalArtifact(detail),
+            RemoteArtifactUploadError::Transport(_)
+            | RemoteArtifactUploadError::ProducerJoin(_)
+            | RemoteArtifactUploadError::StreamClosed => Self::Unavailable(detail),
+            RemoteArtifactUploadError::Rpc(status)
+                if matches!(
+                    status.code(),
+                    tonic::Code::Unavailable
+                        | tonic::Code::DeadlineExceeded
+                        | tonic::Code::ResourceExhausted
+                        | tonic::Code::Aborted
+                ) =>
+            {
+                Self::Unavailable(detail)
+            }
+            RemoteArtifactUploadError::Rpc(_) | RemoteArtifactUploadError::Protocol(_) => {
+                Self::Rejected(detail)
+            }
+            RemoteArtifactUploadError::InvalidConfiguration(_) => Self::Internal(detail),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "artifact_upload_tests.rs"]
+mod tests;

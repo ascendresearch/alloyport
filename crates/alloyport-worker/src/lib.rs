@@ -28,7 +28,8 @@ use execution_backend::{
     CudaExecutionBackend, ExecutionBackend, ExecutionBackendRegistry, FakeExecutionBackend,
 };
 use executor::{
-    ArtifactPublisher, CancellationToken, ExecutionObservation, FakeExecutionRuntime, FakeExecutor,
+    ArtifactPublicationError, ArtifactPublisher, CancellationToken, ExecutionObservation,
+    FakeExecutionRuntime, FakeExecutor,
 };
 use journal::{AttemptStore, AttemptStoreError};
 use std::collections::BTreeMap;
@@ -63,6 +64,7 @@ pub enum WorkerError {
     PersistenceTask(tokio::task::JoinError),
     Transport(tonic::transport::Error),
     Rpc(tonic::Status),
+    ArtifactPublication(ArtifactPublicationError),
     Execution(String),
     Protocol(String),
     StreamClosed,
@@ -85,6 +87,9 @@ impl Display for WorkerError {
             Self::PersistenceTask(error) => write!(formatter, "persistence task failed: {error}"),
             Self::Transport(error) => Display::fmt(error, formatter),
             Self::Rpc(error) => Display::fmt(error, formatter),
+            Self::ArtifactPublication(error) => {
+                write!(formatter, "worker Artifact publication failed: {error}")
+            }
             Self::Execution(detail) => write!(formatter, "worker execution failed: {detail}"),
             Self::Protocol(detail) => write!(formatter, "worker protocol error: {detail}"),
             Self::StreamClosed => write!(formatter, "worker control stream closed"),
@@ -100,6 +105,7 @@ impl Error for WorkerError {
             Self::Rpc(error) => Some(error),
             Self::AttemptStore(error) => Some(error),
             Self::PersistenceTask(error) => Some(error),
+            Self::ArtifactPublication(error) => Some(error),
             Self::ConflictingAttempt(_)
             | Self::PolicyViolation(_)
             | Self::Execution(_)
@@ -118,6 +124,12 @@ impl From<tonic::transport::Error> for WorkerError {
 impl From<tonic::Status> for WorkerError {
     fn from(error: tonic::Status) -> Self {
         Self::Rpc(error)
+    }
+}
+
+impl From<ArtifactPublicationError> for WorkerError {
+    fn from(error: ArtifactPublicationError) -> Self {
+        Self::ArtifactPublication(error)
     }
 }
 

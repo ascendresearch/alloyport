@@ -35,6 +35,10 @@ if concrete=$(rg -n 'SqliteUploadStore|FilesystemArtifactStore' \
     "${server_application_files[@]}" "${worker_application_files[@]}"); then
     violations+=("concrete Artifact adapter escaped into application code: ${concrete}")
 fi
+if string_error=$(rg -n 'Future<Output = Result<\(\), String>>' \
+    crates/alloyport-worker/src/executor.rs); then
+    violations+=("Artifact publisher port regained an untyped String error: ${string_error}")
+fi
 
 if ((${#violations[@]} != 0)); then
     printf 'Architecture boundary check failed:\n' >&2
@@ -42,5 +46,5 @@ if ((${#violations[@]} != 0)); then
     exit 1
 fi
 
-printf 'Architecture boundary check passed; production modules <= %d lines and Artifact ports are abstract\n' \
+printf 'Architecture boundary check passed; production modules <= %d lines and Artifact ports are abstract and typed\n' \
     "$max_production_module_lines"

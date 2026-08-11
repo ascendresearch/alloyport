@@ -399,7 +399,9 @@ async fn artifact_publication_gates_terminal_commit_and_retries_idempotently()
         .await;
     assert!(matches!(
         failed,
-        Err(ExecutionRuntimeError::ArtifactPublication(detail)) if detail == "unavailable"
+        Err(ExecutionRuntimeError::ArtifactPublication(
+            ArtifactPublicationError::Unavailable(detail)
+        )) if detail == "unavailable"
     ));
     assert!(state.finished_attempt("attempt-1")?.is_none());
     assert_eq!(state.outbox_len()?, 2);
@@ -435,8 +437,8 @@ impl ArtifactPublisher for RejectingPublisher {
     fn publish<'a>(
         &'a self,
         _references: &'a [ArtifactReferenceIntent],
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
-        Box::pin(async { Err("unavailable".into()) })
+    ) -> Pin<Box<dyn Future<Output = Result<(), ArtifactPublicationError>> + Send + 'a>> {
+        Box::pin(async { Err(ArtifactPublicationError::Unavailable("unavailable".into())) })
     }
 }
 
@@ -447,11 +449,15 @@ impl ArtifactPublisher for RecordingPublisher {
     fn publish<'a>(
         &'a self,
         references: &'a [ArtifactReferenceIntent],
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), ArtifactPublicationError>> + Send + 'a>> {
         Box::pin(async move {
             self.0
                 .lock()
-                .map_err(|_| "publication fixture lock poisoned".to_owned())?
+                .map_err(|_| {
+                    ArtifactPublicationError::Internal(
+                        "publication fixture lock poisoned".to_owned(),
+                    )
+                })?
                 .extend(
                     references
                         .iter()

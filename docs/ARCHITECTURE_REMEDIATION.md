@@ -172,8 +172,11 @@ services. Replace string errors at plugin boundaries with typed categories.
 The worker execution context now consumes `ArtifactInputProvider` rather than
 `RemoteArtifactDownloader`. The remote gRPC downloader is an adapter behind that port and maps its
 configuration, quota, transport, integrity, and local failures to stable typed input categories.
-Artifact output was already exposed through `ArtifactPublisher`; remaining R7 work is to remove
-concrete stores from server application services and separate upload staging from metadata ports.
+Artifact output uses `ArtifactPublisher` with stable local-Artifact, unavailable, rejected, and
+internal failure categories. The remote gRPC uploader maps tonic and storage failures at its adapter
+boundary; execution and replay paths no longer parse or flatten plugin error text. Concrete stores
+have also been removed from server and worker application services, while mutable upload staging,
+metadata/reference access, and immutable content use distinct ports.
 
 ### R8 — Persistence implementation isolation (P1, with P0 transaction slices)
 
@@ -306,9 +309,13 @@ directories (including their migration and adapter-test files).
   input download, and remote output publication depend on `ArtifactStore`. The filesystem CAS is
   selected only by the worker binary and test fixtures; CI prevents concrete CAS dependencies from
   returning to these application modules.
+- [x] Worker R7 typed publication errors: `ArtifactPublisher` exposes stable failure categories;
+  the remote gRPC adapter classifies local integrity, transient transport/RPC, remote rejection, and
+  internal configuration failures. Runtime and terminal-replay paths preserve that typed boundary.
 - [x] SQL-location architecture check has no legacy allowlist entries.
-- [x] CI architecture boundary check enforces the 800-line production-module ceiling and prevents
-  server application code from regaining concrete SQLite Upload or filesystem CAS dependencies.
+- [x] CI architecture boundary check enforces the 800-line production-module ceiling, prevents
+  application code from regaining concrete SQLite Upload or filesystem CAS dependencies, and
+  rejects a return to `String` errors on the Artifact publisher port.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.
 - [ ] Remaining workstreams.

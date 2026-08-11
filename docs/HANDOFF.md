@@ -608,7 +608,10 @@ cargo test -p alloyport-server --test cuda_control_plane \
   explicitly configured outbound worker launches that fake runtime and preserves its task across
   stream reconnects. An optional publisher uploads its spool and gates terminal reporting, but the
   worker binary does not attach the fake component. The binary now constructs the CUDA runtime,
-  downloader, and mandatory publisher only from one explicit local policy file.
+  downloader, and mandatory publisher only from one explicit local policy file. Execution code
+  depends on the immutable `ArtifactStore` port rather than the filesystem adapter. Publisher
+  failures retain stable local-Artifact, unavailable, rejected, and internal categories across both
+  initial execution and terminal replay instead of being flattened into error strings.
 - Durable lifecycle replay and seven-day orphaned-delivery retention are implemented. Heartbeats,
   status, output previews, welcomes, and ACK-only frames deliberately remain ephemeral; there is no
   generalized durable message bus or server replication.

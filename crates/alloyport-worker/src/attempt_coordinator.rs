@@ -438,8 +438,7 @@ impl OutboundWorker {
             };
             publisher
                 .publish(&terminal_reference_intents(&attempt_id, &finished))
-                .await
-                .map_err(WorkerError::Execution)?;
+                .await?;
         }
         Ok(())
     }

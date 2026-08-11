@@ -241,10 +241,7 @@ impl CudaExecutionRuntime {
             .await?;
         let references = terminal_reference_intents(attempt_id, &persisted.finished);
         if let Some(publisher) = publisher {
-            publisher
-                .publish(&references)
-                .await
-                .map_err(ExecutionRuntimeError::ArtifactPublication)?;
+            publisher.publish(&references).await?;
         }
         state
             .mark_finished_async(attempt_id.to_owned(), persisted.finished.clone())

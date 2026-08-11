@@ -293,11 +293,21 @@ impl ArtifactPublisher for RecordingTerminalPublisher {
     fn publish<'a>(
         &'a self,
         references: &'a [executor::ArtifactReferenceIntent],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), executor::ArtifactPublicationError>>
+                + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async move {
             self.0
                 .lock()
-                .map_err(|_| "terminal publisher fixture lock poisoned".to_owned())?
+                .map_err(|_| {
+                    executor::ArtifactPublicationError::Internal(
+                        "terminal publisher fixture lock poisoned".to_owned(),
+                    )
+                })?
                 .extend(
                     references
                         .iter()

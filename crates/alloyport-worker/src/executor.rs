@@ -36,7 +36,7 @@ pub enum ExecutionRuntimeError {
     ArtifactInput(ArtifactInputError),
     Serialization(serde_json::Error),
     Executor(String),
-    ArtifactPublication(String),
+    ArtifactPublication(ArtifactPublicationError),
     CleanupAfterCommit(String),
     InvalidConfiguration(&'static str),
     AttemptAlreadyRunning(String),
@@ -53,8 +53,8 @@ impl Display for ExecutionRuntimeError {
             Self::ArtifactInput(error) => Display::fmt(error, formatter),
             Self::Serialization(error) => Display::fmt(error, formatter),
             Self::Executor(detail) => write!(formatter, "executor failed: {detail}"),
-            Self::ArtifactPublication(detail) => {
-                write!(formatter, "execution Artifact publication failed: {detail}")
+            Self::ArtifactPublication(error) => {
+                write!(formatter, "execution Artifact publication failed: {error}")
             }
             Self::CleanupAfterCommit(detail) => {
                 write!(
@@ -85,8 +85,8 @@ impl Error for ExecutionRuntimeError {
             Self::ArtifactInput(error) => Some(error),
             Self::Serialization(error) => Some(error),
             Self::TaskJoin(error) => Some(error),
-            Self::ArtifactPublication(_)
-            | Self::CleanupAfterCommit(_)
+            Self::ArtifactPublication(error) => Some(error),
+            Self::CleanupAfterCommit(_)
             | Self::Executor(_)
             | Self::AttemptAlreadyRunning(_)
             | Self::InvalidConfiguration(_)
@@ -114,6 +114,12 @@ impl From<ArtifactInputError> for ExecutionRuntimeError {
     }
 }
 
+impl From<ArtifactPublicationError> for ExecutionRuntimeError {
+    fn from(error: ArtifactPublicationError) -> Self {
+        Self::ArtifactPublication(error)
+    }
+}
+
 impl From<serde_json::Error> for ExecutionRuntimeError {
     fn from(error: serde_json::Error) -> Self {
         Self::Serialization(error)
@@ -136,13 +142,38 @@ pub struct ArtifactReferenceIntent {
     pub artifact: StoredArtifact,
 }
 
+/// Stable failure categories exposed by pluggable Artifact publishers.
+///
+/// Adapter-specific errors stay behind the publisher boundary. Callers may make retry and
+/// observability decisions from these variants without parsing an implementation's error text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ArtifactPublicationError {
+    LocalArtifact(String),
+    Unavailable(String),
+    Rejected(String),
+    Internal(String),
+}
+
+impl Display for ArtifactPublicationError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LocalArtifact(detail) => write!(formatter, "local Artifact failure: {detail}"),
+            Self::Unavailable(detail) => write!(formatter, "publisher unavailable: {detail}"),
+            Self::Rejected(detail) => write!(formatter, "publication rejected: {detail}"),
+            Self::Internal(detail) => write!(formatter, "publisher internal failure: {detail}"),
+        }
+    }
+}
+
+impl Error for ArtifactPublicationError {}
+
 /// Publishes worker-local execution artifacts before terminal lifecycle state becomes reportable.
 pub trait ArtifactPublisher: Debug + Send + Sync {
     /// Publishes every reference intent, idempotently resuming any prior partial publication.
     fn publish<'a>(
         &'a self,
         references: &'a [ArtifactReferenceIntent],
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), ArtifactPublicationError>> + Send + 'a>>;
 }
 
 pub struct FakeExecutionRuntime {
@@ -305,10 +336,7 @@ impl FakeExecutionRuntime {
         let persisted = self.persist_result(&input, result).await?;
         let reference_intents = terminal_reference_intents(attempt_id, &persisted.finished);
         if let Some(publisher) = publisher {
-            publisher
-                .publish(&reference_intents)
-                .await
-                .map_err(ExecutionRuntimeError::ArtifactPublication)?;
+            publisher.publish(&reference_intents).await?;
         }
         state
             .mark_finished_async(attempt_id.to_owned(), persisted.finished.clone())

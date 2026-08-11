@@ -9,7 +9,7 @@ use crate::cuda_supervisor::{
     ContainerExit, ContainerIdentity, ContainerLogChunk, ContainerLogStream, ContainerLogs,
     ContainerPhase, ContainerSnapshot, EngineFuture,
 };
-use crate::executor::CancellationToken;
+use crate::executor::{ArtifactPublicationError, CancellationToken};
 use crate::{AdmissionOutcome, AdmissionPolicy, OutboundWorker, WorkerError};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
 use alloyport_proto::v1::{
@@ -259,15 +259,19 @@ impl ArtifactPublisher for OrderingPublisher {
     fn publish<'a>(
         &'a self,
         _references: &'a [crate::executor::ArtifactReferenceIntent],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ArtifactPublicationError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let attempt = self
                 .state
                 .attempt("attempt-1")
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| "attempt missing".to_owned())?;
+                .map_err(|error| ArtifactPublicationError::Internal(error.to_string()))?
+                .ok_or_else(|| ArtifactPublicationError::Internal("attempt missing".to_owned()))?;
             if attempt.phase != LocalAttemptPhase::Running {
-                return Err("publisher observed terminal state too early".into());
+                return Err(ArtifactPublicationError::Internal(
+                    "publisher observed terminal state too early".into(),
+                ));
             }
             self.called.store(true, Ordering::SeqCst);
             Ok(())
