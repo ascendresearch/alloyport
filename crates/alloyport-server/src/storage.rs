@@ -367,9 +367,9 @@ impl Error for RepositoryError {
     }
 }
 
-/// Durable operations needed by the worker control service.
+/// Durable worker registration and control-connection operations.
 #[allow(clippy::missing_errors_doc)]
-pub trait ControlRepository: Debug + Send + Sync {
+pub trait WorkerConnectionRepository {
     fn register_worker(
         &self,
         registration: &WorkerRegistration,
@@ -386,7 +386,11 @@ pub trait ControlRepository: Debug + Send + Sync {
     ) -> Result<(), RepositoryError>;
 
     fn disconnect(&self, connection_id: &str, at_ms: u64) -> Result<(), RepositoryError>;
+}
 
+/// Durable assignment preparation, dispatch, replay, and reassignment operations.
+#[allow(clippy::missing_errors_doc)]
+pub trait AssignmentRepository {
     fn store_assignment(
         &self,
         worker_id: &str,
@@ -435,7 +439,11 @@ pub trait ControlRepository: Debug + Send + Sync {
         &self,
         preparation: &AssignmentDeliveryPreparation,
     ) -> Result<AssignmentContract, RepositoryError>;
+}
 
+/// Durable attempt observations and lease lifecycle operations.
+#[allow(clippy::missing_errors_doc)]
+pub trait AttemptLifecycleRepository {
     fn observe_attempt(
         &self,
         observation: &ObservedAttempt,
@@ -458,6 +466,12 @@ pub trait ControlRepository: Debug + Send + Sync {
         now_ms: u64,
     ) -> Result<CancellationRecord, RepositoryError>;
 
+    fn lease(&self, attempt_id: &str) -> Result<Option<LeaseRecord>, RepositoryError>;
+}
+
+/// Durable server-to-worker frame outbox operations.
+#[allow(clippy::missing_errors_doc)]
+pub trait ServerOutboxRepository {
     fn record_server_frame(
         &self,
         frame: &ServerOutboxFrame,
@@ -477,6 +491,27 @@ pub trait ControlRepository: Debug + Send + Sync {
         &self,
         disconnected_before_ms: u64,
     ) -> Result<usize, RepositoryError>;
+}
 
-    fn lease(&self, attempt_id: &str) -> Result<Option<LeaseRecord>, RepositoryError>;
+/// Composite compatibility port used by the complete worker-control application service.
+pub trait ControlRepository:
+    WorkerConnectionRepository
+    + AssignmentRepository
+    + AttemptLifecycleRepository
+    + ServerOutboxRepository
+    + Debug
+    + Send
+    + Sync
+{
+}
+
+impl<T> ControlRepository for T where
+    T: WorkerConnectionRepository
+        + AssignmentRepository
+        + AttemptLifecycleRepository
+        + ServerOutboxRepository
+        + Debug
+        + Send
+        + Sync
+{
 }

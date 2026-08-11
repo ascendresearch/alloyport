@@ -1,4 +1,8 @@
 use super::*;
+use crate::storage::{
+    ConnectionRegistration, ServerOutboxFrame, ServerOutboxRepository, WorkerConnectionRepository,
+    WorkerRegistration,
+};
 use std::error::Error;
 
 #[test]

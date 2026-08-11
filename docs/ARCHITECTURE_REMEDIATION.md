@@ -252,6 +252,10 @@ directories (including their migration and adapter-test files).
 - [x] First R8 extraction: Identity registry and mTLS resolver separation.
 - [x] Server control domain/port separated from `SqliteControlRepository`; `storage.rs` contains no
   SQL or database-driver types.
+- [x] Server control port segregated by capability: worker connections, assignment coordination,
+  attempt/lease lifecycle, and server outbox have narrow traits, while `ControlRepository` remains a
+  compatibility composition. SQLite connection and outbox implementations are separate 87- and
+  82-line modules; the assignment/attempt implementation is 535 lines rather than 682.
 - [x] Worker journal domain/port separated from `SqliteAttemptStore`; `journal.rs` contains no SQL
   or database-driver types.
 - [x] Interaction model/port/live hub separated from `SqliteInteractionStore`; `interaction.rs`
@@ -282,7 +286,7 @@ directories (including their migration and adapter-test files).
   Internal categories.
 - [x] Repository-wide production module size gate reached: tests were separated from CUDA Docker,
   CUDA supervisor/runtime, Artifact CAS, and event reducer modules. The largest production Rust
-  module is now 682 lines; no production module exceeds the 800-line review threshold.
+  module is now 674 lines; no production module exceeds the 800-line review threshold.
 - [x] First R6 async-persistence slice: worker control and execution paths use an immutable shared
   state handle and route journal operations through a four-permit bounded blocking adapter. No
   SQLite-backed journal call runs while holding a Tokio state mutex; a slow-operation concurrency

@@ -203,7 +203,10 @@ generated protocol modules; do not weaken workspace lints for hand-written code.
 
 Implements the gRPC service, in-process connection registry, crash-durable SQLite control repository,
 non-terminal replay, attempt leases, and worker lifecycle classification. Generated Protobuf types
-are translated at the RPC edge into separate storage-domain records.
+are translated at the RPC edge into separate storage-domain records. Persistence capabilities are
+segregated into worker-connection, assignment, attempt/lease, and server-outbox ports; the complete
+service consumes their `ControlRepository` composition. SQLite connection and outbox operations live
+in dedicated implementation modules.
 
 Current behavior:
 

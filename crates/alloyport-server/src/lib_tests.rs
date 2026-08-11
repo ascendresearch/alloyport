@@ -1,7 +1,7 @@
 //! Unit tests for server control orchestration.
 
 use super::*;
-use crate::storage::{ArtifactIdentity, ExecutionContract};
+use crate::storage::{ArtifactIdentity, AssignmentRepository, ExecutionContract};
 use alloyport_artifacts::upload::BeginUpload;
 use alloyport_artifacts::{FilesystemArtifactStore, SqliteUploadStore};
 use alloyport_proto::v1::{ArtifactRef, ExecutionSpec, ResourceLimits};
