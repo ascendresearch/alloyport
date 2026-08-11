@@ -3,7 +3,7 @@
 use crate::cuda::{CudaContractError, CudaFixturePolicy, DockerCreatePlan, VECTOR_ADD_FIXTURE_ID};
 use crate::executor::{CancellationToken, ExecutorResult};
 use crate::journal::StoredAssignment;
-use alloyport_artifacts::FilesystemArtifactStore;
+use alloyport_artifacts::ArtifactStore;
 use alloyport_proto::v1::AttemptOutcome;
 use std::fmt::Debug;
 use std::future::Future;
@@ -116,15 +116,12 @@ pub trait CudaContainerEngine: Debug + Send + Sync {
 #[derive(Clone, Debug)]
 pub struct CudaContainerSupervisor {
     policy: Arc<CudaFixturePolicy>,
-    artifacts: Arc<FilesystemArtifactStore>,
+    artifacts: Arc<dyn ArtifactStore>,
 }
 
 impl CudaContainerSupervisor {
     #[must_use]
-    pub const fn new(
-        policy: Arc<CudaFixturePolicy>,
-        artifacts: Arc<FilesystemArtifactStore>,
-    ) -> Self {
+    pub const fn new(policy: Arc<CudaFixturePolicy>, artifacts: Arc<dyn ArtifactStore>) -> Self {
         Self { policy, artifacts }
     }
 

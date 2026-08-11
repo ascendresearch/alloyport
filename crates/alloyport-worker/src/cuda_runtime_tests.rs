@@ -11,7 +11,7 @@ use crate::cuda_supervisor::{
 };
 use crate::executor::CancellationToken;
 use crate::{AdmissionOutcome, AdmissionPolicy, OutboundWorker, WorkerError};
-use alloyport_artifacts::{ArtifactStore, IngestRequest, Sha256Digest};
+use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, Backend, ExecutionSpec, ExecutorKind, NetworkPolicy, ResourceLimits,
     WorkerCapabilities, WorkerHello,
@@ -65,10 +65,10 @@ async fn publication_and_terminal_commit_precede_retryable_cleanup()
     );
     let engine = Arc::new(RecordingEngine::new(state.clone(), image_id.to_string()));
     let engine_trait: Arc<dyn CudaContainerEngine> = engine.clone();
-    let supervisor = Arc::new(CudaContainerSupervisor::new(policy, Arc::clone(&artifacts)));
+    let supervisor = Arc::new(CudaContainerSupervisor::new(policy, artifacts.clone()));
     let runtime = Arc::new(CudaExecutionRuntime::new(
         "cuda-worker-1",
-        Arc::clone(&artifacts),
+        artifacts.clone(),
         supervisor,
         engine_trait,
         CudaEnvironmentFacts::new("sm_121", "580.159.03", "13.0")?,

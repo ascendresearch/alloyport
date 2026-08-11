@@ -138,7 +138,7 @@ async fn assert_worker_download(
         directory.join("worker-cas"),
         1_024,
     )?);
-    let input_fetcher = RemoteArtifactDownloader::new(endpoint, Arc::clone(&worker_cas), 1_024)?;
+    let input_fetcher = RemoteArtifactDownloader::new(endpoint, worker_cas.clone(), 1_024)?;
     let input = StoredArtifact {
         digest: digest.into(),
         size_bytes: 11,

@@ -302,6 +302,10 @@ directories (including their migration and adapter-test files).
   and immutable content uses `ArtifactStore`. Server application services contain no
   `SqliteUploadStore` or `FilesystemArtifactStore` dependency; those types remain only in adapters,
   tests, and the binary composition root.
+- [x] Worker R7 CAS port: fake/CUDA execution runtimes, CUDA supervision/materialization, remote
+  input download, and remote output publication depend on `ArtifactStore`. The filesystem CAS is
+  selected only by the worker binary and test fixtures; CI prevents concrete CAS dependencies from
+  returning to these application modules.
 - [x] SQL-location architecture check has no legacy allowlist entries.
 - [x] CI architecture boundary check enforces the 800-line production-module ceiling and prevents
   server application code from regaining concrete SQLite Upload or filesystem CAS dependencies.

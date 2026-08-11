@@ -437,11 +437,7 @@ async fn fake_execution_survives_stream_disconnect_and_replays_one_terminal_resu
         directory.path().join("spool"),
         4_096,
     )?);
-    let runtime = Arc::new(FakeExecutionRuntime::new(
-        "cuda-1",
-        Arc::clone(&artifacts),
-        1,
-    )?);
+    let runtime = Arc::new(FakeExecutionRuntime::new("cuda-1", artifacts.clone(), 1)?);
     let executor = Arc::new(FakeExecutor::new(FakeExecutionPlan::successful(vec![
         FakeStep::Stdout(b"before disconnect".to_vec()),
         FakeStep::Delay(Duration::from_millis(250)),
@@ -648,7 +644,7 @@ async fn fake_execution_resumes_artifact_uploads_before_controller_accepts_termi
 
     let runtime = Arc::new(FakeExecutionRuntime::new(
         "cuda-1",
-        Arc::clone(&local_artifacts),
+        local_artifacts.clone(),
         1,
     )?);
     let executor = Arc::new(FakeExecutor::new(FakeExecutionPlan::successful(vec![

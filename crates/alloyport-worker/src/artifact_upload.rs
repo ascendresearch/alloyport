@@ -1,9 +1,7 @@
 //! Resumable publication of worker-local execution artifacts through the Artifact RPC.
 
 use crate::executor::{ArtifactPublisher, ArtifactReferenceIntent};
-use alloyport_artifacts::{
-    ArtifactStore, ArtifactStoreError, DigestParseError, FilesystemArtifactStore, Sha256Digest,
-};
+use alloyport_artifacts::{ArtifactStore, ArtifactStoreError, DigestParseError, Sha256Digest};
 use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient;
 use alloyport_proto::artifact_v1::{
     ArtifactIdentity, BeginUploadRequest, FinalizeUploadRequest, UploadChunk, UploadSession,
@@ -76,7 +74,7 @@ impl Error for RemoteArtifactUploadError {
 #[derive(Clone, Debug)]
 pub struct RemoteArtifactPublisher {
     endpoint: Endpoint,
-    artifacts: Arc<FilesystemArtifactStore>,
+    artifacts: Arc<dyn ArtifactStore>,
     chunk_bytes: usize,
     upload_ttl_ms: u64,
 }
@@ -89,7 +87,7 @@ impl RemoteArtifactPublisher {
     /// Returns an error when chunk size or session TTL is zero.
     pub fn new(
         endpoint: Endpoint,
-        artifacts: Arc<FilesystemArtifactStore>,
+        artifacts: Arc<dyn ArtifactStore>,
         chunk_bytes: usize,
         upload_ttl_ms: Option<u64>,
     ) -> Result<Self, RemoteArtifactUploadError> {
@@ -226,7 +224,7 @@ impl ArtifactPublisher for RemoteArtifactPublisher {
 }
 
 fn stream_local_artifact(
-    artifacts: &FilesystemArtifactStore,
+    artifacts: &dyn ArtifactStore,
     digest: Sha256Digest,
     upload_id: &str,
     mut offset: u64,

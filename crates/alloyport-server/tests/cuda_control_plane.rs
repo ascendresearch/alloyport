@@ -244,24 +244,24 @@ impl RealCudaLoopbackFixture {
         let engine_trait: Arc<dyn CudaContainerEngine> = engine.clone();
         let supervisor = Arc::new(CudaContainerSupervisor::new(
             policy,
-            Arc::clone(&local_artifacts),
+            local_artifacts.clone(),
         ));
         let runtime = Arc::new(CudaExecutionRuntime::new(
             "cuda-1",
-            Arc::clone(&local_artifacts),
+            local_artifacts.clone(),
             supervisor,
             engine_trait,
             CudaEnvironmentFacts::new("sm_121", "580.159.03", "13.0")?,
         )?);
         let publisher = Arc::new(RemoteArtifactPublisher::new(
             endpoint.clone(),
-            Arc::clone(&local_artifacts),
+            local_artifacts.clone(),
             1024 * 1024,
             Some(60_000),
         )?);
         let downloader = Arc::new(RemoteArtifactDownloader::new(
             endpoint.clone(),
-            Arc::clone(&local_artifacts),
+            local_artifacts.clone(),
             8 * 1024 * 1024,
         )?);
         let worker = OutboundWorker::new(endpoint, hello())?
@@ -399,18 +399,18 @@ impl CudaLoopbackFixture {
         let engine_trait: Arc<dyn CudaContainerEngine> = engine.clone();
         let supervisor = Arc::new(CudaContainerSupervisor::new(
             policy,
-            Arc::clone(&local_artifacts),
+            local_artifacts.clone(),
         ));
         let runtime = Arc::new(CudaExecutionRuntime::new(
             "cuda-1",
-            Arc::clone(&local_artifacts),
+            local_artifacts.clone(),
             supervisor,
             engine_trait,
             CudaEnvironmentFacts::new("sm_121", "580.159.03", "13.0")?,
         )?);
         let publisher = Arc::new(RemoteArtifactPublisher::new(
             endpoint.clone(),
-            Arc::clone(&local_artifacts),
+            local_artifacts.clone(),
             4_096,
             Some(60_000),
         )?);

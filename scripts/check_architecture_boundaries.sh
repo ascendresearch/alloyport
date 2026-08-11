@@ -24,8 +24,16 @@ server_application_files=(
     crates/alloyport-server/src/interaction_service.rs
     crates/alloyport-server/src/lib.rs
 )
-if concrete=$(rg -n 'SqliteUploadStore|FilesystemArtifactStore' "${server_application_files[@]}"); then
-    violations+=("concrete Artifact adapter escaped into server application code: ${concrete}")
+worker_application_files=(
+    crates/alloyport-worker/src/artifact_download.rs
+    crates/alloyport-worker/src/artifact_upload.rs
+    crates/alloyport-worker/src/cuda_runtime.rs
+    crates/alloyport-worker/src/cuda_supervisor.rs
+    crates/alloyport-worker/src/executor.rs
+)
+if concrete=$(rg -n 'SqliteUploadStore|FilesystemArtifactStore' \
+    "${server_application_files[@]}" "${worker_application_files[@]}"); then
+    violations+=("concrete Artifact adapter escaped into application code: ${concrete}")
 fi
 
 if ((${#violations[@]} != 0)); then
@@ -34,5 +42,5 @@ if ((${#violations[@]} != 0)); then
     exit 1
 fi
 
-printf 'Architecture boundary check passed; production modules <= %d lines and server Artifact ports are abstract\n' \
+printf 'Architecture boundary check passed; production modules <= %d lines and Artifact ports are abstract\n' \
     "$max_production_module_lines"

@@ -1,7 +1,7 @@
 //! Policy-bound contract for the first fixed CUDA container vertical slice.
 
 use crate::journal::{StoredAssignment, StoredLimits};
-use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, Sha256Digest};
+use alloyport_artifacts::{ArtifactStore, Sha256Digest};
 use alloyport_proto::v1::{ExecutorKind, NetworkPolicy};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -192,7 +192,7 @@ impl CudaFixturePolicy {
     pub fn materialize_bundle(
         &self,
         assignment: &StoredAssignment,
-        artifacts: &FilesystemArtifactStore,
+        artifacts: &dyn ArtifactStore,
     ) -> Result<CudaSandbox, CudaContractError> {
         self.validate_assignment(assignment)?;
         validate_attempt_id(&assignment.attempt_id)?;
@@ -478,7 +478,7 @@ fn write_once(path: &Path, bytes: &[u8]) -> Result<(), CudaContractError> {
 mod tests {
     use super::*;
     use crate::journal::{StoredArtifact, StoredEnvironment, StoredExecution};
-    use alloyport_artifacts::{IngestRequest, Sha256Digest};
+    use alloyport_artifacts::{FilesystemArtifactStore, IngestRequest, Sha256Digest};
     use std::io::Cursor;
 
     #[test]

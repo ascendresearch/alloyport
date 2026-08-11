@@ -12,7 +12,7 @@ use crate::executor::{
     terminal_reference_intents,
 };
 use crate::journal::{LocalAttemptPhase, StoredArtifact, StoredFinished};
-use alloyport_artifacts::FilesystemArtifactStore;
+use alloyport_artifacts::ArtifactStore;
 use alloyport_events::{Event, ProducerEvent};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -56,7 +56,7 @@ impl CudaEnvironmentFacts {
 
 pub struct CudaExecutionRuntime {
     worker_id: String,
-    artifacts: Arc<FilesystemArtifactStore>,
+    artifacts: Arc<dyn ArtifactStore>,
     supervisor: Arc<CudaContainerSupervisor>,
     engine: Arc<dyn CudaContainerEngine>,
     environment: CudaEnvironmentFacts,
@@ -83,7 +83,7 @@ impl CudaExecutionRuntime {
     /// Returns an error when the worker identity is empty.
     pub fn new(
         worker_id: impl Into<String>,
-        artifacts: Arc<FilesystemArtifactStore>,
+        artifacts: Arc<dyn ArtifactStore>,
         supervisor: Arc<CudaContainerSupervisor>,
         engine: Arc<dyn CudaContainerEngine>,
         environment: CudaEnvironmentFacts,

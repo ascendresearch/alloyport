@@ -4,9 +4,7 @@ use crate::artifact_input::ArtifactInputError;
 use crate::journal::{LocalAttemptPhase, StoredArtifact, StoredFinished};
 use crate::{WorkerError, WorkerState};
 use alloyport_artifacts::upload::ArtifactReferenceKind;
-use alloyport_artifacts::{
-    ArtifactStore, ArtifactStoreError, FilesystemArtifactStore, IngestRequest,
-};
+use alloyport_artifacts::{ArtifactStore, ArtifactStoreError, IngestRequest};
 use alloyport_events::{
     ArtifactRef as EventArtifactRef, Authority, Event, OutputStream as EventOutputStream, Producer,
     ProducerEvent, Visibility,
@@ -149,7 +147,7 @@ pub trait ArtifactPublisher: Debug + Send + Sync {
 
 pub struct FakeExecutionRuntime {
     worker_id: String,
-    artifacts: Arc<FilesystemArtifactStore>,
+    artifacts: Arc<dyn ArtifactStore>,
     output_channel_capacity: usize,
     active_attempts: Arc<Mutex<BTreeSet<String>>>,
 }
@@ -172,7 +170,7 @@ impl FakeExecutionRuntime {
     /// Returns an error when the worker identity is empty or the output channel has zero capacity.
     pub fn new(
         worker_id: impl Into<String>,
-        artifacts: Arc<FilesystemArtifactStore>,
+        artifacts: Arc<dyn ArtifactStore>,
         output_channel_capacity: usize,
     ) -> Result<Self, ExecutionRuntimeError> {
         let worker_id = worker_id.into();
@@ -512,7 +510,7 @@ struct FakeRunReceipt<'a> {
 }
 
 pub(crate) async fn store_artifact(
-    artifacts: Arc<FilesystemArtifactStore>,
+    artifacts: Arc<dyn ArtifactStore>,
     bytes: Vec<u8>,
     media_type: &'static str,
 ) -> Result<StoredArtifact, ExecutionRuntimeError> {

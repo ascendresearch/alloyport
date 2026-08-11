@@ -6,7 +6,7 @@ use crate::cuda::{
     OCI_IMAGE_MANIFEST_MEDIA_TYPE,
 };
 use crate::journal::{StoredArtifact, StoredExecution, StoredLimits};
-use alloyport_artifacts::{ArtifactStore, IngestRequest, Sha256Digest};
+use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
 use alloyport_proto::v1::{ExecutorKind, NetworkPolicy};
 use std::io::Cursor;
 use std::sync::Mutex;

@@ -2,7 +2,7 @@
 
 use crate::artifact_input::{ArtifactInputError, ArtifactInputFuture, ArtifactInputProvider};
 use crate::journal::StoredArtifact;
-use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
+use alloyport_artifacts::{ArtifactStore, IngestRequest, Sha256Digest};
 use alloyport_proto::artifact_v1::DownloadRequest;
 use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient;
 use std::error::Error;
@@ -16,7 +16,7 @@ use tonic::transport::Endpoint;
 #[derive(Clone, Debug)]
 pub struct RemoteArtifactDownloader {
     endpoint: Endpoint,
-    artifacts: Arc<FilesystemArtifactStore>,
+    artifacts: Arc<dyn ArtifactStore>,
     max_input_bytes: u64,
 }
 
@@ -28,7 +28,7 @@ impl RemoteArtifactDownloader {
     /// Returns an error when the input bound is zero.
     pub fn new(
         endpoint: Endpoint,
-        artifacts: Arc<FilesystemArtifactStore>,
+        artifacts: Arc<dyn ArtifactStore>,
         max_input_bytes: u64,
     ) -> Result<Self, ArtifactDownloadError> {
         if max_input_bytes == 0 {

@@ -288,6 +288,10 @@ At the application boundary, mutable upload staging/session/finalization depends
 `ArtifactMetadataStore`, and immutable content depends on `ArtifactStore`. The SQLite metadata and
 filesystem CAS types are selected only in the server binary composition root.
 
+The worker follows the same CAS boundary: execution runtimes, CUDA bundle materialization, remote
+downloads, and resumable publication consume `ArtifactStore`; `FilesystemArtifactStore` is chosen
+only in the worker binary composition root.
+
 `WorkerControlService::new()` remains an in-memory SQLite convenience for tests. The server binary
 uses `ALLOYPORT_DATABASE` or defaults to `alloyport-control.sqlite3`, so normal server state survives
 process restart.

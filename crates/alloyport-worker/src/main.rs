@@ -223,17 +223,17 @@ fn attach_cuda(
         &config.local_artifact_root,
         config.local_artifact_max_bytes,
     )?);
-    let supervisor = Arc::new(CudaContainerSupervisor::new(policy, Arc::clone(&artifacts)));
+    let supervisor = Arc::new(CudaContainerSupervisor::new(policy, artifacts.clone()));
     let runtime = Arc::new(CudaExecutionRuntime::new(
         &hello.worker_id,
-        Arc::clone(&artifacts),
+        artifacts.clone(),
         supervisor,
         engine,
         environment,
     )?);
     let downloader = Arc::new(RemoteArtifactDownloader::new(
         endpoint.clone(),
-        Arc::clone(&artifacts),
+        artifacts.clone(),
         config.max_input_bytes,
     )?);
     let publisher = Arc::new(RemoteArtifactPublisher::new(
