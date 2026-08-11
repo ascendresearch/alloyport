@@ -1,5 +1,6 @@
 //! Outbound worker client and local assignment admission state.
 
+pub mod adapters;
 pub mod artifact_download;
 pub mod artifact_upload;
 pub mod cuda;
@@ -9,6 +10,7 @@ pub mod cuda_supervisor;
 pub mod executor;
 pub mod journal;
 
+use adapters::sqlite::SqliteAttemptStore;
 use alloyport_proto::v1::worker_control_client::WorkerControlClient;
 use alloyport_proto::v1::{
     ActiveAttempt, ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, AttemptOutcome,
@@ -25,9 +27,9 @@ use executor::{
     FakeExecutionRuntime, FakeExecutor, terminal_reference_intents,
 };
 use journal::{
-    AttemptStore, AttemptStoreError, LocalAttemptPhase, LocalAttemptRecord, SqliteAttemptStore,
-    StoreAdmissionOutcome, StoredArtifact, StoredAssignment, StoredEnvironment, StoredExecution,
-    StoredLimits, WorkerOutboxMessage, WorkerOutboxPayload,
+    AttemptStore, AttemptStoreError, LocalAttemptPhase, LocalAttemptRecord, StoreAdmissionOutcome,
+    StoredArtifact, StoredAssignment, StoredEnvironment, StoredExecution, StoredLimits,
+    WorkerOutboxMessage, WorkerOutboxPayload,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
