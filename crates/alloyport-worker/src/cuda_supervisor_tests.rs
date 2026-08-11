@@ -7,7 +7,9 @@ use crate::cuda::{
 };
 use crate::journal::{StoredArtifact, StoredExecution, StoredLimits};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
-use alloyport_core::{AssignmentId, AttemptId, AttemptOutcome, ExecutionKind, NetworkPolicy};
+use alloyport_core::{
+    AssignmentId, AttemptId, AttemptOutcome, ExecutionKind, NetworkPolicy, TaskId,
+};
 use std::io::Cursor;
 use std::sync::Mutex;
 
@@ -229,7 +231,7 @@ fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
         attempt_id: AttemptId::try_from("attempt-1")?,
         attempt_number: 1,
         idempotency_key: VECTOR_ADD_FIXTURE_ID.into(),
-        task_id: "task-1".into(),
+        task_id: TaskId::try_from("task-1").expect("valid fixture task ID"),
         candidate_id: "candidate-1".into(),
         execution: StoredExecution {
             executor_kind: ExecutionKind::CudaFixture,

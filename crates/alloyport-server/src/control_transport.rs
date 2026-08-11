@@ -6,7 +6,7 @@ use crate::storage::{
     ArtifactIdentity, AssignmentContract, EnvironmentEntry, ExecutionContract, RepositoryError,
     ResourceContract, WorkerCapabilities, WorkerRegistration,
 };
-use alloyport_core::{AssignmentId, AttemptId, ExecutionKind, NetworkPolicy};
+use alloyport_core::{AssignmentId, AttemptId, ExecutionKind, NetworkPolicy, TaskId};
 use alloyport_events::{
     ArtifactRef as EventArtifactRef, Authority, Event, Producer, ProducerEvent, Visibility,
 };
@@ -168,7 +168,8 @@ pub(super) fn assignment_to_contract(assignment: &Assignment) -> AssignmentContr
             .expect("validated assignment contains a non-empty attempt ID"),
         attempt_number: assignment.attempt_number,
         idempotency_key: assignment.idempotency_key.clone(),
-        task_id: assignment.task_id.clone(),
+        task_id: TaskId::try_from(assignment.task_id.clone())
+            .expect("validated assignment contains a non-empty task ID"),
         candidate_id: assignment.candidate_id.clone(),
         execution: ExecutionContract {
             executor_kind: ExecutionKind::try_from(execution.executor_kind)
@@ -217,7 +218,7 @@ pub(super) fn contract_to_assignment(contract: &AssignmentContract) -> Assignmen
         attempt_id: contract.attempt_id.to_string(),
         attempt_number: contract.attempt_number,
         idempotency_key: contract.idempotency_key.clone(),
-        task_id: contract.task_id.clone(),
+        task_id: contract.task_id.to_string(),
         candidate_id: contract.candidate_id.clone(),
         execution: Some(ExecutionSpec {
             executor_kind: contract.execution.executor_kind.into(),
@@ -286,11 +287,11 @@ pub(super) fn worker_event(
 ) -> ProducerEvent {
     interaction::redact_worker_event(&mut event);
     let mut frame = ProducerEvent::new(
-        contract.task_id.clone(),
+        contract.task_id.to_string(),
         Producer::new("alloyport-worker", worker_id),
         event,
     );
-    frame.task_id = Some(contract.task_id.clone());
+    frame.task_id = Some(contract.task_id.to_string());
     frame.operation_id = Some(contract.attempt_id.to_string());
     frame.emitted_at_unix_ms = emitted_at_unix_ms;
     frame.authority = Authority::Observed;

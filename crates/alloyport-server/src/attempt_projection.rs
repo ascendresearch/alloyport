@@ -14,13 +14,13 @@ impl WorkerControlService {
         now_ms: u64,
     ) -> Result<AppendOutcome, InteractionError> {
         let mut frame = ProducerEvent::new(
-            contract.task_id.clone(),
+            contract.task_id.to_string(),
             Producer::new("alloyport-server", "controller"),
             Event::RunStarted {
-                task: contract.task_id.clone(),
+                task: contract.task_id.to_string(),
             },
         );
-        frame.task_id = Some(contract.task_id.clone());
+        frame.task_id = Some(contract.task_id.to_string());
         frame.emitted_at_unix_ms = now_ms;
         frame.authority = Authority::Observed;
         frame.visibility = Visibility::User;

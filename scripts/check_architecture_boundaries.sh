@@ -145,20 +145,25 @@ if core_outer_dependency=$(rg -n \
 fi
 if ! rg -q 'AttemptId,' crates/alloyport-core/src/identity.rs \
     || ! rg -q 'AssignmentId,' crates/alloyport-core/src/identity.rs \
+    || ! rg -q 'TaskId,' crates/alloyport-core/src/identity.rs \
     || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub attempt_id: AttemptId' \
         crates/alloyport-server/src/storage/model.rs \
     || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub assignment_id: AssignmentId' \
         crates/alloyport-server/src/storage/model.rs \
+    || ! rg -q -U 'pub struct AssignmentContract \{[^}]*pub task_id: TaskId' \
+        crates/alloyport-server/src/storage/model.rs \
     || ! rg -q -U 'pub struct StoredAssignment \{[^}]*pub attempt_id: AttemptId' \
         crates/alloyport-worker/src/journal.rs \
     || ! rg -q -U 'pub struct StoredAssignment \{[^}]*pub assignment_id: AssignmentId' \
+        crates/alloyport-worker/src/journal.rs \
+    || ! rg -q -U 'pub struct StoredAssignment \{[^}]*pub task_id: TaskId' \
         crates/alloyport-worker/src/journal.rs; then
-    violations+=("validated AttemptId/AssignmentId are not used by both immutable assignment contracts")
+    violations+=("validated AttemptId/AssignmentId/TaskId are not used by both immutable assignment contracts")
 fi
-if raw_contract_attempt_id=$(rg -n -U \
-    'pub struct (AssignmentContract|StoredAssignment) \{[^}]*(pub attempt_id: String|pub assignment_id: String)' \
+if raw_contract_identity=$(rg -n -U \
+    'pub struct (AssignmentContract|StoredAssignment) \{[^}]*(pub attempt_id: String|pub assignment_id: String|pub task_id: String)' \
     crates/alloyport-server/src/storage/model.rs crates/alloyport-worker/src/journal.rs); then
-    violations+=("immutable assignment contract regained a raw attempt/assignment ID: ${raw_contract_attempt_id}")
+    violations+=("immutable assignment contract regained a raw attempt/assignment/task ID: ${raw_contract_identity}")
 fi
 if interaction_store_capability=$(rg -n \
     'impl InteractionEventWriter|impl InteractionEventReader|impl InteractionRunAccessStore' \

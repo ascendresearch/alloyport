@@ -7,7 +7,9 @@ pub use execution::{
     AttemptOutcome, AttemptOutcomeError, ExecutionKind, ExecutionKindError, NetworkPolicy,
     NetworkPolicyError, RejectionReason, RejectionReasonError,
 };
-pub use identity::{AssignmentId, AssignmentIdError, AttemptId, AttemptIdError};
+pub use identity::{
+    AssignmentId, AssignmentIdError, AttemptId, AttemptIdError, TaskId, TaskIdError,
+};
 
 use std::collections::BTreeSet;
 use std::error::Error;

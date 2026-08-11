@@ -4,7 +4,7 @@ use super::*;
 use crate::storage::{ArtifactIdentity, AssignmentRepository, ExecutionContract};
 use alloyport_artifacts::upload::BeginUpload;
 use alloyport_artifacts::{FilesystemArtifactStore, SqliteUploadStore};
-use alloyport_core::{AssignmentId, AttemptId, AttemptOutcome, ExecutionKind};
+use alloyport_core::{AssignmentId, AttemptId, AttemptOutcome, ExecutionKind, TaskId};
 use alloyport_proto::v1::{
     ArtifactRef, ExecutionSpec, ExecutorKind as WireExecutorKind, ResourceLimits,
 };
@@ -190,7 +190,7 @@ fn stored_contract(attempt_id: &str, executor_kind: ExecutionKind) -> Assignment
         attempt_id: AttemptId::try_from(attempt_id).expect("valid fixture attempt ID"),
         attempt_number: 1,
         idempotency_key: format!("key-{attempt_id}"),
-        task_id: format!("task-{attempt_id}"),
+        task_id: TaskId::try_from(format!("task-{attempt_id}")).expect("valid fixture task ID"),
         candidate_id: "candidate-1".into(),
         execution: ExecutionContract {
             executor_kind,

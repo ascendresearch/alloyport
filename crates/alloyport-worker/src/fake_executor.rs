@@ -33,7 +33,7 @@ impl From<&StoredAssignment> for ExecutorInput {
         Self {
             assignment_id: assignment.assignment_id.to_string(),
             attempt_id: assignment.attempt_id.to_string(),
-            task_id: assignment.task_id.clone(),
+            task_id: assignment.task_id.to_string(),
             candidate_id: assignment.candidate_id.clone(),
             argv: assignment.execution.argv.clone(),
             working_directory: assignment.execution.working_directory.clone(),

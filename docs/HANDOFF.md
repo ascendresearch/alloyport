@@ -216,9 +216,10 @@ transport-independent model, and capability-port/error modules.
 Server and worker durable contracts share `alloyport_core::ExecutionKind`, `NetworkPolicy`,
 `AttemptOutcome`, and `RejectionReason`; persisted JSON stays numeric for compatibility, while
 Protobuf conversion is confined to transport mappings and observation ingestion.
-Immutable server/worker assignment contracts also share validated `AttemptId` and `AssignmentId`
-types whose JSON and SQLite representations remain the existing strings; other IDs and observation/
-outbox identities are not yet migrated.
+Immutable server/worker assignment contracts also share validated `AttemptId`, `AssignmentId`, and
+`TaskId` types whose JSON and SQLite representations remain the existing strings. `CandidateId`
+remains untyped until its optional/empty protocol semantics are decided; observation/outbox
+identities are not yet migrated.
 Canonical Interaction persistence is capability-segregated into event-write, event-read, and
 run-access ports. Its SQLite schema shell, event/output log, and authorization grants are separate
 implementation modules, alongside independent replay-to-live broadcast and display sanitization.

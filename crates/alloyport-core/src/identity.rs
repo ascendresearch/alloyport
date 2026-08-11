@@ -101,6 +101,13 @@ validated_id!(
     "assignment"
 );
 
+validated_id!(
+    /// Stable identity of one user-visible task or run.
+    TaskId,
+    TaskIdError,
+    "task"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +125,10 @@ mod tests {
         let assignment_id = AssignmentId::try_from("assignment-1")?;
         assert_eq!(serde_json::to_string(&assignment_id)?, r#""assignment-1""#);
         assert!(AssignmentId::try_from("").is_err());
+
+        let task_id = TaskId::try_from("task-1")?;
+        assert_eq!(serde_json::to_string(&task_id)?, r#""task-1""#);
+        assert!(TaskId::try_from("\t").is_err());
         Ok(())
     }
 }
