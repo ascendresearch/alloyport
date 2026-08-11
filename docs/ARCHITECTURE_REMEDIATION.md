@@ -243,6 +243,10 @@ directories (including their migration and adapter-test files).
   assignment coordination (464), attempt observation/projection (488), gRPC transport and wire
   mapping (311), and tests (211) isolated in cohesive modules. Protobuf/domain conversion now lives
   at the transport edge, and no module in this slice exceeds the 800-line review threshold.
+- [x] Worker outbound coordinator split by use case: `lib.rs` is 391 lines (down from 1,838), with
+  local admission/journal state (230), control-session framing (272), attempt execution coordination
+  (537), wire/journal mapping (188), and tests (289) isolated in cohesive modules. No module in this
+  slice exceeds the 800-line review threshold.
 - [x] SQL-location architecture check has no legacy allowlist entries.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.
