@@ -2,6 +2,7 @@
 
 use crate::identity::{ConnectionIdentityResolver, ResolvedConnectionIdentity};
 use crate::interaction::{InteractionError, InteractionHub, InteractionStore, SubscriptionError};
+use crate::persistence::ServerPersistence;
 use alloyport_events::EventEnvelope;
 use alloyport_proto::interaction_v1::interaction_service_server::InteractionService;
 use alloyport_proto::interaction_v1::{CanonicalEvent, ReplayRunRequest, SubscribeRunRequest};
@@ -42,13 +43,14 @@ impl RunAuthorization {
 }
 
 /// Resolves request identity and checks run visibility without trusting request body ownership.
+#[tonic::async_trait]
 pub trait InteractionAccessPolicy: Debug + Send + Sync {
     /// Authorizes one request and returns state suitable for later revalidation.
     ///
     /// # Errors
     ///
     /// Returns a gRPC status when identity is absent, inactive, or lacks run access.
-    fn authorize(
+    async fn authorize(
         &self,
         metadata: &MetadataMap,
         extensions: &Extensions,
@@ -60,7 +62,11 @@ pub trait InteractionAccessPolicy: Debug + Send + Sync {
     /// # Errors
     ///
     /// Returns a gRPC status when access is no longer active.
-    fn revalidate(&self, authorization: &RunAuthorization, run_id: &str) -> Result<(), Status>;
+    async fn revalidate(
+        &self,
+        authorization: &RunAuthorization,
+        run_id: &str,
+    ) -> Result<(), Status>;
 }
 
 /// Production policy backed by verified certificate enrollment and durable run grants.
@@ -82,8 +88,15 @@ impl EnrolledInteractionAccessPolicy {
         }
     }
 
-    fn authorize_owner(&self, owner_id: &str, run_id: &str) -> Result<(), Status> {
-        match self.interactions.can_read_run(run_id, owner_id) {
+    async fn authorize_owner(&self, owner_id: &str, run_id: &str) -> Result<(), Status> {
+        let interactions = Arc::clone(&self.interactions);
+        let owner_id = owner_id.to_owned();
+        let run_id = run_id.to_owned();
+        let can_read = ServerPersistence::default()
+            .run(move || interactions.can_read_run(&run_id, &owner_id))
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
+        match can_read {
             Ok(true) => Ok(()),
             Ok(false) => Err(Status::permission_denied(
                 "run is not visible to this owner",
@@ -93,28 +106,33 @@ impl EnrolledInteractionAccessPolicy {
     }
 }
 
+#[tonic::async_trait]
 impl InteractionAccessPolicy for EnrolledInteractionAccessPolicy {
-    fn authorize(
+    async fn authorize(
         &self,
         _metadata: &MetadataMap,
         extensions: &Extensions,
         run_id: &str,
     ) -> Result<RunAuthorization, Status> {
-        let identity = self.identities.resolve_identity(extensions)?;
-        self.authorize_owner(&identity.owner_id, run_id)?;
+        let identity = self.identities.resolve_identity(extensions).await?;
+        self.authorize_owner(&identity.owner_id, run_id).await?;
         Ok(RunAuthorization {
             owner_id: identity.owner_id.clone(),
             identity: Some(identity),
         })
     }
 
-    fn revalidate(&self, authorization: &RunAuthorization, run_id: &str) -> Result<(), Status> {
+    async fn revalidate(
+        &self,
+        authorization: &RunAuthorization,
+        run_id: &str,
+    ) -> Result<(), Status> {
         let identity = authorization
             .identity
             .as_ref()
             .ok_or_else(|| Status::unauthenticated("verified interaction identity is missing"))?;
-        self.identities.revalidate(identity)?;
-        self.authorize_owner(&authorization.owner_id, run_id)
+        self.identities.revalidate(identity).await?;
+        self.authorize_owner(&authorization.owner_id, run_id).await
     }
 }
 
@@ -160,10 +178,15 @@ impl InteractionServiceImpl {
         }
     }
 
-    fn authorize<T>(&self, request: &Request<T>, run_id: &str) -> Result<RunAuthorization, Status> {
+    async fn authorize<T>(
+        &self,
+        request: &Request<T>,
+        run_id: &str,
+    ) -> Result<RunAuthorization, Status> {
         validate_run_id(run_id)?;
         self.access
             .authorize(request.metadata(), request.extensions(), run_id)
+            .await
     }
 }
 
@@ -179,8 +202,8 @@ impl InteractionService for InteractionServiceImpl {
         request: Request<ReplayRunRequest>,
     ) -> Result<Response<Self::ReplayRunStream>, Status> {
         let run_id = request.get_ref().run_id.clone();
-        let authorization = self.authorize(&request, &run_id)?;
-        self.access.revalidate(&authorization, &run_id)?;
+        let authorization = self.authorize(&request, &run_id).await?;
+        self.access.revalidate(&authorization, &run_id).await?;
         let after_sequence = request.get_ref().after_sequence;
         let limit = replay_limit(
             request.get_ref().limit,
@@ -188,22 +211,24 @@ impl InteractionService for InteractionServiceImpl {
             self.replay_max,
         )?;
         let hub = Arc::clone(&self.hub);
-        let events = tokio::task::spawn_blocking(move || {
-            let latest = hub.latest_sequence(&run_id)?.unwrap_or(0);
-            if after_sequence > latest {
-                return Err(InteractionError::InvalidCursor {
-                    run_id,
-                    after_sequence,
-                    latest_sequence: latest,
-                });
-            }
-            hub.events_after(&run_id, after_sequence, limit)
-        })
-        .await
-        .map_err(|error| Status::internal(format!("interaction replay task failed: {error}")))?
-        .map_err(|error| interaction_status(&error))?;
+        let events = ServerPersistence::default()
+            .run(move || {
+                let latest = hub.latest_sequence(&run_id)?.unwrap_or(0);
+                if after_sequence > latest {
+                    return Err(InteractionError::InvalidCursor {
+                        run_id,
+                        after_sequence,
+                        latest_sequence: latest,
+                    });
+                }
+                hub.events_after(&run_id, after_sequence, limit)
+            })
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
+            .map_err(|error| interaction_status(&error))?;
         self.access
-            .revalidate(&authorization, &request.get_ref().run_id)?;
+            .revalidate(&authorization, &request.get_ref().run_id)
+            .await?;
         let stream = tokio_stream::iter(
             events
                 .into_iter()
@@ -217,17 +242,15 @@ impl InteractionService for InteractionServiceImpl {
         request: Request<SubscribeRunRequest>,
     ) -> Result<Response<Self::SubscribeRunStream>, Status> {
         let run_id = request.get_ref().run_id.clone();
-        let authorization = self.authorize(&request, &run_id)?;
+        let authorization = self.authorize(&request, &run_id).await?;
         let after_sequence = request.get_ref().after_sequence;
         let hub = Arc::clone(&self.hub);
         let subscription_run_id = run_id.clone();
-        let mut subscription =
-            tokio::task::spawn_blocking(move || hub.subscribe(subscription_run_id, after_sequence))
-                .await
-                .map_err(|error| {
-                    Status::internal(format!("interaction subscribe task failed: {error}"))
-                })?
-                .map_err(|error| interaction_status(&error))?;
+        let mut subscription = ServerPersistence::default()
+            .run(move || hub.subscribe(subscription_run_id, after_sequence))
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
+            .map_err(|error| interaction_status(&error))?;
         let (sender, receiver) = mpsc::channel(self.delivery_capacity);
         let access = Arc::clone(&self.access);
         let delivery_timeout = self.delivery_timeout;
@@ -274,14 +297,7 @@ async fn revalidate_access(
     authorization: &RunAuthorization,
     run_id: &str,
 ) -> Result<(), Status> {
-    let access = Arc::clone(access);
-    let authorization = authorization.clone();
-    let run_id = run_id.to_owned();
-    tokio::task::spawn_blocking(move || access.revalidate(&authorization, &run_id))
-        .await
-        .map_err(|error| {
-            Status::internal(format!("interaction authorization task failed: {error}"))
-        })?
+    access.revalidate(authorization, run_id).await
 }
 
 fn replay_limit(requested: u32, default: usize, maximum: usize) -> Result<usize, Status> {
@@ -494,8 +510,9 @@ mod tests {
         store: Arc<dyn InteractionStore>,
     }
 
+    #[tonic::async_trait]
     impl InteractionAccessPolicy for TestAccessPolicy {
-        fn authorize(
+        async fn authorize(
             &self,
             metadata: &MetadataMap,
             _extensions: &Extensions,
@@ -506,11 +523,15 @@ mod tests {
                 .and_then(|value| value.to_str().ok())
                 .ok_or_else(|| Status::unauthenticated("test owner is missing"))?;
             let authorization = RunAuthorization::local(owner_id);
-            self.revalidate(&authorization, run_id)?;
+            self.revalidate(&authorization, run_id).await?;
             Ok(authorization)
         }
 
-        fn revalidate(&self, authorization: &RunAuthorization, run_id: &str) -> Result<(), Status> {
+        async fn revalidate(
+            &self,
+            authorization: &RunAuthorization,
+            run_id: &str,
+        ) -> Result<(), Status> {
             match self.store.can_read_run(run_id, authorization.owner_id()) {
                 Ok(true) => Ok(()),
                 Ok(false) => Err(Status::permission_denied("run is not visible")),

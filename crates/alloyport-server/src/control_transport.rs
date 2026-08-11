@@ -28,11 +28,10 @@ impl WorkerControl for WorkerControlService {
         &self,
         request: Request<Streaming<WorkerToServer>>,
     ) -> Result<Response<Self::OpenControlStreamStream>, Status> {
-        let authenticated_identity = self
-            .identity_resolver
-            .as_ref()
-            .map(|resolver| resolver.resolve_identity(request.extensions()))
-            .transpose()?;
+        let authenticated_identity = match self.identity_resolver.as_ref() {
+            Some(resolver) => Some(resolver.resolve_identity(request.extensions()).await?),
+            None => None,
+        };
         let mut inbound = request.into_inner();
         let first = inbound
             .message()
@@ -67,7 +66,7 @@ impl WorkerControl for WorkerControlService {
         if let Some(identity) = authenticated_identity.as_ref()
             && let Some(resolver) = self.identity_resolver.as_ref()
         {
-            resolver.revalidate(identity)?;
+            resolver.revalidate(identity).await?;
         }
 
         let worker_id = hello.worker_id.clone();

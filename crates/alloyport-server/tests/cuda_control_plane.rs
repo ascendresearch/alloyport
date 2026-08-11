@@ -775,8 +775,9 @@ impl CudaContainerEngine for ImmediateCudaEngine {
 #[derive(Debug)]
 struct FixedArtifactOwner;
 
+#[tonic::async_trait]
 impl ArtifactAccessPolicy for FixedArtifactOwner {
-    fn resolve_owner(
+    async fn resolve_owner(
         &self,
         _metadata: &tonic::metadata::MetadataMap,
         _extensions: &Extensions,
@@ -784,7 +785,11 @@ impl ArtifactAccessPolicy for FixedArtifactOwner {
         Ok("cuda-1".into())
     }
 
-    fn authorize_download(&self, _owner_id: &str, _digest: Sha256Digest) -> Result<(), Status> {
+    async fn authorize_download(
+        &self,
+        _owner_id: &str,
+        _digest: Sha256Digest,
+    ) -> Result<(), Status> {
         Ok(())
     }
 }

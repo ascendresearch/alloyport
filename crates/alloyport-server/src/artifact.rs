@@ -3,6 +3,7 @@
 use alloyport_artifacts::SqliteUploadStore;
 
 use crate::identity::ConnectionIdentityResolver;
+use crate::persistence::ServerPersistence;
 use crate::storage::Clock;
 use alloyport_artifacts::upload::{BeginUpload, UploadError, UploadSession};
 use alloyport_artifacts::{ArtifactIdentity, FilesystemArtifactStore, Sha256Digest};
@@ -26,13 +27,14 @@ const MAX_UPLOAD_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
 const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Resolves authenticated ownership and authorizes reads without trusting request body fields.
+#[tonic::async_trait]
 pub trait ArtifactAccessPolicy: Debug + Send + Sync {
     /// Resolves the authenticated principal that owns upload sessions.
     ///
     /// # Errors
     ///
     /// Returns a gRPC status when authenticated request context is absent or invalid.
-    fn resolve_owner(
+    async fn resolve_owner(
         &self,
         metadata: &MetadataMap,
         extensions: &Extensions,
@@ -43,7 +45,7 @@ pub trait ArtifactAccessPolicy: Debug + Send + Sync {
     /// # Errors
     ///
     /// Returns a gRPC status when the artifact is not visible to the principal.
-    fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status>;
+    async fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status>;
 }
 
 /// Production access policy keyed by the verified mTLS client leaf certificate.
@@ -59,8 +61,9 @@ impl MtlsArtifactAccessPolicy {
     }
 }
 
+#[tonic::async_trait]
 impl ArtifactAccessPolicy for MtlsArtifactAccessPolicy {
-    fn resolve_owner(
+    async fn resolve_owner(
         &self,
         _metadata: &MetadataMap,
         extensions: &Extensions,
@@ -80,8 +83,11 @@ impl ArtifactAccessPolicy for MtlsArtifactAccessPolicy {
         ))
     }
 
-    fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
-        authorize_referenced_artifact(&self.uploads, owner_id, digest)
+    async fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
+        let uploads = Arc::clone(&self.uploads);
+        let owner_id = owner_id.to_owned();
+        run_status_blocking(move || authorize_referenced_artifact(&uploads, &owner_id, digest))
+            .await
     }
 }
 
@@ -105,17 +111,21 @@ impl EnrolledArtifactAccessPolicy {
     }
 }
 
+#[tonic::async_trait]
 impl ArtifactAccessPolicy for EnrolledArtifactAccessPolicy {
-    fn resolve_owner(
+    async fn resolve_owner(
         &self,
         _metadata: &MetadataMap,
         extensions: &Extensions,
     ) -> Result<String, Status> {
-        self.identities.resolve_owner(extensions)
+        self.identities.resolve_owner(extensions).await
     }
 
-    fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
-        authorize_referenced_artifact(&self.uploads, owner_id, digest)
+    async fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
+        let uploads = Arc::clone(&self.uploads);
+        let owner_id = owner_id.to_owned();
+        run_status_blocking(move || authorize_referenced_artifact(&uploads, &owner_id, digest))
+            .await
     }
 }
 
@@ -157,9 +167,10 @@ impl ArtifactServiceImpl {
         }
     }
 
-    fn owner<T>(&self, request: &Request<T>) -> Result<String, Status> {
+    async fn owner<T>(&self, request: &Request<T>) -> Result<String, Status> {
         self.access
             .resolve_owner(request.metadata(), request.extensions())
+            .await
     }
 }
 
@@ -172,7 +183,7 @@ impl ArtifactService for ArtifactServiceImpl {
         &self,
         request: Request<BeginUploadRequest>,
     ) -> Result<Response<artifact_v1::UploadSession>, Status> {
-        let owner_id = self.owner(&request)?;
+        let owner_id = self.owner(&request).await?;
         let request = request.into_inner();
         if request.ttl_ms == 0 || request.ttl_ms > MAX_UPLOAD_TTL_MS {
             return Err(Status::invalid_argument("upload TTL is outside policy"));
@@ -197,7 +208,7 @@ impl ArtifactService for ArtifactServiceImpl {
         &self,
         request: Request<GetUploadRequest>,
     ) -> Result<Response<artifact_v1::UploadSession>, Status> {
-        let owner_id = self.owner(&request)?;
+        let owner_id = self.owner(&request).await?;
         let upload_id = request.into_inner().upload_id;
         let uploads = Arc::clone(&self.uploads);
         let session = run_blocking(move || uploads.status(&owner_id, &upload_id)).await?;
@@ -208,7 +219,7 @@ impl ArtifactService for ArtifactServiceImpl {
         &self,
         request: Request<Streaming<UploadChunk>>,
     ) -> Result<Response<artifact_v1::UploadSession>, Status> {
-        let owner_id = self.owner(&request)?;
+        let owner_id = self.owner(&request).await?;
         let mut inbound = request.into_inner();
         let mut upload_id: Option<String> = None;
         while let Some(chunk) = inbound.next().await.transpose()? {
@@ -243,7 +254,7 @@ impl ArtifactService for ArtifactServiceImpl {
         &self,
         request: Request<FinalizeUploadRequest>,
     ) -> Result<Response<artifact_v1::ArtifactIdentity>, Status> {
-        let owner_id = self.owner(&request)?;
+        let owner_id = self.owner(&request).await?;
         let upload_id = request.into_inner().upload_id;
         let uploads = Arc::clone(&self.uploads);
         let artifacts = Arc::clone(&self.artifacts);
@@ -259,13 +270,10 @@ impl ArtifactService for ArtifactServiceImpl {
         &self,
         request: Request<DownloadRequest>,
     ) -> Result<Response<Self::DownloadStream>, Status> {
-        let owner_id = self.owner(&request)?;
+        let owner_id = self.owner(&request).await?;
         let request = request.into_inner();
         let digest = parse_digest(&request.digest)?;
-        let access = Arc::clone(&self.access);
-        let authorization_owner = owner_id.clone();
-        run_status_blocking(move || access.authorize_download(&authorization_owner, digest))
-            .await?;
+        self.access.authorize_download(&owner_id, digest).await?;
         let uploads = Arc::clone(&self.uploads);
         let artifacts = Arc::clone(&self.artifacts);
         let reader = run_blocking(move || {
@@ -285,9 +293,10 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, UploadError> + Send + 'static,
 {
-    tokio::task::spawn_blocking(operation)
+    ServerPersistence::default()
+        .run(operation)
         .await
-        .map_err(|error| Status::internal(format!("artifact task failed: {error}")))?
+        .map_err(|error| Status::internal(error.to_string()))?
         .map_err(upload_status)
 }
 
@@ -296,9 +305,10 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, Status> + Send + 'static,
 {
-    tokio::task::spawn_blocking(operation)
+    ServerPersistence::default()
+        .run(operation)
         .await
-        .map_err(|error| Status::internal(format!("artifact policy task failed: {error}")))?
+        .map_err(|error| Status::internal(error.to_string()))?
 }
 
 fn stream_download(

@@ -498,7 +498,7 @@ impl WorkerControlService {
                 Some(Ok(frame)) => {
                     if let Some(identity) = authenticated_identity.as_ref()
                         && let Some(resolver) = self.identity_resolver.as_ref()
-                        && let Err(status) = resolver.revalidate(identity)
+                        && let Err(status) = resolver.revalidate(identity).await
                     {
                         let _ = outbound.send(Err(status)).await;
                         break;

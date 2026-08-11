@@ -2,12 +2,13 @@
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
 
 use crate::storage::RepositoryError;
 
 const MAX_BLOCKING_PERSISTENCE_OPERATIONS: usize = 8;
+static SERVER_PERSISTENCE_PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub(crate) struct ServerPersistence {
@@ -17,12 +18,22 @@ pub(crate) struct ServerPersistence {
 impl Default for ServerPersistence {
     fn default() -> Self {
         Self {
-            permits: Arc::new(Semaphore::new(MAX_BLOCKING_PERSISTENCE_OPERATIONS)),
+            permits: Arc::clone(
+                SERVER_PERSISTENCE_PERMITS
+                    .get_or_init(|| Arc::new(Semaphore::new(MAX_BLOCKING_PERSISTENCE_OPERATIONS))),
+            ),
         }
     }
 }
 
 impl ServerPersistence {
+    #[cfg(test)]
+    pub(crate) fn isolated() -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(MAX_BLOCKING_PERSISTENCE_OPERATIONS)),
+        }
+    }
+
     pub(crate) async fn run<T, F>(&self, operation: F) -> Result<T, PersistenceTaskError>
     where
         T: Send + 'static,

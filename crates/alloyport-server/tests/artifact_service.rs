@@ -189,8 +189,9 @@ fn authorized<T>(message: T) -> Request<T> {
 #[derive(Debug)]
 struct TestAccessPolicy;
 
+#[tonic::async_trait]
 impl ArtifactAccessPolicy for TestAccessPolicy {
-    fn resolve_owner(
+    async fn resolve_owner(
         &self,
         metadata: &MetadataMap,
         _extensions: &Extensions,
@@ -201,7 +202,7 @@ impl ArtifactAccessPolicy for TestAccessPolicy {
             .map_or_else(|| "worker-1".into(), str::to_owned))
     }
 
-    fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
+    async fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
         let expected = Sha256Digest::from_str(
             "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
         )

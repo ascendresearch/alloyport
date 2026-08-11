@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn persistence_work_is_bounded_without_stalling_network_tasks() {
-    let persistence = ServerPersistence::default();
+    let persistence = ServerPersistence::isolated();
     let active = Arc::new(AtomicUsize::new(0));
     let maximum = Arc::new(AtomicUsize::new(0));
     let mut operations = Vec::new();

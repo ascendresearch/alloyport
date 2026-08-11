@@ -291,6 +291,10 @@ directories (including their migration and adapter-test files).
   enqueue/reassignment/cancellation, and abandoned-preparation reconciliation use the same bounded
   persistence boundary. Multi-store preparation remains one blocking-domain operation so Artifact
   grants, interaction projection, retry deferral, and dispatchability preserve their ordering.
+- [x] Server R6 authorization slice: connection identity, Artifact access, and Interaction access
+  ports are asynchronous contracts. Built-in SQLite-backed policies and service repositories share
+  one process-wide eight-permit persistence executor, so adding an RPC surface cannot silently
+  create a new unbounded blocking pool.
 - [x] SQL-location architecture check has no legacy allowlist entries.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.

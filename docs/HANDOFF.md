@@ -262,12 +262,15 @@ The server library also implements a separate `ArtifactServiceImpl` adapter:
   offset; one stream cannot mix upload session IDs;
 - download is server-streaming, supports a byte offset and optional byte limit, and moves data with
   a bounded 64 KiB buffer;
-- blocking SQLite and filesystem work runs outside Tokio async workers;
+- blocking SQLite and bounded filesystem metadata work runs outside Tokio async workers behind the
+  server-wide eight-permit persistence executor;
 - an injectable `ArtifactAccessPolicy` receives both RPC metadata and transport extensions, derives
   the session owner, and authorizes digest reads, so no request-body owner or client filesystem path
   is trusted; the extensions expose tonic's verified TLS peer-certificate information.
 
-The server binary registers this service alongside worker control. `EnrolledArtifactAccessPolicy`
+The access-policy contracts are asynchronous, so identity-registry and reference checks cannot
+accidentally execute synchronously on an RPC task. The server binary registers this service
+alongside worker control. `EnrolledArtifactAccessPolicy`
 requires tonic's verified TLS connection information, maps the client leaf-certificate fingerprint
 through the durable identity registry, ignores client-supplied owner metadata, and permits a download
 only when that stable owner has an active typed reference for the digest. Completed uploads create

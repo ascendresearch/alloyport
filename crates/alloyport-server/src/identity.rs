@@ -8,6 +8,8 @@ use std::sync::Arc;
 use tonic::transport::server::{TcpConnectInfo, TlsConnectInfo};
 use tonic::{Extensions, Status};
 
+use crate::persistence::ServerPersistence;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i64)]
 pub enum EnrollmentState {
@@ -130,13 +132,14 @@ pub struct ResolvedConnectionIdentity {
 }
 
 /// Resolves one authenticated transport connection to a stable logical owner.
+#[tonic::async_trait]
 pub trait ConnectionIdentityResolver: Debug + Send + Sync {
     /// Resolves the verified peer certificate carried by transport extensions.
     ///
     /// # Errors
     ///
     /// Returns a gRPC status when authentication or registry resolution fails.
-    fn resolve_identity(
+    async fn resolve_identity(
         &self,
         extensions: &Extensions,
     ) -> Result<ResolvedConnectionIdentity, Status>;
@@ -146,15 +149,16 @@ pub trait ConnectionIdentityResolver: Debug + Send + Sync {
     /// # Errors
     ///
     /// Returns a gRPC status after replacement, revocation, or registry failure.
-    fn revalidate(&self, identity: &ResolvedConnectionIdentity) -> Result<(), Status>;
+    async fn revalidate(&self, identity: &ResolvedConnectionIdentity) -> Result<(), Status>;
 
     /// Resolves only the stable owner for request/response services.
     ///
     /// # Errors
     ///
     /// Returns the same status classifications as [`Self::resolve_identity`].
-    fn resolve_owner(&self, extensions: &Extensions) -> Result<String, Status> {
+    async fn resolve_owner(&self, extensions: &Extensions) -> Result<String, Status> {
         self.resolve_identity(extensions)
+            .await
             .map(|identity| identity.owner_id)
     }
 }
@@ -163,25 +167,33 @@ pub trait ConnectionIdentityResolver: Debug + Send + Sync {
 #[derive(Debug)]
 pub struct MtlsConnectionIdentityResolver {
     registry: Arc<dyn IdentityRegistry>,
+    persistence: ServerPersistence,
 }
 
 impl MtlsConnectionIdentityResolver {
     #[must_use]
     pub fn new(registry: Arc<dyn IdentityRegistry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            persistence: ServerPersistence::default(),
+        }
     }
 }
 
+#[tonic::async_trait]
 impl ConnectionIdentityResolver for MtlsConnectionIdentityResolver {
-    fn resolve_identity(
+    async fn resolve_identity(
         &self,
         extensions: &Extensions,
     ) -> Result<ResolvedConnectionIdentity, Status> {
         let fingerprint =
             peer_certificate_fingerprint(extensions).map_err(|error| identity_status(&error))?;
+        let registry = Arc::clone(&self.registry);
         let owner_id = self
-            .registry
-            .resolve_fingerprint(fingerprint)
+            .persistence
+            .run(move || registry.resolve_fingerprint(fingerprint))
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
             .map_err(|error| identity_status(&error))?;
         Ok(ResolvedConnectionIdentity {
             owner_id,
@@ -189,10 +201,14 @@ impl ConnectionIdentityResolver for MtlsConnectionIdentityResolver {
         })
     }
 
-    fn revalidate(&self, identity: &ResolvedConnectionIdentity) -> Result<(), Status> {
+    async fn revalidate(&self, identity: &ResolvedConnectionIdentity) -> Result<(), Status> {
+        let registry = Arc::clone(&self.registry);
+        let fingerprint = identity.fingerprint;
         let owner_id = self
-            .registry
-            .resolve_fingerprint(identity.fingerprint)
+            .persistence
+            .run(move || registry.resolve_fingerprint(fingerprint))
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
             .map_err(|error| identity_status(&error))?;
         if owner_id == identity.owner_id {
             Ok(())
