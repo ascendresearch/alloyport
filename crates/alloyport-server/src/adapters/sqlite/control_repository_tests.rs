@@ -1,9 +1,10 @@
 use super::*;
 use crate::storage::{
-    AssignmentContract, AssignmentDeliveryPreparation, AssignmentRepository,
-    AttemptLifecycleRepository, AttemptState, CancellationStoreOutcome, ConnectionRegistration,
-    ObservationDisposition, ObservedAttempt, RepositoryError, ServerOutboxFrame,
-    ServerOutboxRepository, StoreAssignmentOutcome, WorkerConnectionRepository, WorkerRegistration,
+    AssignmentContract, AssignmentDeliveryPreparation, AssignmentReadRepository,
+    AssignmentWriteRepository, AttemptLifecycleRepository, AttemptState, CancellationStoreOutcome,
+    ConnectionRegistration, ObservationDisposition, ObservedAttempt, RepositoryError,
+    ServerOutboxFrame, ServerOutboxRepository, StoreAssignmentOutcome, WorkerConnectionRepository,
+    WorkerRegistration,
 };
 use alloyport_core::{AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind, TaskId};
 use std::error::Error;

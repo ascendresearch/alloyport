@@ -123,12 +123,23 @@ if broad_control_repository=$(rg -n '^    repository: Arc<dyn ControlRepository>
     crates/alloyport-server/src --glob '*.rs'); then
     violations+=("application use case regained the broad ControlRepository dependency: ${broad_control_repository}")
 fi
+if broad_assignment_repository=$(rg -n 'repositories\.assignments\b' \
+    crates/alloyport-server/src --glob '*.rs'); then
+    violations+=("application use case regained the combined assignment repository: ${broad_assignment_repository}")
+fi
 if ! rg -q 'connections: Arc<dyn WorkerConnectionRepository>' crates/alloyport-server/src/lib.rs \
-    || ! rg -q 'assignments: Arc<dyn AssignmentRepository>' crates/alloyport-server/src/lib.rs \
+    || ! rg -q 'assignment_reads: Arc<dyn AssignmentReadRepository>' crates/alloyport-server/src/lib.rs \
+    || ! rg -q 'assignment_writes: Arc<dyn AssignmentWriteRepository>' crates/alloyport-server/src/lib.rs \
     || ! rg -q 'attempts: Arc<dyn AttemptLifecycleRepository>' crates/alloyport-server/src/lib.rs \
     || ! rg -q 'outbox: Arc<dyn ServerOutboxRepository>' crates/alloyport-server/src/lib.rs \
-    || ! rg -q '^    pub fn with_repository_ports\(' crates/alloyport-server/src/lib.rs; then
+    || ! rg -q '^    pub fn with_repository_capabilities\(' crates/alloyport-server/src/lib.rs; then
     violations+=("control service does not expose independently composable narrow repository ports")
+fi
+if ! rg -q '^pub trait AssignmentReadRepository' crates/alloyport-server/src/storage/repository.rs \
+    || ! rg -q '^pub trait AssignmentWriteRepository' crates/alloyport-server/src/storage/repository.rs \
+    || ! rg -q '^pub trait AssignmentRepository: AssignmentReadRepository .*AssignmentWriteRepository' \
+        crates/alloyport-server/src/storage/repository.rs; then
+    violations+=("assignment read/write ports are not capability-segregated")
 fi
 if raw_execution_enum=$(rg -n 'pub (executor_kind|network|outcome): i32|reason: i32' \
     crates/alloyport-server/src/storage crates/alloyport-worker/src/journal.rs); then

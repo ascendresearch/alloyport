@@ -28,7 +28,7 @@ impl WorkerControlService {
         let attempts = self.repositories.attempts.clone();
         let outbox = self.repositories.outbox.clone();
         let connections = self.repositories.connections.clone();
-        let assignments = self.repositories.assignments.clone();
+        let assignments = self.repositories.assignment_reads.clone();
         let registration = hello_to_registration(&hello);
         let connection = ConnectionRegistration {
             connection_id: connection_id.clone(),

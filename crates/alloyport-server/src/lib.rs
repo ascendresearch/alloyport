@@ -50,11 +50,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use storage::{
-    AssignmentContract, AssignmentDeliveryPreparation, AssignmentRepository,
-    AttemptLifecycleRepository, AttemptObservation, CancellationStoreOutcome, Clock,
-    ConnectionRegistration, ControlRepository, FinishedObservation, ObservationDisposition,
-    ObservedAttempt, RepositoryError, ServerFrameKind, ServerOutboxFrame, ServerOutboxRepository,
-    StoreAssignmentOutcome, SystemClock, WorkerConnectionRepository,
+    AssignmentContract, AssignmentDeliveryPreparation, AssignmentReadRepository,
+    AssignmentRepository, AssignmentWriteRepository, AttemptLifecycleRepository,
+    AttemptObservation, CancellationStoreOutcome, Clock, ConnectionRegistration, ControlRepository,
+    FinishedObservation, ObservationDisposition, ObservedAttempt, RepositoryError, ServerFrameKind,
+    ServerOutboxFrame, ServerOutboxRepository, StoreAssignmentOutcome, SystemClock,
+    WorkerConnectionRepository,
 };
 use tokio::sync::{Mutex, mpsc};
 use tonic::Status;
@@ -193,7 +194,8 @@ struct ControlState {
 #[derive(Clone, Debug)]
 struct ControlRepositories {
     connections: Arc<dyn WorkerConnectionRepository>,
-    assignments: Arc<dyn AssignmentRepository>,
+    assignment_reads: Arc<dyn AssignmentReadRepository>,
+    assignment_writes: Arc<dyn AssignmentWriteRepository>,
     attempts: Arc<dyn AttemptLifecycleRepository>,
     outbox: Arc<dyn ServerOutboxRepository>,
 }
@@ -201,13 +203,15 @@ struct ControlRepositories {
 impl ControlRepositories {
     fn new(
         connections: Arc<dyn WorkerConnectionRepository>,
-        assignments: Arc<dyn AssignmentRepository>,
+        assignment_reads: Arc<dyn AssignmentReadRepository>,
+        assignment_writes: Arc<dyn AssignmentWriteRepository>,
         attempts: Arc<dyn AttemptLifecycleRepository>,
         outbox: Arc<dyn ServerOutboxRepository>,
     ) -> Self {
         Self {
             connections,
-            assignments,
+            assignment_reads,
+            assignment_writes,
             attempts,
             outbox,
         }
@@ -325,10 +329,38 @@ impl WorkerControlService {
         interactions: Arc<dyn InteractionStore>,
         clock: Arc<dyn Clock>,
     ) -> Self {
+        Self::with_repository_capabilities(
+            connections,
+            assignments.clone(),
+            assignments,
+            attempts,
+            outbox,
+            interactions,
+            clock,
+        )
+    }
+
+    /// Builds a service from independently composable read/write repository capabilities.
+    #[must_use]
+    pub fn with_repository_capabilities(
+        connections: Arc<dyn WorkerConnectionRepository>,
+        assignment_reads: Arc<dyn AssignmentReadRepository>,
+        assignment_writes: Arc<dyn AssignmentWriteRepository>,
+        attempts: Arc<dyn AttemptLifecycleRepository>,
+        outbox: Arc<dyn ServerOutboxRepository>,
+        interactions: Arc<dyn InteractionStore>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(ControlState::default())),
             delivery: Arc::new(Mutex::new(())),
-            repositories: ControlRepositories::new(connections, assignments, attempts, outbox),
+            repositories: ControlRepositories::new(
+                connections,
+                assignment_reads,
+                assignment_writes,
+                attempts,
+                outbox,
+            ),
             clock,
             identity_resolver: None,
             artifact_metadata: None,
@@ -392,7 +424,7 @@ impl WorkerControlService {
         attempt_id: &str,
     ) -> Result<Option<AssignmentState>, RepositoryError> {
         self.repositories
-            .assignments
+            .assignment_reads
             .assignment(attempt_id)
             .map(|record| record.map(|record| record.state))
     }

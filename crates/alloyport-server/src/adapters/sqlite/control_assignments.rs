@@ -6,12 +6,13 @@ use super::control_records::{
 };
 use super::control_repository::SqliteControlRepository;
 use crate::storage::{
-    AssignmentContract, AssignmentDeliveryPreparation, AssignmentRecord, AssignmentRepository,
-    AttemptState, ReassignmentRecord, RepositoryError, StoreAssignmentOutcome,
+    AssignmentContract, AssignmentDeliveryPreparation, AssignmentReadRepository, AssignmentRecord,
+    AssignmentWriteRepository, AttemptState, ReassignmentRecord, RepositoryError,
+    StoreAssignmentOutcome,
 };
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
-impl AssignmentRepository for SqliteControlRepository {
+impl AssignmentWriteRepository for SqliteControlRepository {
     fn store_assignment(
         &self,
         worker_id: &str,
@@ -83,33 +84,6 @@ impl AssignmentRepository for SqliteControlRepository {
         Ok(transitioned)
     }
 
-    fn assignment(&self, attempt_id: &str) -> Result<Option<AssignmentRecord>, RepositoryError> {
-        self.connection()?
-            .query_row(
-                "SELECT worker_id, contract_json, state, created_at_ms, updated_at_ms,
-                        cancellation_reason
-                 FROM assignments WHERE attempt_id = ?1",
-                [attempt_id],
-                assignment_from_row,
-            )
-            .optional()
-            .map_err(RepositoryError::from)
-            .and_then(Option::transpose)
-    }
-
-    fn preparing_assignments(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<AssignmentRecord>, RepositoryError> {
-        let database = self.connection()?;
-        super::assignment_delivery::load_preparing(&database, limit)
-    }
-
-    fn preparing_assignment_count(&self) -> Result<usize, RepositoryError> {
-        let database = self.connection()?;
-        super::assignment_delivery::preparing_count(&database)
-    }
-
     fn defer_assignment_preparation(
         &self,
         attempt_id: &str,
@@ -118,27 +92,6 @@ impl AssignmentRepository for SqliteControlRepository {
     ) -> Result<bool, RepositoryError> {
         let database = self.connection()?;
         super::assignment_delivery::defer_preparation(&database, attempt_id, worker_id, retry_at_ms)
-    }
-
-    fn replayable_assignments(
-        &self,
-        worker_id: &str,
-    ) -> Result<Vec<AssignmentRecord>, RepositoryError> {
-        let database = self.connection()?;
-        let mut statement = database.prepare(
-            "SELECT worker_id, contract_json, state, created_at_ms, updated_at_ms,
-                    cancellation_reason
-             FROM assignments WHERE worker_id = ?1 AND state IN (1, 2, 3, 4, 8)
-             ORDER BY created_at_ms, attempt_id",
-        )?;
-        let records = statement.query_map([worker_id], assignment_from_row)?;
-        records
-            .map(|record| {
-                record
-                    .map_err(RepositoryError::from)
-                    .and_then(|value| value)
-            })
-            .collect()
     }
 
     fn reassign_expired(
@@ -212,5 +165,55 @@ impl AssignmentRepository for SqliteControlRepository {
             }
             Err(error) => Err(error),
         }
+    }
+}
+
+impl AssignmentReadRepository for SqliteControlRepository {
+    fn assignment(&self, attempt_id: &str) -> Result<Option<AssignmentRecord>, RepositoryError> {
+        self.connection()?
+            .query_row(
+                "SELECT worker_id, contract_json, state, created_at_ms, updated_at_ms,
+                        cancellation_reason
+                 FROM assignments WHERE attempt_id = ?1",
+                [attempt_id],
+                assignment_from_row,
+            )
+            .optional()
+            .map_err(RepositoryError::from)
+            .and_then(Option::transpose)
+    }
+
+    fn preparing_assignments(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<AssignmentRecord>, RepositoryError> {
+        let database = self.connection()?;
+        super::assignment_delivery::load_preparing(&database, limit)
+    }
+
+    fn preparing_assignment_count(&self) -> Result<usize, RepositoryError> {
+        let database = self.connection()?;
+        super::assignment_delivery::preparing_count(&database)
+    }
+
+    fn replayable_assignments(
+        &self,
+        worker_id: &str,
+    ) -> Result<Vec<AssignmentRecord>, RepositoryError> {
+        let database = self.connection()?;
+        let mut statement = database.prepare(
+            "SELECT worker_id, contract_json, state, created_at_ms, updated_at_ms,
+                    cancellation_reason
+             FROM assignments WHERE worker_id = ?1 AND state IN (1, 2, 3, 4, 8)
+             ORDER BY created_at_ms, attempt_id",
+        )?;
+        let records = statement.query_map([worker_id], assignment_from_row)?;
+        records
+            .map(|record| {
+                record
+                    .map_err(RepositoryError::from)
+                    .and_then(|value| value)
+            })
+            .collect()
     }
 }

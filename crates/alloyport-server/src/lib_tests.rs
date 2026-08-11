@@ -1,7 +1,7 @@
 //! Unit tests for server control orchestration.
 
 use super::*;
-use crate::storage::{ArtifactIdentity, AssignmentRepository, ExecutionContract};
+use crate::storage::{ArtifactIdentity, AssignmentWriteRepository, ExecutionContract};
 use alloyport_artifacts::upload::BeginUpload;
 use alloyport_artifacts::{FilesystemArtifactStore, SqliteUploadStore};
 use alloyport_core::{AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind, TaskId};
@@ -30,16 +30,19 @@ fn worker_acknowledgement_must_be_monotonic_and_not_future() {
 fn service_accepts_independently_supplied_repository_ports() -> Result<(), Box<dyn Error>> {
     let connections: Arc<dyn WorkerConnectionRepository> =
         Arc::new(SqliteControlRepository::in_memory()?);
-    let assignments: Arc<dyn AssignmentRepository> =
+    let assignment_reads: Arc<dyn AssignmentReadRepository> =
+        Arc::new(SqliteControlRepository::in_memory()?);
+    let assignment_writes: Arc<dyn AssignmentWriteRepository> =
         Arc::new(SqliteControlRepository::in_memory()?);
     let attempts: Arc<dyn AttemptLifecycleRepository> =
         Arc::new(SqliteControlRepository::in_memory()?);
     let outbox: Arc<dyn ServerOutboxRepository> = Arc::new(SqliteControlRepository::in_memory()?);
     let interactions: Arc<dyn InteractionStore> = Arc::new(SqliteInteractionStore::in_memory()?);
 
-    let service = WorkerControlService::with_repository_ports(
+    let service = WorkerControlService::with_repository_capabilities(
         connections,
-        assignments,
+        assignment_reads,
+        assignment_writes,
         attempts,
         outbox,
         interactions,

@@ -286,7 +286,7 @@ directories (including their migration and adapter-test files).
   422 lines (down from a 2,204-line mixed implementation), metadata/references are 201 lines, and
   authorized reader leases/garbage collection are 126 lines. Schema/migrations, quota accounting,
   record mapping/staging helpers, and adapter tests remain separate modules.
-- [x] Server control coordinator split by use case: `lib.rs` is 541 lines (down from 2,030), with
+- [x] Server control coordinator split by use case: `lib.rs` is 573 lines (down from 2,030), with
   assignment admission/reassignment/cancellation (281), durable delivery/connection sequencing
   (175), abandoned-preparation reconciliation (144), inbound frame sequencing/ACK persistence
   (164), attempt-state observation (199), canonical Interaction projection (204), worker session
@@ -295,7 +295,7 @@ directories (including their migration and adapter-test files).
   returning to attempt observation.
 - [x] Server control storage contract split without breaking `storage::*`: the public facade is 21
   lines, clock policy is 50 lines, transport-independent records/lifecycle values are 236 lines,
-  and capability-segregated repository ports plus typed errors are 212 lines. CI prevents these
+  and capability-segregated repository ports plus typed errors are 221 lines. CI prevents these
   definitions returning to the compatibility facade.
 - [x] Worker outbound coordinator split by use case: `lib.rs` is 442 lines (down from 1,838), with
   local admission/journal state (356), control-session framing (289), attempt admission/cancellation
@@ -340,13 +340,15 @@ directories (including their migration and adapter-test files).
   `StoredAssignment`/`StoredExecution`/`StoredEnvironment`/`StoredLimits` are compatibility aliases,
   eliminating four structurally identical model pairs without changing public paths or durable JSON.
   CI rejects any duplicate application-layer definitions returning outside core.
-- [x] First repository-port narrowing slice: `WorkerControlService` no longer stores or exposes one
+- [x] Repository-port narrowing: `WorkerControlService` no longer stores or exposes one
   broad `Arc<dyn ControlRepository>` to every use case. Its composition root projects the same
-  adapter into worker-connection, assignment, attempt-lifecycle, and server-outbox capability
-  objects; each module clones only the port it uses. Public `with_repository_ports` also permits four
-  independently supplied implementations, while `with_repository`/`with_repositories` retain the
-  composite compatibility path. All capability traits now carry their own `Debug + Send + Sync`
-  object guarantees, and CI rejects broad repository access returning to application modules.
+  adapter into worker-connection, assignment-read, assignment-write, attempt-lifecycle, and
+  server-outbox capability objects; each module clones only the port it uses. Assignment queries and
+  commands are separate interfaces, while `AssignmentRepository` remains their compatibility
+  composition. Public `with_repository_capabilities` permits five independently supplied
+  implementations; `with_repository_ports`, `with_repository`, and `with_repositories` retain the
+  broader compatibility paths. All capability traits carry their own `Debug + Send + Sync` object
+  guarantees, and CI rejects broad repository access returning to application modules.
 - [x] Worker executor responsibilities split: the durable fake execution coordinator is 501 lines
   (down from a 1,395-line mixed module), the shared local-spool/remote-publication boundary is 113
   lines, canonical event projection is 56 lines, and deterministic fake process behavior is 344

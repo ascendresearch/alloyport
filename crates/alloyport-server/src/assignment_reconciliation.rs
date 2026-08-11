@@ -11,7 +11,7 @@ impl WorkerControlService {
     pub async fn reconcile_preparing_assignments(
         &self,
     ) -> Result<PreparationReconciliationReport, RepositoryError> {
-        let repository = self.repositories.assignments.clone();
+        let repository = self.repositories.assignment_reads.clone();
         let assignments = self
             .persistence
             .run(move || repository.preparing_assignments(PREPARATION_RECONCILE_BATCH_SIZE))
@@ -36,7 +36,7 @@ impl WorkerControlService {
                     ) {
                         service
                             .repositories
-                            .assignments
+                            .assignment_writes
                             .defer_assignment_preparation(
                                 &persisted_assignment.contract.attempt_id,
                                 &persisted_assignment.worker_id,
@@ -49,7 +49,7 @@ impl WorkerControlService {
                     {
                         service
                             .repositories
-                            .assignments
+                            .assignment_writes
                             .defer_assignment_preparation(
                                 &persisted_assignment.contract.attempt_id,
                                 &persisted_assignment.worker_id,
@@ -59,7 +59,7 @@ impl WorkerControlService {
                     }
                     service
                         .repositories
-                        .assignments
+                        .assignment_writes
                         .mark_assignment_dispatchable(
                             &persisted_assignment.contract.attempt_id,
                             &persisted_assignment.worker_id,
@@ -115,7 +115,7 @@ impl WorkerControlService {
     pub async fn reconcile_preparing_assignments_at_startup(
         &self,
     ) -> Result<PreparationReconciliationReport, RepositoryError> {
-        let repository = self.repositories.assignments.clone();
+        let repository = self.repositories.assignment_reads.clone();
         let count = self
             .persistence
             .run(move || repository.preparing_assignment_count())

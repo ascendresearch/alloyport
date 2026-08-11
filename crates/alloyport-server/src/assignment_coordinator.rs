@@ -34,7 +34,7 @@ impl WorkerControlService {
         let (stored, became_dispatchable) = self
             .persistence
             .run(move || {
-                let stored = service.repositories.assignments.store_assignment(
+                let stored = service.repositories.assignment_writes.store_assignment(
                     &prepared_worker_id,
                     &prepared_contract,
                     now_ms,
@@ -47,7 +47,7 @@ impl WorkerControlService {
                 service.record_run_started(&prepared_contract, now_ms)?;
                 let became_dispatchable = service
                     .repositories
-                    .assignments
+                    .assignment_writes
                     .mark_assignment_dispatchable(
                         &prepared_contract.attempt_id,
                         &prepared_worker_id,
@@ -152,7 +152,7 @@ impl WorkerControlService {
         let (reassignment, became_dispatchable) = self
             .persistence
             .run(move || {
-                let reassignment = service.repositories.assignments.reassign_expired(
+                let reassignment = service.repositories.assignment_writes.reassign_expired(
                     &expired_attempt_id,
                     &prepared_worker_id,
                     &prepared_attempt_id,
@@ -170,7 +170,7 @@ impl WorkerControlService {
                 )?;
                 let became_dispatchable = service
                     .repositories
-                    .assignments
+                    .assignment_writes
                     .mark_assignment_dispatchable(
                         &prepared_attempt_id,
                         &prepared_worker_id,

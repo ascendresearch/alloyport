@@ -89,9 +89,25 @@ pub trait WorkerConnectionRepository: Debug + Send + Sync {
     fn disconnect(&self, connection_id: &str, at_ms: u64) -> Result<(), RepositoryError>;
 }
 
-/// Durable assignment preparation, dispatch, replay, and reassignment operations.
+/// Read-only access to durable assignment state and recovery queues.
 #[allow(clippy::missing_errors_doc)]
-pub trait AssignmentRepository: Debug + Send + Sync {
+pub trait AssignmentReadRepository: Debug + Send + Sync {
+    fn assignment(&self, attempt_id: &str) -> Result<Option<AssignmentRecord>, RepositoryError>;
+
+    fn preparing_assignments(&self, limit: usize)
+    -> Result<Vec<AssignmentRecord>, RepositoryError>;
+
+    fn preparing_assignment_count(&self) -> Result<usize, RepositoryError>;
+
+    fn replayable_assignments(
+        &self,
+        worker_id: &str,
+    ) -> Result<Vec<AssignmentRecord>, RepositoryError>;
+}
+
+/// Durable assignment admission, dispatch, recovery, and reassignment commands.
+#[allow(clippy::missing_errors_doc)]
+pub trait AssignmentWriteRepository: Debug + Send + Sync {
     fn store_assignment(
         &self,
         worker_id: &str,
@@ -109,24 +125,12 @@ pub trait AssignmentRepository: Debug + Send + Sync {
         at_ms: u64,
     ) -> Result<bool, RepositoryError>;
 
-    fn assignment(&self, attempt_id: &str) -> Result<Option<AssignmentRecord>, RepositoryError>;
-
-    fn preparing_assignments(&self, limit: usize)
-    -> Result<Vec<AssignmentRecord>, RepositoryError>;
-
-    fn preparing_assignment_count(&self) -> Result<usize, RepositoryError>;
-
     fn defer_assignment_preparation(
         &self,
         attempt_id: &str,
         worker_id: &str,
         retry_at_ms: u64,
     ) -> Result<bool, RepositoryError>;
-
-    fn replayable_assignments(
-        &self,
-        worker_id: &str,
-    ) -> Result<Vec<AssignmentRecord>, RepositoryError>;
 
     fn reassign_expired(
         &self,
@@ -141,6 +145,11 @@ pub trait AssignmentRepository: Debug + Send + Sync {
         preparation: &AssignmentDeliveryPreparation,
     ) -> Result<AssignmentContract, RepositoryError>;
 }
+
+/// Compatibility composition of assignment read and write capabilities.
+pub trait AssignmentRepository: AssignmentReadRepository + AssignmentWriteRepository {}
+
+impl<T> AssignmentRepository for T where T: AssignmentReadRepository + AssignmentWriteRepository {}
 
 /// Durable attempt observations and lease lifecycle operations.
 #[allow(clippy::missing_errors_doc)]

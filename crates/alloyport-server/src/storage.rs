@@ -16,6 +16,7 @@ pub use model::{
     ServerOutboxFrame, StoreAssignmentOutcome, WorkerCapabilities, WorkerRegistration,
 };
 pub use repository::{
-    AssignmentRepository, AttemptLifecycleRepository, ControlRepository, RepositoryError,
-    ServerOutboxRepository, WorkerConnectionRepository,
+    AssignmentReadRepository, AssignmentRepository, AssignmentWriteRepository,
+    AttemptLifecycleRepository, ControlRepository, RepositoryError, ServerOutboxRepository,
+    WorkerConnectionRepository,
 };

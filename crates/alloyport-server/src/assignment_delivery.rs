@@ -38,7 +38,7 @@ impl WorkerControlService {
         let lease_id = format!("lease-{lease_number}");
         let now_ms = self.clock.now_unix_ms();
         let message_id = format!("assignment:{attempt_id}");
-        let repository = self.repositories.assignments.clone();
+        let repository = self.repositories.assignment_writes.clone();
         let persisted_worker_id = worker_id.to_owned();
         let persisted_attempt_id = attempt_id.to_owned();
         let persisted_message_id = message_id.clone();

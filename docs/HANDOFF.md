@@ -207,13 +207,14 @@ generated protocol modules; do not weaken workspace lints for hand-written code.
 Implements the gRPC service, in-process connection registry, crash-durable SQLite control repository,
 non-terminal replay, attempt leases, and worker lifecycle classification. Generated Protobuf types
 are translated at the RPC edge into separate storage-domain records. Persistence capabilities are
-segregated into worker-connection, assignment, attempt/lease, and server-outbox ports; the complete
-service consumes their `ControlRepository` composition. SQLite connection and outbox operations live
-in dedicated implementation modules, as do assignment and attempt/lease operations; the shared
-repository shell now owns only connection creation, migrations, and locking.
-The service internally stores four narrow capability objects rather than one broad repository.
-`with_repository_ports` supports independently composed connection, assignment, attempt, and outbox
-implementations; existing composite constructors remain compatible.
+segregated into worker-connection, assignment-read/write, attempt/lease, and server-outbox ports;
+the complete service consumes their `ControlRepository` composition. SQLite connection and outbox
+operations live in dedicated implementation modules, as do assignment and attempt/lease operations;
+the shared repository shell now owns only connection creation, migrations, and locking.
+The service internally stores five narrow capability objects rather than one broad repository;
+assignment reads and writes are distinct application ports. `with_repository_capabilities` supports
+independently composed connection, assignment-read, assignment-write, attempt, and outbox
+implementations. Existing composite constructors and the four-port constructor remain compatible.
 The public `storage::*` contract is a compatibility facade over separate clock policy,
 transport-independent model, and capability-port/error modules.
 Server and worker durable contracts share `alloyport_core::ExecutionKind`, `NetworkPolicy`,
