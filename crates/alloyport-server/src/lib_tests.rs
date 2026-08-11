@@ -199,12 +199,16 @@ fn stored_contract(attempt_id: &str, executor_kind: ExecutionKind) -> Assignment
             environment: Vec::new(),
             timeout_ms: 1_000,
             bundle: ArtifactIdentity {
-                digest: format!("sha256:{}", "a".repeat(64)),
+                digest: format!("sha256:{}", "a".repeat(64))
+                    .parse()
+                    .expect("valid fixture digest"),
                 size_bytes: 1,
                 media_type: "application/octet-stream".into(),
             },
             image: ArtifactIdentity {
-                digest: format!("sha256:{}", "b".repeat(64)),
+                digest: format!("sha256:{}", "b".repeat(64))
+                    .parse()
+                    .expect("valid fixture digest"),
                 size_bytes: 0,
                 media_type: "application/vnd.oci.image.manifest.v1+json".into(),
             },

@@ -177,12 +177,12 @@ fn assignment(
             environment: Vec::new(),
             timeout_ms: 30_000,
             bundle: StoredArtifact {
-                digest: bundle_digest.to_string(),
+                digest: bundle_digest,
                 size_bytes: bundle_size,
                 media_type: CUDA_FIXTURE_BUNDLE_MEDIA_TYPE.into(),
             },
             image: StoredArtifact {
-                digest: image_digest.to_string(),
+                digest: image_digest,
                 size_bytes: 0,
                 media_type: OCI_IMAGE_MANIFEST_MEDIA_TYPE.into(),
             },

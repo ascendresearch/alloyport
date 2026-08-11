@@ -1,8 +1,10 @@
 //! Domain primitives for `AlloyPort`'s verified delivery lifecycle.
 
+mod artifact;
 mod execution;
 mod identity;
 
+pub use artifact::{ArtifactDescriptor, DigestParseError, Sha256Digest};
 pub use execution::{
     AttemptOutcome, AttemptOutcomeError, ExecutionKind, ExecutionKindError, NetworkPolicy,
     NetworkPolicyError, RejectionReason, RejectionReasonError,
@@ -102,8 +104,8 @@ pub struct Candidate {
     pub task_id: TaskId,
     pub route: Route,
     pub parent_id: Option<CandidateId>,
-    pub source_digest: String,
-    pub artifact_digest: Option<String>,
+    pub source_digest: Sha256Digest,
+    pub artifact_digest: Option<Sha256Digest>,
 }
 
 /// Gate evaluated independently from candidate generation.
@@ -132,7 +134,7 @@ pub struct Verdict {
     pub candidate_id: CandidateId,
     pub gate: Gate,
     pub passed: bool,
-    pub receipt_digests: Vec<String>,
+    pub receipt_digests: Vec<Sha256Digest>,
 }
 
 /// Immutable release description presented to integration and deployment tooling.
@@ -142,7 +144,7 @@ pub struct ReleaseManifest {
     pub supported_domain: String,
     pub dispatch_guard: String,
     pub fallback: String,
-    pub evidence_digests: BTreeSet<String>,
+    pub evidence_digests: BTreeSet<Sha256Digest>,
 }
 
 impl ReleaseManifest {
@@ -174,7 +176,7 @@ impl ReleaseManifest {
             if verdict.receipt_digests.is_empty() {
                 return Err(ReleaseError::MissingEvidence(verdict.gate));
             }
-            evidence_digests.extend(verdict.receipt_digests.iter().cloned());
+            evidence_digests.extend(verdict.receipt_digests.iter().copied());
         }
 
         for gate in Gate::ALL {
@@ -245,7 +247,7 @@ mod tests {
                 candidate_id: candidate_id.clone(),
                 gate,
                 passed: true,
-                receipt_digests: vec![format!("sha256:{gate:?}")],
+                receipt_digests: vec![Sha256Digest::digest_bytes(format!("{gate:?}").as_bytes())],
             })
             .collect()
     }

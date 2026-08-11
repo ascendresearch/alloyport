@@ -3,11 +3,10 @@
 use super::{
     ArtifactReferenceKind, Assignment, AssignmentContract, CancelOutcome, CancellationStoreOutcome,
     EnqueueError, EnqueueOutcome, GrantArtifactReference, InteractionError, RepositoryError,
-    RunGrantOutcome, RunRevokeOutcome, Sha256Digest, StoreAssignmentOutcome, WorkerControlService,
+    RunGrantOutcome, RunRevokeOutcome, StoreAssignmentOutcome, WorkerControlService,
     assignment_to_contract, contract_to_assignment, validate_assignment,
 };
 use alloyport_core::ExecutionKind;
-use std::str::FromStr;
 
 #[allow(clippy::missing_errors_doc)]
 impl WorkerControlService {
@@ -205,8 +204,7 @@ impl WorkerControlService {
                 "CUDA fixture assignments require the Artifact metadata service".into(),
             )
         })?;
-        let digest = Sha256Digest::from_str(&contract.execution.bundle.digest)
-            .map_err(|error| EnqueueError::Artifact(error.to_string()))?;
+        let digest = contract.execution.bundle.digest;
         let stored_size = uploads
             .artifact_size_bytes(digest)
             .map_err(|error| EnqueueError::Artifact(error.to_string()))?

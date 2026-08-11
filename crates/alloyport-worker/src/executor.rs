@@ -16,7 +16,7 @@ use crate::artifact_input::ArtifactInputError;
 use crate::journal::{LocalAttemptPhase, StoredArtifact, StoredFinished};
 use crate::{WorkerError, WorkerState};
 use alloyport_artifacts::{ArtifactStore, ArtifactStoreError};
-use alloyport_core::AttemptOutcome;
+use alloyport_core::{AttemptOutcome, Sha256Digest};
 use alloyport_events::{Event, ProducerEvent};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -491,8 +491,8 @@ struct FakeRunReceipt<'a> {
     outcome: &'a str,
     exit_code: Option<i32>,
     elapsed_ms: u64,
-    stdout_digest: &'a str,
-    stderr_digest: &'a str,
+    stdout_digest: &'a Sha256Digest,
+    stderr_digest: &'a Sha256Digest,
     detail: &'a str,
 }
 

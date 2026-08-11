@@ -17,7 +17,6 @@ use alloyport_proto::v1::{
     WorkerCapabilities, WorkerHello,
 };
 use std::io::{Cursor, Read};
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const CUDA_RUNTIME_STDOUT: &[u8] =
@@ -106,7 +105,7 @@ async fn publication_and_terminal_commit_precede_retryable_cleanup()
     assert_eq!(engine.remove_attempts(), 2);
 
     let receipt = replay.finished.receipt.expect("receipt is persisted");
-    let digest = Sha256Digest::from_str(&receipt.digest)?;
+    let digest = receipt.digest;
     let mut reader = artifacts.open(digest)?;
     let mut receipt_bytes = Vec::new();
     reader.read_to_end(&mut receipt_bytes)?;

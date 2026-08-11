@@ -13,7 +13,6 @@ use alloyport_proto::v1::{ArtifactRef, ExecutionSpec, ExecutorKind, ResourceLimi
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -103,7 +102,7 @@ impl ArtifactStore for MemoryArtifactStore {
 async fn execution_artifact_spool_accepts_an_in_memory_port() -> Result<(), ExecutionRuntimeError> {
     let artifacts = Arc::new(MemoryArtifactStore::default());
     let stored = store_artifact(artifacts.clone(), b"portable".to_vec(), STDOUT_MEDIA_TYPE).await?;
-    let digest = Sha256Digest::from_str(&stored.digest).expect("stored digest is valid");
+    let digest = stored.digest;
     assert!(artifacts.contains(digest).expect("memory store read"));
     Ok(())
 }
@@ -242,7 +241,7 @@ async fn runtime_spools_artifacts_events_and_exactly_one_terminal_result()
         run.finished.receipt.as_ref(),
     ] {
         let artifact = artifact.expect("runtime persists every terminal artifact");
-        assert!(artifacts.contains(Sha256Digest::from_str(&artifact.digest)?)?);
+        assert!(artifacts.contains(artifact.digest)?);
     }
     let output_offsets = run
         .events

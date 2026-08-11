@@ -204,7 +204,7 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
                 payload: WorkerOutboxPayload::ExecutionFinished {
                     assignment_id,
                     attempt_id: durable_attempt_id,
-                    finished: finished.clone(),
+                    finished: Box::new(finished.clone()),
                 },
             },
             at_ms,

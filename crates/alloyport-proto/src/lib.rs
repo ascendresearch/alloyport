@@ -1,5 +1,6 @@
 //! Versioned worker-control and artifact protocols plus RPC-boundary validation.
 
+use alloyport_core::Sha256Digest;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::{Component, Path};
@@ -173,18 +174,10 @@ fn validate_artifact(
     artifact: Option<&v1::ArtifactRef>,
 ) -> Result<(), ValidationError> {
     let artifact = artifact.ok_or_else(|| ValidationError::new(field, "missing"))?;
-    if !artifact.digest.starts_with("sha256:") || artifact.digest.len() != 71 {
-        return Err(ValidationError::new(
-            field,
-            "digest must be sha256 followed by 64 hexadecimal characters",
-        ));
-    }
-    if !artifact.digest[7..]
-        .bytes()
-        .all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err(ValidationError::new(field, "digest contains non-hex data"));
-    }
+    artifact
+        .digest
+        .parse::<Sha256Digest>()
+        .map_err(|_| ValidationError::new(field, "digest must be canonical SHA-256"))?;
     Ok(())
 }
 

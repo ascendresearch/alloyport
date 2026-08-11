@@ -69,7 +69,10 @@ pub(super) fn assignment_to_stored(assignment: &Assignment) -> StoredAssignment 
 
 fn artifact_to_stored(artifact: &ArtifactRef) -> StoredArtifact {
     StoredArtifact {
-        digest: artifact.digest.clone(),
+        digest: artifact
+            .digest
+            .parse()
+            .expect("validated assignment contains a canonical SHA-256 digest"),
         size_bytes: artifact.size_bytes,
         media_type: artifact.media_type.clone(),
     }
@@ -77,7 +80,7 @@ fn artifact_to_stored(artifact: &ArtifactRef) -> StoredArtifact {
 
 fn stored_to_artifact(artifact: &StoredArtifact) -> ArtifactRef {
     ArtifactRef {
-        digest: artifact.digest.clone(),
+        digest: artifact.digest.to_string(),
         size_bytes: artifact.size_bytes,
         media_type: artifact.media_type.clone(),
     }

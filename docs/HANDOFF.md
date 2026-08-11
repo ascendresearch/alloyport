@@ -223,6 +223,11 @@ same task/candidate types. Trusted worker outbox lifecycle payloads retain typed
 identities through SQLite; rejected assignments retain raw identity text because malformed IDs must
 remain reportable. Server observation ingress converts those wire identities before its repository
 and SQLite adapter.
+Canonical `alloyport_core::Sha256Digest` and `ArtifactDescriptor` are shared by protocol validation,
+core release evidence, server control storage, and the worker journal. The artifacts crate re-exports
+the digest for compatibility; its two-field CAS `ArtifactIdentity` remains distinct from the
+three-field transport-independent descriptor because stored-object verification and declared media
+metadata are different concepts.
 Canonical Interaction persistence is capability-segregated into event-write, event-read, and
 run-access ports. Its SQLite schema shell, event/output log, and authorization grants are separate
 implementation modules, alongside independent replay-to-live broadcast and display sanitization.

@@ -8,7 +8,6 @@ use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::Cursor;
-use std::str::FromStr;
 use std::sync::Arc;
 use tonic::Request;
 use tonic::transport::Endpoint;
@@ -53,8 +52,7 @@ impl RemoteArtifactDownloader {
         &self,
         artifact: &StoredArtifact,
     ) -> Result<Sha256Digest, ArtifactDownloadError> {
-        let digest = Sha256Digest::from_str(&artifact.digest)
-            .map_err(|error| ArtifactDownloadError::Protocol(error.to_string()))?;
+        let digest = artifact.digest;
         if artifact.size_bytes > self.max_input_bytes {
             return Err(ArtifactDownloadError::SizeLimitExceeded {
                 limit: self.max_input_bytes,
@@ -82,7 +80,7 @@ impl RemoteArtifactDownloader {
         let mut client = ArtifactServiceClient::new(channel);
         let mut stream = client
             .download(Request::new(DownloadRequest {
-                digest: artifact.digest.clone(),
+                digest: artifact.digest.to_string(),
                 offset: 0,
                 max_bytes: artifact.size_bytes,
             }))

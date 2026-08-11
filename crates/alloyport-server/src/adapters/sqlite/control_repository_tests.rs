@@ -211,7 +211,7 @@ fn lease_expiry_retains_a_late_result_as_stale() -> Result<(), Box<dyn Error>> {
     );
     let disposition = repository.observe_attempt(&observation(
         1_101,
-        AttemptObservation::Finished(FinishedObservation {
+        AttemptObservation::Finished(Box::new(FinishedObservation {
             outcome: AttemptOutcome::Succeeded,
             exit_code: Some(0),
             elapsed_ms: 90,
@@ -219,7 +219,7 @@ fn lease_expiry_retains_a_late_result_as_stale() -> Result<(), Box<dyn Error>> {
             stdout: None,
             stderr: None,
             detail: "late success".to_owned(),
-        }),
+        })),
     ))?;
     assert_eq!(disposition, ObservationDisposition::Stale);
     assert_eq!(
@@ -282,7 +282,7 @@ fn expired_attempt_reassignment_creates_a_fresh_linked_contract() -> Result<(), 
     assert_eq!(
         repository.observe_attempt(&observation(
             1_103,
-            AttemptObservation::Finished(FinishedObservation {
+            AttemptObservation::Finished(Box::new(FinishedObservation {
                 outcome: AttemptOutcome::Succeeded,
                 exit_code: Some(0),
                 elapsed_ms: 100,
@@ -290,7 +290,7 @@ fn expired_attempt_reassignment_creates_a_fresh_linked_contract() -> Result<(), 
                 stdout: None,
                 stderr: None,
                 detail: "late old result".to_owned(),
-            }),
+            })),
         ))?,
         ObservationDisposition::Stale
     );
@@ -544,7 +544,9 @@ fn contract() -> AssignmentContract {
 
 fn artifact(byte: char) -> ArtifactIdentity {
     ArtifactIdentity {
-        digest: format!("sha256:{}", byte.to_string().repeat(64)),
+        digest: format!("sha256:{}", byte.to_string().repeat(64))
+            .parse()
+            .expect("valid fixture digest"),
         size_bytes: 1,
         media_type: "application/octet-stream".to_owned(),
     }

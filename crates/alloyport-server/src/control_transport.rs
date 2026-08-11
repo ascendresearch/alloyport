@@ -257,7 +257,10 @@ pub(super) fn contract_to_assignment(contract: &AssignmentContract) -> Assignmen
 
 pub(super) fn artifact_to_identity(artifact: &ArtifactRef) -> ArtifactIdentity {
     ArtifactIdentity {
-        digest: artifact.digest.clone(),
+        digest: artifact
+            .digest
+            .parse()
+            .expect("validated Artifact contains a canonical SHA-256 digest"),
         size_bytes: artifact.size_bytes,
         media_type: artifact.media_type.clone(),
     }
@@ -265,7 +268,7 @@ pub(super) fn artifact_to_identity(artifact: &ArtifactRef) -> ArtifactIdentity {
 
 pub(super) fn identity_to_artifact(identity: &ArtifactIdentity) -> ArtifactRef {
     ArtifactRef {
-        digest: identity.digest.clone(),
+        digest: identity.digest.to_string(),
         size_bytes: identity.size_bytes,
         media_type: identity.media_type.clone(),
     }

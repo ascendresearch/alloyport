@@ -15,6 +15,7 @@ dependencies = [
 name = "alloyport-artifacts"
 version = "0.1.0"
 dependencies = [
+ "alloyport-core",
  "ring",
  "rusqlite",
  "tempfile",
@@ -33,6 +34,7 @@ dependencies = [
 name = "alloyport-core"
 version = "0.1.0"
 dependencies = [
+ "ring",
  "serde",
  "serde_json",
 ]
@@ -49,6 +51,7 @@ dependencies = [
 name = "alloyport-proto"
 version = "0.1.0"
 dependencies = [
+ "alloyport-core",
  "prost",
  "prost-build",
  "protoc-bin-vendored",

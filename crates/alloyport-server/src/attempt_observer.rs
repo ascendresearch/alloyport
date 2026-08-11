@@ -158,7 +158,7 @@ impl WorkerControlService {
             finished.assignment_id.clone(),
             finished.attempt_id.clone(),
             now_ms,
-            AttemptObservation::Finished(observation),
+            AttemptObservation::Finished(Box::new(observation)),
         )?;
         self.record_command_finished(worker_id, finished, now_ms)?;
         Ok(disposition)

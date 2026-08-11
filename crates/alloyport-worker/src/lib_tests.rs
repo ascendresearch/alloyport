@@ -168,7 +168,9 @@ fn sqlite_journal_restores_finished_attempt_and_rejects_conflict() -> Result<(),
         exit_code: Some(0),
         elapsed_ms: 25,
         receipt: Some(StoredArtifact {
-            digest: format!("sha256:{}", "c".repeat(64)),
+            digest: format!("sha256:{}", "c".repeat(64))
+                .parse()
+                .expect("valid fixture digest"),
             size_bytes: 1,
             media_type: "application/vnd.alloyport.receipt+json".to_owned(),
         }),
@@ -253,7 +255,9 @@ async fn pending_legacy_terminal_is_published_before_control_replay() -> Result<
     let state = WorkerState::default();
     state.admit(&assignment("true"))?;
     let artifact = StoredArtifact {
-        digest: format!("sha256:{}", "c".repeat(64)),
+        digest: format!("sha256:{}", "c".repeat(64))
+            .parse()
+            .expect("valid fixture digest"),
         size_bytes: 1,
         media_type: "application/octet-stream".into(),
     };

@@ -8,6 +8,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+alloyport-core = { path = "../alloyport-core" }
 ring = "0.17.14"
 rusqlite = { version = "0.37", features = ["bundled"] }
 

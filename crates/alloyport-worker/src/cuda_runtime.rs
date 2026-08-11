@@ -13,6 +13,7 @@ use crate::executor::{
 };
 use crate::journal::{LocalAttemptPhase, StoredArtifact, StoredFinished};
 use alloyport_artifacts::ArtifactStore;
+use alloyport_core::Sha256Digest;
 use alloyport_events::{Event, ProducerEvent};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -416,8 +417,8 @@ struct CudaRunReceipt<'a> {
     outcome: &'a str,
     exit_code: Option<i32>,
     elapsed_ms: u64,
-    stdout_digest: &'a str,
-    stderr_digest: &'a str,
+    stdout_digest: &'a Sha256Digest,
+    stderr_digest: &'a Sha256Digest,
     detail: &'a str,
 }
 

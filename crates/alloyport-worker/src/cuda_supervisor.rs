@@ -86,8 +86,8 @@ impl CudaContainerSupervisor {
         let identity = ContainerIdentity {
             name: plan.container_name.clone(),
             attempt_id: assignment.attempt_id.to_string(),
-            bundle_digest: assignment.execution.bundle.digest.clone(),
-            image_manifest_digest: assignment.execution.image.digest.clone(),
+            bundle_digest: assignment.execution.bundle.digest.to_string(),
+            image_manifest_digest: assignment.execution.image.digest.to_string(),
             image_id: plan.expected_image_id.to_string(),
         };
         let resolved_image = engine

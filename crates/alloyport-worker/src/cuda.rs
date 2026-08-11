@@ -9,7 +9,6 @@ use std::fmt::{self, Display, Formatter};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 pub const CUDA_FIXTURE_FEATURE: &str = "cuda-fixture-v1";
 pub const CUDA_FIXTURE_BUNDLE_MEDIA_TYPE: &str = "application/vnd.alloyport.cuda-fixture.v1+json";
@@ -194,8 +193,7 @@ impl CudaFixturePolicy {
     ) -> Result<CudaSandbox, CudaContractError> {
         self.validate_assignment(assignment)?;
         validate_attempt_id(&assignment.attempt_id)?;
-        let digest = Sha256Digest::from_str(&assignment.execution.bundle.digest)
-            .map_err(|error| CudaContractError::Digest(error.to_string()))?;
+        let digest = assignment.execution.bundle.digest;
         let mut reader = artifacts
             .open(digest)
             .map_err(|error| CudaContractError::Artifact(error.to_string()))?;
@@ -399,8 +397,7 @@ fn validate_artifact(
     expected_media_type: &str,
     role: &'static str,
 ) -> Result<(), CudaContractError> {
-    if artifact.digest != expected_digest.to_string() || artifact.media_type != expected_media_type
-    {
+    if artifact.digest != expected_digest || artifact.media_type != expected_media_type {
         return Err(CudaContractError::Assignment(match role {
             "bundle" => "bundle identity is not locally allowed",
             _ => "image identity is not locally allowed",

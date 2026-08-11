@@ -48,7 +48,7 @@ pub(crate) fn output_event(
 
 pub(crate) fn event_artifact(artifact: &StoredArtifact, reference: &str) -> EventArtifactRef {
     EventArtifactRef {
-        digest: artifact.digest.clone(),
+        digest: artifact.digest.to_string(),
         media_type: artifact.media_type.clone(),
         size_bytes: artifact.size_bytes,
         reference: reference.into(),

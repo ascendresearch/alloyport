@@ -1,7 +1,7 @@
 //! Resumable publication of worker-local execution artifacts through the Artifact RPC.
 
 use crate::executor::{ArtifactPublicationError, ArtifactPublisher, ArtifactReferenceIntent};
-use alloyport_artifacts::{ArtifactStore, ArtifactStoreError, DigestParseError, Sha256Digest};
+use alloyport_artifacts::{ArtifactStore, ArtifactStoreError, Sha256Digest};
 use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient;
 use alloyport_proto::artifact_v1::{
     ArtifactIdentity, BeginUploadRequest, FinalizeUploadRequest, UploadChunk, UploadSession,
@@ -10,7 +10,6 @@ use alloyport_proto::artifact_v1::{
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io::Read;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -23,7 +22,6 @@ const DEFAULT_UPLOAD_TTL_MS: u64 = 60 * 60 * 1_000;
 #[derive(Debug)]
 pub enum RemoteArtifactUploadError {
     InvalidConfiguration(&'static str),
-    InvalidDigest(DigestParseError),
     LocalArtifact(ArtifactStoreError),
     LocalRead(std::io::Error),
     Transport(tonic::transport::Error),
@@ -42,7 +40,6 @@ impl Display for RemoteArtifactUploadError {
                     "invalid remote Artifact uploader configuration: {detail}"
                 )
             }
-            Self::InvalidDigest(error) => Display::fmt(error, formatter),
             Self::LocalArtifact(error) => Display::fmt(error, formatter),
             Self::LocalRead(error) => write!(formatter, "read local Artifact: {error}"),
             Self::Transport(error) => Display::fmt(error, formatter),
@@ -59,7 +56,6 @@ impl Display for RemoteArtifactUploadError {
 impl Error for RemoteArtifactUploadError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::InvalidDigest(error) => Some(error),
             Self::LocalArtifact(error) => Some(error),
             Self::LocalRead(error) => Some(error),
             Self::Transport(error) => Some(error),
@@ -136,11 +132,11 @@ impl RemoteArtifactPublisher {
         client: &mut ArtifactServiceClient<tonic::transport::Channel>,
         reference: &ArtifactReferenceIntent,
     ) -> Result<(), RemoteArtifactUploadError> {
-        let expected_digest = Sha256Digest::from_str(&reference.artifact.digest)?;
+        let expected_digest = reference.artifact.digest;
         let session = client
             .begin_upload(Request::new(BeginUploadRequest {
                 upload_key: reference.reference_key.clone(),
-                expected_digest: reference.artifact.digest.clone(),
+                expected_digest: reference.artifact.digest.to_string(),
                 expected_size_bytes: reference.artifact.size_bytes,
                 media_type: reference.artifact.media_type.clone(),
                 ttl_ms: self.upload_ttl_ms,
@@ -262,7 +258,7 @@ fn validate_session(
     reference: &ArtifactReferenceIntent,
 ) -> Result<(), RemoteArtifactUploadError> {
     if session.upload_key != reference.reference_key
-        || session.expected_digest != reference.artifact.digest
+        || session.expected_digest != reference.artifact.digest.to_string()
         || session.expected_size_bytes != reference.artifact.size_bytes
         || session.media_type != reference.artifact.media_type
     {
@@ -294,7 +290,7 @@ fn validate_identity(
     artifact: &ArtifactIdentity,
     reference: &ArtifactReferenceIntent,
 ) -> Result<(), RemoteArtifactUploadError> {
-    if artifact.digest != reference.artifact.digest
+    if artifact.digest != reference.artifact.digest.to_string()
         || artifact.size_bytes != reference.artifact.size_bytes
     {
         return Err(RemoteArtifactUploadError::Protocol(format!(
@@ -303,12 +299,6 @@ fn validate_identity(
         )));
     }
     Ok(())
-}
-
-impl From<DigestParseError> for RemoteArtifactUploadError {
-    fn from(error: DigestParseError) -> Self {
-        Self::InvalidDigest(error)
-    }
 }
 
 impl From<ArtifactStoreError> for RemoteArtifactUploadError {
@@ -339,8 +329,7 @@ impl From<RemoteArtifactUploadError> for ArtifactPublicationError {
     fn from(error: RemoteArtifactUploadError) -> Self {
         let detail = error.to_string();
         match error {
-            RemoteArtifactUploadError::InvalidDigest(_)
-            | RemoteArtifactUploadError::LocalArtifact(_)
+            RemoteArtifactUploadError::LocalArtifact(_)
             | RemoteArtifactUploadError::LocalRead(_) => Self::LocalArtifact(detail),
             RemoteArtifactUploadError::Transport(_)
             | RemoteArtifactUploadError::ProducerJoin(_)

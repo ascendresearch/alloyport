@@ -188,8 +188,8 @@ impl Fixture {
             identity: ContainerIdentity {
                 name: format!("alloyport-{}", self.assignment.attempt_id),
                 attempt_id: self.assignment.attempt_id.to_string(),
-                bundle_digest: self.assignment.execution.bundle.digest.clone(),
-                image_manifest_digest: self.assignment.execution.image.digest.clone(),
+                bundle_digest: self.assignment.execution.bundle.digest.to_string(),
+                image_manifest_digest: self.assignment.execution.image.digest.to_string(),
                 image_id: self.image_id.to_string(),
             },
             phase,
@@ -240,12 +240,12 @@ fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
             environment: Vec::new(),
             timeout_ms: 1_000,
             bundle: StoredArtifact {
-                digest: stored.artifact.digest.to_string(),
+                digest: stored.artifact.digest,
                 size_bytes: stored.artifact.size_bytes,
                 media_type: CUDA_FIXTURE_BUNDLE_MEDIA_TYPE.into(),
             },
             image: StoredArtifact {
-                digest: image_manifest.to_string(),
+                digest: image_manifest,
                 size_bytes: 0,
                 media_type: OCI_IMAGE_MANIFEST_MEDIA_TYPE.into(),
             },

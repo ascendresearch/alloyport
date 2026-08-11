@@ -732,13 +732,9 @@ fn assert_uploaded_execution_artifacts(
     finished: &StoredFinished,
     stdout_digest: Sha256Digest,
 ) -> Result<(), Box<dyn Error>> {
-    let expected_stdout_digest = stdout_digest.to_string();
     assert_eq!(
-        finished
-            .stdout
-            .as_ref()
-            .map(|artifact| artifact.digest.as_str()),
-        Some(expected_stdout_digest.as_str())
+        finished.stdout.as_ref().map(|artifact| artifact.digest),
+        Some(stdout_digest)
     );
     for (key, kind) in [
         (

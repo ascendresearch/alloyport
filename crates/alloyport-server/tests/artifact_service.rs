@@ -140,7 +140,7 @@ async fn assert_worker_download(
     )?);
     let input_fetcher = RemoteArtifactDownloader::new(endpoint, worker_cas.clone(), 1_024)?;
     let input = StoredArtifact {
-        digest: digest.into(),
+        digest: Sha256Digest::from_str(digest)?,
         size_bytes: 11,
         media_type: "text/plain".into(),
     };

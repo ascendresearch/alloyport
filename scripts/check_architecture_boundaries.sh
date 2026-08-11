@@ -180,6 +180,30 @@ if ! rg -q 'require_text\("assignment.candidate_id"' crates/alloyport-proto/src/
         crates/alloyport-core/src/lib.rs; then
     violations+=("core task/candidate release models or wire validation regained raw candidate identity semantics")
 fi
+if ! rg -q '^pub struct Sha256Digest' crates/alloyport-core/src/artifact.rs \
+    || ! rg -q -U 'pub struct ArtifactDescriptor \{[^}]*pub digest: Sha256Digest' \
+        crates/alloyport-core/src/artifact.rs \
+    || ! rg -q 'pub use alloyport_core::\{DigestParseError, Sha256Digest\}' \
+        crates/alloyport-artifacts/src/lib.rs \
+    || ! rg -q '^pub type ArtifactIdentity = ArtifactDescriptor' \
+        crates/alloyport-server/src/storage/model.rs \
+    || ! rg -q '^pub type StoredArtifact = ArtifactDescriptor' \
+        crates/alloyport-worker/src/journal.rs \
+    || ! rg -q -U 'pub struct Candidate \{[^}]*pub source_digest: Sha256Digest[^}]*pub artifact_digest: Option<Sha256Digest>' \
+        crates/alloyport-core/src/lib.rs \
+    || ! rg -q -U 'pub struct Verdict \{[^}]*pub receipt_digests: Vec<Sha256Digest>' \
+        crates/alloyport-core/src/lib.rs \
+    || ! rg -q -U 'pub struct ReleaseManifest \{[^}]*pub evidence_digests: BTreeSet<Sha256Digest>' \
+        crates/alloyport-core/src/lib.rs; then
+    violations+=("shared Artifact descriptor or validated digest vocabulary is not retained across domain contracts")
+fi
+if duplicate_digest_type=$(rg -n '^pub struct Sha256Digest' crates/alloyport-artifacts/src/lib.rs); then
+    violations+=("duplicate digest domain representation returned outside core: ${duplicate_digest_type}")
+fi
+if duplicate_descriptor=$(rg -n '^pub struct (ArtifactIdentity|StoredArtifact)' \
+    crates/alloyport-server/src/storage/model.rs crates/alloyport-worker/src/journal.rs); then
+    violations+=("duplicate Artifact descriptor returned outside core: ${duplicate_descriptor}")
+fi
 for trusted_outbox_variant in AssignmentAccepted ExecutionStarted ExecutionFinished CancellationAcknowledged; do
     if ! rg -q -U "${trusted_outbox_variant} \\{[^}]*(assignment_id: AssignmentId[^}]*attempt_id: AttemptId|attempt_id: AttemptId[^}]*assignment_id: AssignmentId)" \
         crates/alloyport-worker/src/journal.rs; then

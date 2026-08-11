@@ -8,6 +8,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+alloyport-core = { path = "../alloyport-core" }
 prost = "0.14.4"
 tonic = { version = "0.14.6", features = ["transport"] }
 tonic-prost = "0.14.6"

@@ -2,8 +2,8 @@
 
 use super::RepositoryError;
 use alloyport_core::{
-    AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind, NetworkPolicy,
-    RejectionReason, TaskId,
+    ArtifactDescriptor, AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind,
+    NetworkPolicy, RejectionReason, TaskId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -69,12 +69,8 @@ pub struct EnvironmentEntry {
     pub value: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ArtifactIdentity {
-    pub digest: String,
-    pub size_bytes: u64,
-    pub media_type: String,
-}
+/// Backward-compatible storage facade name for the shared Artifact descriptor.
+pub type ArtifactIdentity = ArtifactDescriptor;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResourceContract {
@@ -165,7 +161,7 @@ pub enum AttemptObservation {
         detail: String,
     },
     Started,
-    Finished(FinishedObservation),
+    Finished(Box<FinishedObservation>),
     CancellationAcknowledged {
         already_terminal: bool,
     },

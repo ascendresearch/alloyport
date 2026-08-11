@@ -69,7 +69,7 @@ pub(crate) async fn store_artifact(
     .await
     .map_err(ExecutionRuntimeError::TaskJoin)??;
     Ok(StoredArtifact {
-        digest: result.artifact.digest.to_string(),
+        digest: result.artifact.digest,
         size_bytes: result.artifact.size_bytes,
         media_type: media_type.into(),
     })

@@ -311,8 +311,8 @@ directories (including their migration and adapter-test files).
   admission rejection. Their serde representations remain the existing numeric JSON; unspecified
   or unknown executor/outcome/rejection values and unknown network-policy values cannot enter the
   domain, while network unspecified remains the protocol-compatible default subject to backend
-  policy. Protobuf conversion occurs at transport mapping edges. Artifact descriptor/digest and
-  broader lifecycle-model migration remain.
+  policy. Protobuf conversion occurs at transport mapping edges. Broader lifecycle-model migration
+  remains.
 - [x] First R3 typed-identity slices: validated, transparent `alloyport_core::{AttemptId,
   AssignmentId, TaskId, CandidateId}` are used by server and worker immutable assignment contracts
   while retaining the existing JSON string and SQLite text representation. Core task, candidate,
@@ -326,6 +326,14 @@ directories (including their migration and adapter-test files).
   preserve raw text so malformed wire identities can still be reported. Server observation ingress
   validates assignment/attempt text into the same types before repository use, so its durable model
   and SQLite adapter cannot admit raw observation identities.
+- [x] R3 Artifact descriptor/digest slice: canonical `alloyport_core::Sha256Digest` is shared by
+  protocol validation, CAS ports, core candidate/evidence models, and server/worker durable
+  contracts. `ArtifactDescriptor` is the single transport-independent digest/size/media-type value;
+  the old server `ArtifactIdentity` and worker `StoredArtifact` names are compatibility aliases, not
+  duplicate structs. CAS `ArtifactIdentity` remains intentionally distinct because it represents a
+  verified stored object and has no asserted media type. Digest JSON stays the existing canonical
+  string, SQLite payload shapes remain compatible, and parsing is confined to wire/config/database
+  edges rather than repeated in application services.
 - [x] Worker executor responsibilities split: the durable fake execution coordinator is 501 lines
   (down from a 1,395-line mixed module), the shared local-spool/remote-publication boundary is 113
   lines, canonical event projection is 56 lines, and deterministic fake process behavior is 344

@@ -3,8 +3,8 @@
 //! Database drivers, transactions, schema migrations, and SQL belong to outer adapters.
 
 use alloyport_core::{
-    AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind, NetworkPolicy,
-    RejectionReason, TaskId,
+    ArtifactDescriptor, AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind,
+    NetworkPolicy, RejectionReason, TaskId,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -40,12 +40,8 @@ pub struct StoredEnvironment {
     pub value: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StoredArtifact {
-    pub digest: String,
-    pub size_bytes: u64,
-    pub media_type: String,
-}
+/// Backward-compatible journal name for the shared Artifact descriptor.
+pub type StoredArtifact = ArtifactDescriptor;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StoredLimits {
@@ -111,7 +107,7 @@ pub enum WorkerOutboxPayload {
     ExecutionFinished {
         assignment_id: AssignmentId,
         attempt_id: AttemptId,
-        finished: StoredFinished,
+        finished: Box<StoredFinished>,
     },
     CancellationAcknowledged {
         assignment_id: AssignmentId,

@@ -476,13 +476,10 @@ fn assert_terminal_artifacts(
 ) -> Result<(), Box<dyn Error>> {
     assert_eq!(finished.outcome, alloyport_core::AttemptOutcome::Succeeded);
     if let Some(expected_stdout) = expected_stdout {
-        let expected_stdout = Sha256Digest::digest_bytes(expected_stdout).to_string();
+        let expected_stdout = Sha256Digest::digest_bytes(expected_stdout);
         assert_eq!(
-            finished
-                .stdout
-                .as_ref()
-                .map(|artifact| artifact.digest.as_str()),
-            Some(expected_stdout.as_str())
+            finished.stdout.as_ref().map(|artifact| artifact.digest),
+            Some(expected_stdout)
         );
     }
     for key in [
@@ -549,7 +546,7 @@ fn read_artifact(
     artifact: Option<&alloyport_worker::journal::StoredArtifact>,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let artifact = artifact.ok_or("terminal Artifact is missing")?;
-    let digest = Sha256Digest::from_str(&artifact.digest)?;
+    let digest = artifact.digest;
     let mut bytes = Vec::new();
     artifacts.open(digest)?.read_to_end(&mut bytes)?;
     Ok(bytes)

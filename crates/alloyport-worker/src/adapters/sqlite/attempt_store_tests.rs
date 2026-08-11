@@ -106,12 +106,16 @@ fn stored_assignment() -> StoredAssignment {
             environment: Vec::new(),
             timeout_ms: 1_000,
             bundle: StoredArtifact {
-                digest: format!("sha256:{}", "a".repeat(64)),
+                digest: format!("sha256:{}", "a".repeat(64))
+                    .parse()
+                    .expect("valid fixture digest"),
                 size_bytes: 1,
                 media_type: "application/octet-stream".to_owned(),
             },
             image: StoredArtifact {
-                digest: format!("sha256:{}", "b".repeat(64)),
+                digest: format!("sha256:{}", "b".repeat(64))
+                    .parse()
+                    .expect("valid fixture digest"),
                 size_bytes: 1,
                 media_type: "application/octet-stream".to_owned(),
             },

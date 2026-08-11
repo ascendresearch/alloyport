@@ -4,106 +4,11 @@ pub mod adapters;
 pub mod upload;
 
 pub use adapters::{filesystem::FilesystemArtifactStore, sqlite::SqliteUploadStore};
+pub use alloyport_core::{DigestParseError, Sha256Digest};
 
-use ring::digest::{Context, SHA256};
 use std::error::Error;
-use std::fmt::{self, Debug, Display, Formatter, Write as _};
+use std::fmt::{self, Debug, Display, Formatter};
 use std::io::{self, Read};
-use std::str::FromStr;
-
-const SHA256_PREFIX: &str = "sha256:";
-const SHA256_BYTES: usize = 32;
-
-/// Canonical SHA-256 content identity.
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Sha256Digest([u8; SHA256_BYTES]);
-
-impl Sha256Digest {
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; SHA256_BYTES]) -> Self {
-        Self(bytes)
-    }
-
-    #[must_use]
-    pub const fn bytes(self) -> [u8; SHA256_BYTES] {
-        self.0
-    }
-
-    /// Computes the canonical SHA-256 identity of one byte slice.
-    #[must_use]
-    pub fn digest_bytes(bytes: &[u8]) -> Self {
-        let mut context = Context::new(&SHA256);
-        context.update(bytes);
-        let digest = context.finish();
-        let mut value = [0_u8; SHA256_BYTES];
-        value.copy_from_slice(digest.as_ref());
-        Self(value)
-    }
-
-    pub(crate) fn hexadecimal(self) -> String {
-        let mut value = String::with_capacity(SHA256_BYTES * 2);
-        for byte in self.0 {
-            write!(value, "{byte:02x}").expect("writing to a String cannot fail");
-        }
-        value
-    }
-}
-
-impl Debug for Sha256Digest {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        Display::fmt(self, formatter)
-    }
-}
-
-impl Display for Sha256Digest {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{SHA256_PREFIX}{}", self.hexadecimal())
-    }
-}
-
-impl FromStr for Sha256Digest {
-    type Err = DigestParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let hexadecimal = value
-            .strip_prefix(SHA256_PREFIX)
-            .ok_or(DigestParseError::MissingPrefix)?;
-        if hexadecimal.len() != SHA256_BYTES * 2 {
-            return Err(DigestParseError::WrongLength(hexadecimal.len()));
-        }
-        let mut bytes = [0_u8; SHA256_BYTES];
-        for (index, pair) in hexadecimal.as_bytes().chunks_exact(2).enumerate() {
-            let high = hex_nibble(pair[0]).ok_or(DigestParseError::NonHexadecimal)?;
-            let low = hex_nibble(pair[1]).ok_or(DigestParseError::NonHexadecimal)?;
-            bytes[index] = (high << 4) | low;
-        }
-        Ok(Self(bytes))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DigestParseError {
-    MissingPrefix,
-    WrongLength(usize),
-    NonHexadecimal,
-}
-
-impl Display for DigestParseError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingPrefix => write!(formatter, "digest must start with sha256:"),
-            Self::WrongLength(length) => {
-                write!(
-                    formatter,
-                    "SHA-256 hexadecimal length is {length}, expected 64"
-                )
-            }
-            Self::NonHexadecimal => write!(formatter, "SHA-256 digest contains non-hex data"),
-        }
-    }
-}
-
-impl Error for DigestParseError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ArtifactIdentity {
@@ -259,14 +164,5 @@ impl Error for ArtifactStoreError {
             Self::Io { source, .. } => Some(source),
             _ => None,
         }
-    }
-}
-
-const fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
     }
 }
