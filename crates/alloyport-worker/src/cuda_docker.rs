@@ -2,11 +2,9 @@
 
 use crate::cuda::DockerCreatePlan;
 use crate::cuda_supervisor::{
-    ContainerExit, ContainerIdentity, ContainerLogChunk, ContainerLogStream, ContainerLogs,
-    ContainerPhase, ContainerSnapshot, CudaContainerEngine,
+    ContainerEngineError, ContainerExit, ContainerIdentity, ContainerLogChunk, ContainerLogStream,
+    ContainerLogs, ContainerSnapshot, CudaContainerEngine,
 };
-use serde::Deserialize;
-use std::collections::BTreeMap;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -15,14 +13,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
+
+#[path = "cuda_docker_protocol.rs"]
+mod protocol;
+use protocol::{
+    DockerContainerDetail, parse_container_inspect, parse_image_id, parse_wait_exit_code,
+};
 
 const METADATA_OUTPUT_LIMIT: u64 = 1024 * 1024;
 const LOG_PREVIEW_CHANNEL_CAPACITY: usize = 16;
-const ATTEMPT_LABEL: &str = "alloyport.attempt";
-const BUNDLE_LABEL: &str = "alloyport.bundle";
-const IMAGE_LABEL: &str = "alloyport.image";
 
 /// Docker CLI implementation used by the CUDA supervisor.
 #[derive(Clone)]
@@ -37,10 +36,12 @@ impl DockerCliEngine {
     /// # Errors
     ///
     /// Returns an error when the configured path is empty.
-    pub fn new(binary: impl Into<PathBuf>) -> Result<Self, String> {
+    pub fn new(binary: impl Into<PathBuf>) -> Result<Self, ContainerEngineError> {
         let binary = binary.into();
         if binary.as_os_str().is_empty() {
-            return Err("Docker CLI path is empty".into());
+            return Err(ContainerEngineError::InvalidConfiguration(
+                "Docker CLI path is empty".into(),
+            ));
         }
         Ok(Self {
             runner: Arc::new(SystemDockerCommandRunner { binary }),
@@ -59,11 +60,13 @@ impl DockerCliEngine {
         &self,
         arguments: Vec<String>,
         output_limit: u64,
-    ) -> Result<DockerCommandOutput, String> {
+    ) -> Result<DockerCommandOutput, ContainerEngineError> {
         let runner = Arc::clone(&self.runner);
         tokio::task::spawn_blocking(move || runner.run(&arguments, output_limit))
             .await
-            .map_err(|error| format!("Docker CLI task failed: {error}"))?
+            .map_err(|error| {
+                ContainerEngineError::Internal(format!("Docker CLI task failed: {error}"))
+            })?
     }
 
     async fn follow_command(
@@ -71,14 +74,19 @@ impl DockerCliEngine {
         arguments: Vec<String>,
         output_limit: u64,
         preview: Option<tokio::sync::mpsc::Sender<ContainerLogChunk>>,
-    ) -> Result<DockerCommandOutput, String> {
+    ) -> Result<DockerCommandOutput, ContainerEngineError> {
         let runner = Arc::clone(&self.runner);
         tokio::task::spawn_blocking(move || runner.follow(&arguments, output_limit, preview))
             .await
-            .map_err(|error| format!("Docker CLI follow task failed: {error}"))?
+            .map_err(|error| {
+                ContainerEngineError::Internal(format!("Docker CLI follow task failed: {error}"))
+            })?
     }
 
-    async fn inspect_detail(&self, name: &str) -> Result<Option<DockerContainerDetail>, String> {
+    async fn inspect_detail(
+        &self,
+        name: &str,
+    ) -> Result<Option<DockerContainerDetail>, ContainerEngineError> {
         let inspect = self
             .command(
                 vec!["container".into(), "inspect".into(), name.into()],
@@ -200,18 +208,21 @@ impl CudaContainerEngine for DockerCliEngine {
                 .await?;
             require_success("wait for container", &output)?;
             let waited_exit = parse_wait_exit_code(&output.stdout)?;
-            let detail = self
-                .inspect_detail(name)
-                .await?
-                .ok_or_else(|| format!("container {name} disappeared after wait"))?;
-            let exit = detail
-                .exit
-                .ok_or_else(|| format!("container {name} is not exited after wait"))?;
+            let detail = self.inspect_detail(name).await?.ok_or_else(|| {
+                ContainerEngineError::InvalidResponse(format!(
+                    "container {name} disappeared after wait"
+                ))
+            })?;
+            let exit = detail.exit.ok_or_else(|| {
+                ContainerEngineError::InvalidResponse(format!(
+                    "container {name} is not exited after wait"
+                ))
+            })?;
             if exit.exit_code != waited_exit {
-                return Err(format!(
+                return Err(ContainerEngineError::InvalidResponse(format!(
                     "container {name} wait returned {waited_exit}, but inspect returned {}",
                     exit.exit_code
-                ));
+                )));
             }
             Ok(exit)
         })
@@ -354,20 +365,28 @@ struct SystemDockerCommandRunner {
 }
 
 trait DockerCommandRunner: Debug + Send + Sync {
-    fn run(&self, arguments: &[String], output_limit: u64) -> Result<DockerCommandOutput, String>;
+    fn run(
+        &self,
+        arguments: &[String],
+        output_limit: u64,
+    ) -> Result<DockerCommandOutput, ContainerEngineError>;
 
     fn follow(
         &self,
         arguments: &[String],
         output_limit: u64,
         _preview: Option<tokio::sync::mpsc::Sender<ContainerLogChunk>>,
-    ) -> Result<DockerCommandOutput, String> {
+    ) -> Result<DockerCommandOutput, ContainerEngineError> {
         self.run(arguments, output_limit)
     }
 }
 
 impl DockerCommandRunner for SystemDockerCommandRunner {
-    fn run(&self, arguments: &[String], output_limit: u64) -> Result<DockerCommandOutput, String> {
+    fn run(
+        &self,
+        arguments: &[String],
+        output_limit: u64,
+    ) -> Result<DockerCommandOutput, ContainerEngineError> {
         let mut child = Command::new(&self.binary)
             .args(arguments)
             .stdin(Stdio::null())
@@ -375,19 +394,17 @@ impl DockerCommandRunner for SystemDockerCommandRunner {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| command_io_error(&self.binary, &error))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "Docker CLI stdout pipe is missing".to_owned())?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| "Docker CLI stderr pipe is missing".to_owned())?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            ContainerEngineError::Internal("Docker CLI stdout pipe is missing".into())
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            ContainerEngineError::Internal("Docker CLI stderr pipe is missing".into())
+        })?;
         let stdout_task = thread::spawn(move || read_bounded(stdout, output_limit));
         let stderr_task = thread::spawn(move || read_bounded(stderr, output_limit));
-        let status = child
-            .wait()
-            .map_err(|error| format!("failed waiting for Docker CLI: {error}"))?;
+        let status = child.wait().map_err(|error| {
+            ContainerEngineError::Unavailable(format!("failed waiting for Docker CLI: {error}"))
+        })?;
         let (stdout, stdout_exceeded) = join_reader(stdout_task, "stdout")?;
         let (stderr, stderr_exceeded) = join_reader(stderr_task, "stderr")?;
         let combined_exceeded = u64::try_from(stdout.len())
@@ -408,7 +425,7 @@ impl DockerCommandRunner for SystemDockerCommandRunner {
         arguments: &[String],
         output_limit: u64,
         preview: Option<tokio::sync::mpsc::Sender<ContainerLogChunk>>,
-    ) -> Result<DockerCommandOutput, String> {
+    ) -> Result<DockerCommandOutput, ContainerEngineError> {
         follow_command(&self.binary, arguments, output_limit, preview)
     }
 }
@@ -418,7 +435,7 @@ fn follow_command(
     arguments: &[String],
     output_limit: u64,
     preview: Option<tokio::sync::mpsc::Sender<ContainerLogChunk>>,
-) -> Result<DockerCommandOutput, String> {
+) -> Result<DockerCommandOutput, ContainerEngineError> {
     let mut child = Command::new(binary)
         .args(arguments)
         .stdin(Stdio::null())
@@ -426,14 +443,12 @@ fn follow_command(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| command_io_error(binary, &error))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Docker CLI stdout pipe is missing".to_owned())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "Docker CLI stderr pipe is missing".to_owned())?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        ContainerEngineError::Internal("Docker CLI stdout pipe is missing".into())
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        ContainerEngineError::Internal("Docker CLI stderr pipe is missing".into())
+    })?;
     let total = Arc::new(AtomicU64::new(0));
     let (limit_sender, limit_receiver) = mpsc::sync_channel(1);
     let stdout_total = Arc::clone(&total);
@@ -465,14 +480,17 @@ fn follow_command(
         if limit_receiver.try_recv().is_ok() {
             killed_for_limit = true;
             let _ = child.kill();
-            break child
-                .wait()
-                .map_err(|error| format!("failed waiting for Docker log follower: {error}"))?;
+            break child.wait().map_err(|error| {
+                ContainerEngineError::Unavailable(format!(
+                    "failed waiting for Docker log follower: {error}"
+                ))
+            })?;
         }
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| format!("failed polling Docker log follower: {error}"))?
-        {
+        if let Some(status) = child.try_wait().map_err(|error| {
+            ContainerEngineError::Unavailable(format!(
+                "failed polling Docker log follower: {error}"
+            ))
+        })? {
             break status;
         }
         thread::sleep(Duration::from_millis(2));
@@ -568,27 +586,39 @@ fn read_follow_bounded(
 fn join_reader(
     task: thread::JoinHandle<io::Result<(Vec<u8>, bool)>>,
     stream: &str,
-) -> Result<(Vec<u8>, bool), String> {
+) -> Result<(Vec<u8>, bool), ContainerEngineError> {
     task.join()
-        .map_err(|_| format!("Docker CLI {stream} reader panicked"))?
-        .map_err(|error| format!("failed reading Docker CLI {stream}: {error}"))
+        .map_err(|_| {
+            ContainerEngineError::Internal(format!("Docker CLI {stream} reader panicked"))
+        })?
+        .map_err(|error| {
+            ContainerEngineError::Unavailable(format!(
+                "failed reading Docker CLI {stream}: {error}"
+            ))
+        })
 }
 
-fn command_io_error(binary: &Path, error: &io::Error) -> String {
-    format!("failed to start Docker CLI {}: {error}", binary.display())
+fn command_io_error(binary: &Path, error: &io::Error) -> ContainerEngineError {
+    ContainerEngineError::Unavailable(format!(
+        "failed to start Docker CLI {}: {error}",
+        binary.display()
+    ))
 }
 
-fn require_success(action: &str, output: &DockerCommandOutput) -> Result<(), String> {
+fn require_success(action: &str, output: &DockerCommandOutput) -> Result<(), ContainerEngineError> {
     require_exit_success(action, output)?;
     if output.output_limit_exceeded {
-        return Err(format!(
+        return Err(ContainerEngineError::InvalidResponse(format!(
             "Docker CLI output exceeded its limit while trying to {action}"
-        ));
+        )));
     }
     Ok(())
 }
 
-fn require_exit_success(action: &str, output: &DockerCommandOutput) -> Result<(), String> {
+fn require_exit_success(
+    action: &str,
+    output: &DockerCommandOutput,
+) -> Result<(), ContainerEngineError> {
     if output.success {
         Ok(())
     } else {
@@ -596,143 +626,17 @@ fn require_exit_success(action: &str, output: &DockerCommandOutput) -> Result<()
     }
 }
 
-fn command_failure(action: &str, output: &DockerCommandOutput) -> String {
+fn command_failure(action: &str, output: &DockerCommandOutput) -> ContainerEngineError {
     let detail = String::from_utf8_lossy(&output.stderr);
     let detail = detail.trim();
     if detail.is_empty() {
-        format!(
+        ContainerEngineError::CommandFailed(format!(
             "Docker CLI failed to {action} with exit status {:?}",
             output.exit_code
-        )
+        ))
     } else {
-        format!("Docker CLI failed to {action}: {detail}")
+        ContainerEngineError::CommandFailed(format!("Docker CLI failed to {action}: {detail}"))
     }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct DockerImageInspect {
-    id: String,
-}
-
-fn parse_image_id(bytes: &[u8]) -> Result<String, String> {
-    let mut images: Vec<DockerImageInspect> = serde_json::from_slice(bytes)
-        .map_err(|error| format!("invalid image inspect JSON: {error}"))?;
-    if images.len() != 1 {
-        return Err(format!(
-            "image inspect returned {} objects instead of one",
-            images.len()
-        ));
-    }
-    let image = images.pop().expect("length checked above");
-    if image.id.is_empty() {
-        return Err("image inspect returned an empty image ID".into());
-    }
-    Ok(image.id)
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct DockerContainerInspect {
-    name: String,
-    image: String,
-    config: DockerContainerConfig,
-    state: DockerContainerState,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct DockerContainerConfig {
-    #[serde(default)]
-    labels: Option<BTreeMap<String, String>>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "PascalCase")]
-struct DockerContainerState {
-    status: String,
-    exit_code: i32,
-    started_at: String,
-    finished_at: String,
-}
-
-struct DockerContainerDetail {
-    snapshot: ContainerSnapshot,
-    exit: Option<ContainerExit>,
-}
-
-fn parse_container_inspect(bytes: &[u8]) -> Result<DockerContainerDetail, String> {
-    let mut containers: Vec<DockerContainerInspect> = serde_json::from_slice(bytes)
-        .map_err(|error| format!("invalid container inspect JSON: {error}"))?;
-    if containers.len() != 1 {
-        return Err(format!(
-            "container inspect returned {} objects instead of one",
-            containers.len()
-        ));
-    }
-    let container = containers.pop().expect("length checked above");
-    let phase = match container.state.status.as_str() {
-        "created" => ContainerPhase::Created,
-        "running" => ContainerPhase::Running,
-        "exited" => ContainerPhase::Exited,
-        status => return Err(format!("unsupported Docker container state {status:?}")),
-    };
-    let exit = if phase == ContainerPhase::Exited {
-        Some(ContainerExit {
-            exit_code: container.state.exit_code,
-            elapsed_ms: elapsed_ms(&container.state.started_at, &container.state.finished_at)?,
-        })
-    } else {
-        None
-    };
-    Ok(DockerContainerDetail {
-        snapshot: ContainerSnapshot {
-            identity: ContainerIdentity {
-                name: container
-                    .name
-                    .strip_prefix('/')
-                    .unwrap_or(&container.name)
-                    .into(),
-                attempt_id: label(container.config.labels.as_ref(), ATTEMPT_LABEL),
-                bundle_digest: label(container.config.labels.as_ref(), BUNDLE_LABEL),
-                image_manifest_digest: label(container.config.labels.as_ref(), IMAGE_LABEL),
-                image_id: container.image,
-            },
-            phase,
-        },
-        exit,
-    })
-}
-
-fn label(labels: Option<&BTreeMap<String, String>>, name: &str) -> String {
-    labels
-        .and_then(|labels| labels.get(name))
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn elapsed_ms(started_at: &str, finished_at: &str) -> Result<u64, String> {
-    let started = OffsetDateTime::parse(started_at, &Rfc3339)
-        .map_err(|error| format!("invalid Docker start time: {error}"))?;
-    let finished = OffsetDateTime::parse(finished_at, &Rfc3339)
-        .map_err(|error| format!("invalid Docker finish time: {error}"))?;
-    u64::try_from((finished - started).whole_milliseconds())
-        .map_err(|_| "Docker finish time precedes its start time".to_owned())
-}
-
-fn parse_wait_exit_code(bytes: &[u8]) -> Result<i32, String> {
-    let text = String::from_utf8_lossy(bytes);
-    let mut lines = text.lines();
-    let code = lines
-        .next()
-        .ok_or_else(|| "Docker wait returned no exit code".to_owned())?
-        .trim()
-        .parse::<i32>()
-        .map_err(|error| format!("invalid Docker wait exit code: {error}"))?;
-    if lines.any(|line| !line.trim().is_empty()) {
-        return Err("Docker wait returned multiple exit codes".into());
-    }
-    Ok(code)
 }
 
 #[cfg(test)]

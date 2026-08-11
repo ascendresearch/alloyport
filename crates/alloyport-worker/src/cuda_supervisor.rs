@@ -11,7 +11,55 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub type EngineFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+pub type EngineFuture<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, ContainerEngineError>> + Send + 'a>>;
+
+/// Stable failure categories exposed by pluggable CUDA container engines.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ContainerEngineError {
+    InvalidConfiguration(String),
+    Unavailable(String),
+    CommandFailed(String),
+    InvalidResponse(String),
+    Internal(String),
+}
+
+impl std::fmt::Display for ContainerEngineError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidConfiguration(detail) => {
+                write!(
+                    formatter,
+                    "invalid container engine configuration: {detail}"
+                )
+            }
+            Self::Unavailable(detail) => {
+                write!(formatter, "container engine unavailable: {detail}")
+            }
+            Self::CommandFailed(detail) => write!(formatter, "container command failed: {detail}"),
+            Self::InvalidResponse(detail) => {
+                write!(formatter, "invalid container engine response: {detail}")
+            }
+            Self::Internal(detail) => {
+                write!(formatter, "container engine internal failure: {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ContainerEngineError {}
+
+impl From<String> for ContainerEngineError {
+    fn from(detail: String) -> Self {
+        Self::Internal(detail)
+    }
+}
+
+impl From<&str> for ContainerEngineError {
+    fn from(detail: &str) -> Self {
+        Self::Internal(detail.into())
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContainerIdentity {
@@ -338,7 +386,7 @@ async fn reconcile_container(
         .await
         .map_err(CudaSupervisorError::Engine)?
         .ok_or_else(|| {
-            CudaSupervisorError::Engine(format!(
+            CudaSupervisorError::Invariant(format!(
                 "container {} is missing immediately after create",
                 identity.name
             ))
@@ -347,7 +395,7 @@ async fn reconcile_container(
         return Err(CudaSupervisorError::IdentityConflict(identity.name.clone()));
     }
     if created.phase != ContainerPhase::Created {
-        return Err(CudaSupervisorError::Engine(format!(
+        return Err(CudaSupervisorError::Invariant(format!(
             "new container {} has unexpected phase {:?}",
             identity.name, created.phase
         )));
@@ -455,7 +503,8 @@ async fn wait_for_cancellation(cancellation: &mut tokio::sync::watch::Receiver<b
 #[derive(Debug)]
 pub enum CudaSupervisorError {
     Contract(CudaContractError),
-    Engine(String),
+    Engine(ContainerEngineError),
+    Invariant(String),
     ImageMismatch { expected: String, actual: String },
     IdentityConflict(String),
 }
@@ -470,7 +519,13 @@ impl std::fmt::Display for CudaSupervisorError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Contract(error) => std::fmt::Display::fmt(error, formatter),
-            Self::Engine(detail) => write!(formatter, "CUDA container engine error: {detail}"),
+            Self::Engine(error) => write!(formatter, "CUDA container engine error: {error}"),
+            Self::Invariant(detail) => {
+                write!(
+                    formatter,
+                    "CUDA container reconciliation invariant failed: {detail}"
+                )
+            }
             Self::ImageMismatch { expected, actual } => {
                 write!(
                     formatter,
@@ -487,7 +542,15 @@ impl std::fmt::Display for CudaSupervisorError {
     }
 }
 
-impl std::error::Error for CudaSupervisorError {}
+impl std::error::Error for CudaSupervisorError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Contract(error) => Some(error),
+            Self::Engine(error) => Some(error),
+            Self::Invariant(_) | Self::ImageMismatch { .. } | Self::IdentityConflict(_) => None,
+        }
+    }
+}
 
 #[cfg(test)]
 #[path = "cuda_supervisor_tests.rs"]

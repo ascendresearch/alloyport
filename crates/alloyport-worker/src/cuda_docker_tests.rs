@@ -1,12 +1,37 @@
 //! Behavioral tests for the Docker CLI adapter module.
 
 use super::*;
+use crate::cuda_docker::protocol::elapsed_ms;
+use crate::cuda_supervisor::ContainerPhase;
 use std::collections::VecDeque;
 use std::io::Cursor;
 use std::sync::Mutex;
 
 #[test]
-fn parses_exact_image_and_container_recovery_identity() -> Result<(), String> {
+fn adapter_failures_map_to_stable_engine_categories() {
+    assert!(matches!(
+        DockerCliEngine::new(""),
+        Err(ContainerEngineError::InvalidConfiguration(_))
+    ));
+    assert!(matches!(
+        command_io_error(
+            Path::new("/missing/docker"),
+            &io::Error::new(io::ErrorKind::NotFound, "missing")
+        ),
+        ContainerEngineError::Unavailable(_)
+    ));
+    assert!(matches!(
+        require_success("inspect image", &failure(b"daemon rejected request")),
+        Err(ContainerEngineError::CommandFailed(_))
+    ));
+    assert!(matches!(
+        parse_image_id(b"not-json"),
+        Err(ContainerEngineError::InvalidResponse(_))
+    ));
+}
+
+#[test]
+fn parses_exact_image_and_container_recovery_identity() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         parse_image_id(br#"[{"Id":"sha256:image"}]"#)?,
         "sha256:image"
@@ -163,7 +188,8 @@ fn slow_preview_consumer_never_blocks_or_changes_authoritative_bytes() -> Result
 }
 
 #[tokio::test]
-async fn cli_boundary_distinguishes_absence_and_preserves_log_exhaustion() -> Result<(), String> {
+async fn cli_boundary_distinguishes_absence_and_preserves_log_exhaustion()
+-> Result<(), Box<dyn std::error::Error>> {
     let runner = Arc::new(ScriptedRunner::new(vec![
         expected(
             &["container", "inspect", "alloyport-attempt-1"],
@@ -253,13 +279,19 @@ impl ScriptedRunner {
 }
 
 impl DockerCommandRunner for ScriptedRunner {
-    fn run(&self, arguments: &[String], output_limit: u64) -> Result<DockerCommandOutput, String> {
+    fn run(
+        &self,
+        arguments: &[String],
+        output_limit: u64,
+    ) -> Result<DockerCommandOutput, ContainerEngineError> {
         let expected = self
             .commands
             .lock()
-            .map_err(|_| "script lock poisoned")?
+            .map_err(|_| ContainerEngineError::Internal("script lock poisoned".into()))?
             .pop_front()
-            .ok_or_else(|| format!("unexpected Docker command: {arguments:?}"))?;
+            .ok_or_else(|| {
+                ContainerEngineError::Internal(format!("unexpected Docker command: {arguments:?}"))
+            })?;
         assert_eq!(arguments, expected.arguments);
         assert_eq!(output_limit, expected.output_limit);
         Ok(expected.output)

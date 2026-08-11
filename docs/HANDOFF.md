@@ -613,7 +613,11 @@ cargo test -p alloyport-server --test cuda_control_plane \
   failures retain stable local-Artifact, unavailable, rejected, and internal categories across both
   initial execution and terminal replay instead of being flattened into error strings. CUDA
   contract fixtures live in a separate test module so production module metrics and CAS boundary
-  checks cover the actual application code.
+  checks cover the actual application code. The CUDA container-engine plugin port exposes typed
+  invalid-configuration, unavailable, command-failed, invalid-response, and internal failures;
+  supervisor reconciliation invariants remain application errors rather than engine failures. The
+  Docker adapter keeps process execution and bounded streaming separate from its dedicated JSON and
+  scalar response parser module.
 - Durable lifecycle replay and seven-day orphaned-delivery retention are implemented. Heartbeats,
   status, output previews, welcomes, and ACK-only frames deliberately remain ephemeral; there is no
   generalized durable message bus or server replication.

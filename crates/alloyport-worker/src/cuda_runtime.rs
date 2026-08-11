@@ -320,7 +320,7 @@ impl CudaExecutionRuntime {
         self.engine
             .remove(&format!("alloyport-{attempt_id}"))
             .await
-            .map_err(ExecutionRuntimeError::CleanupAfterCommit)
+            .map_err(|error| ExecutionRuntimeError::CleanupAfterCommit(error.to_string()))
     }
 }
 

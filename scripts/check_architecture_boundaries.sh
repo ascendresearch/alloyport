@@ -40,6 +40,10 @@ if string_error=$(rg -n 'Future<Output = Result<\(\), String>>' \
     crates/alloyport-worker/src/executor.rs); then
     violations+=("Artifact publisher port regained an untyped String error: ${string_error}")
 fi
+if string_error=$(rg -n 'Future<Output = Result<T, String>>' \
+    crates/alloyport-worker/src/cuda_supervisor.rs); then
+    violations+=("CUDA container engine port regained an untyped String error: ${string_error}")
+fi
 
 if ((${#violations[@]} != 0)); then
     printf 'Architecture boundary check failed:\n' >&2
@@ -47,5 +51,5 @@ if ((${#violations[@]} != 0)); then
     exit 1
 fi
 
-printf 'Architecture boundary check passed; production modules <= %d lines and Artifact ports are abstract and typed\n' \
+printf 'Architecture boundary check passed; production modules <= %d lines and plugin ports are abstract and typed\n' \
     "$max_production_module_lines"
