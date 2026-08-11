@@ -322,8 +322,9 @@ directories (including their migration and adapter-test files).
   remains a string until its currently optional/empty protocol semantics are decided. Worker
   durable outbox accepted/started/finished/cancellation payloads retain typed assignment/attempt
   identities through SQLite and convert only at the Protobuf edge; rejection payloads intentionally
-  preserve raw text so malformed wire identities can still be reported. Server observation
-  identities remain a staged follow-up.
+  preserve raw text so malformed wire identities can still be reported. Server observation ingress
+  validates assignment/attempt text into the same types before repository use, so its durable model
+  and SQLite adapter cannot admit raw observation identities.
 - [x] Worker executor responsibilities split: the durable fake execution coordinator is 501 lines
   (down from a 1,395-line mixed module), the shared local-spool/remote-publication boundary is 113
   lines, canonical event projection is 56 lines, and deterministic fake process behavior is 344

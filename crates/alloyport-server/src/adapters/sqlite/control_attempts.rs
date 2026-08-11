@@ -19,15 +19,15 @@ impl AttemptLifecycleRepository for SqliteControlRepository {
         let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let current = assignment_identity(
             &transaction,
-            &observation.attempt_id,
+            observation.attempt_id.as_str(),
             &observation.worker_id,
-            Some(&observation.assignment_id),
+            Some(observation.assignment_id.as_str()),
         )?;
         let target = observation.observation.target_state();
         let lease_expiry = transaction
             .query_row(
                 "SELECT expires_at_ms FROM attempt_leases WHERE attempt_id = ?1",
-                [&observation.attempt_id],
+                [observation.attempt_id.as_str()],
                 |row| row.get::<_, i64>(0),
             )
             .optional()?
@@ -56,7 +56,7 @@ impl AttemptLifecycleRepository for SqliteControlRepository {
                 if is_late {
                     expire_one(
                         &transaction,
-                        &observation.attempt_id,
+                        observation.attempt_id.as_str(),
                         observation.observed_at_ms,
                     )?;
                     ObservationDisposition::Stale
@@ -71,7 +71,7 @@ impl AttemptLifecycleRepository for SqliteControlRepository {
                     transaction.execute(
                         "UPDATE assignments SET state = ?2, updated_at_ms = ?3 WHERE attempt_id = ?1",
                         params![
-                            observation.attempt_id,
+                            observation.attempt_id.as_str(),
                             target as i64,
                             to_i64(observation.observed_at_ms)?
                         ],
@@ -92,7 +92,7 @@ impl AttemptLifecycleRepository for SqliteControlRepository {
                  attempt_id, worker_id, observed_at_ms, disposition, observation_json
              ) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
-                observation.attempt_id,
+                observation.attempt_id.as_str(),
                 observation.worker_id,
                 to_i64(observation.observed_at_ms)?,
                 disposition as i64,

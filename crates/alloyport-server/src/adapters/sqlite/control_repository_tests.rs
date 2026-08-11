@@ -454,8 +454,8 @@ fn orphaned_server_frames_are_retained_until_the_policy_cutoff() -> Result<(), B
 
 fn observation(at_ms: u64, observation: AttemptObservation) -> ObservedAttempt {
     ObservedAttempt {
-        assignment_id: "assignment-1".to_owned(),
-        attempt_id: "attempt-1".to_owned(),
+        assignment_id: AssignmentId::try_from("assignment-1").expect("valid fixture assignment ID"),
+        attempt_id: AttemptId::try_from("attempt-1").expect("valid fixture attempt ID"),
         worker_id: "worker-1".to_owned(),
         observed_at_ms: at_ms,
         observation,

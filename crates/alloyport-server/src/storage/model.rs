@@ -195,8 +195,8 @@ pub struct FinishedObservation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObservedAttempt {
-    pub assignment_id: String,
-    pub attempt_id: String,
+    pub assignment_id: AssignmentId,
+    pub attempt_id: AttemptId,
     pub worker_id: String,
     pub observed_at_ms: u64,
     pub observation: AttemptObservation,

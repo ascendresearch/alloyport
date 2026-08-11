@@ -175,6 +175,10 @@ if ! rg -q -U 'AssignmentRejected \{[^}]*assignment_id: String[^}]*attempt_id: S
     crates/alloyport-worker/src/journal.rs; then
     violations+=("worker rejection outbox no longer preserves invalid wire identities as boundary text")
 fi
+if ! rg -q -U 'pub struct ObservedAttempt \{[^}]*pub assignment_id: AssignmentId[^}]*pub attempt_id: AttemptId' \
+    crates/alloyport-server/src/storage/model.rs; then
+    violations+=("server durable observation contract does not retain typed assignment/attempt identities")
+fi
 if interaction_store_capability=$(rg -n \
     'impl InteractionEventWriter|impl InteractionEventReader|impl InteractionRunAccessStore' \
     crates/alloyport-server/src/adapters/sqlite/interaction_store.rs); then
