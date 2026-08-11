@@ -275,6 +275,9 @@ directories (including their migration and adapter-test files).
 - [x] Worker Artifact input port: execution backends depend on `ArtifactInputProvider`, while the
   remote downloader maps adapter-specific failures into typed Invalid/Policy/Unavailable/Integrity/
   Internal categories.
+- [x] Repository-wide production module size gate reached: tests were separated from CUDA Docker,
+  CUDA supervisor/runtime, Artifact CAS, and event reducer modules. The largest production Rust
+  module is now 740 lines; no production module exceeds the 800-line review threshold.
 - [x] SQL-location architecture check has no legacy allowlist entries.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.
