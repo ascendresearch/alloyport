@@ -1,7 +1,9 @@
 //! Behavioral tests for the `SQLite` upload adapter.
 
 use super::*;
-use crate::upload::ArtifactReferenceKind;
+use crate::upload::{
+    ArtifactReferenceKind, GarbageCollectionReport, GrantArtifactReference, QuotaScope,
+};
 use crate::{
     ArtifactReader, ArtifactStore, ArtifactStoreError, FilesystemArtifactStore, IngestResult,
 };

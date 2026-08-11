@@ -625,7 +625,9 @@ cargo test -p alloyport-server --test cuda_control_plane \
   gRPC service, stable certificate-enrolled owner binding, typed read authorization, and transactional
   quotas are implemented. Worker terminal ingestion now creates typed output/receipt references;
   other controller/public grant operations and automatic retention/collection scheduling remain
-  absent. There is no object-store adapter or filesystem-capacity monitor.
+  absent. The SQLite adapter separates upload-session/staging writes, metadata/reference operations,
+  and authorized reader leases/garbage collection; SQL remains inside these implementation modules.
+  There is no object-store adapter or filesystem-capacity monitor.
 - No automatic device discovery or device reset. The Docker boundary follows running logs, forwards
   bounded best-effort stdout/stderr previews with independent offsets, and actively stops the
   identified container on combined output-budget exhaustion. A full preview queue never blocks log

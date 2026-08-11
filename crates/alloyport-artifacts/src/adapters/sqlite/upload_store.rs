@@ -1,29 +1,15 @@
 //! `SQLite` and filesystem implementation of Artifact upload metadata and staging.
 
-use super::upload_gc::{artifact_is_reachable, pending_garbage, stage_garbage_candidates};
-use super::upload_quota::{
-    artifact_size, enforce_quota, owner_reserved_bytes, owner_stored_bytes, reserve_quota,
-    validate_quotas,
-};
+use super::upload_quota::{reserve_quota, validate_quotas};
 use super::upload_records::{
     append_file, authorize, ensure_open, is_terminal_artifact_error, record_completed_artifact,
     remove_if_present, session_by_id, session_by_key, to_i64, unique_seed, validate_begin,
 };
-use super::upload_references::{
-    garbage_collection_pending, has_active_owner_reference, has_other_active_owner_reference,
-    insert_reference, reference_by_key, reference_matches_grant, validate_reference_grant,
-    validate_reference_identity,
-};
 use super::upload_schema::{SCHEMA, migrate_quota_schema, migrate_reference_schema};
 use crate::upload::{
-    ArtifactMetadataStore, ArtifactReference, ArtifactUploadRepository, BeginUpload,
-    GarbageCollectionReport, GrantArtifactReference, QuotaScope, UploadError, UploadQuotas,
-    UploadSession, UploadState,
+    ArtifactUploadRepository, BeginUpload, UploadError, UploadQuotas, UploadSession, UploadState,
 };
-use crate::{
-    ArtifactIdentity, ArtifactReader, ArtifactStore, FilesystemArtifactStore, IngestRequest,
-    Sha256Digest,
-};
+use crate::{ArtifactIdentity, ArtifactReader, ArtifactStore, IngestRequest, Sha256Digest};
 use rusqlite::{Connection, TransactionBehavior, params};
 use std::collections::BTreeMap;
 use std::fmt::{self, Debug, Formatter};
@@ -39,41 +25,14 @@ impl From<rusqlite::Error> for UploadError {
     }
 }
 
-struct LeasedArtifactReader {
-    reader: ArtifactReader,
-    digest: Sha256Digest,
-    active_readers: Arc<Mutex<BTreeMap<Sha256Digest, u64>>>,
-}
-
-impl Read for LeasedArtifactReader {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.reader.read(buffer)
-    }
-}
-
-impl Drop for LeasedArtifactReader {
-    fn drop(&mut self) {
-        let Ok(mut readers) = self.active_readers.lock() else {
-            return;
-        };
-        let Some(count) = readers.get_mut(&self.digest) else {
-            return;
-        };
-        *count = count.saturating_sub(1);
-        if *count == 0 {
-            readers.remove(&self.digest);
-        }
-    }
-}
-
 pub struct SqliteUploadStore {
     connection: Mutex<Connection>,
     finalize_lock: Mutex<()>,
-    active_readers: Arc<Mutex<BTreeMap<Sha256Digest, u64>>>,
+    pub(super) active_readers: Arc<Mutex<BTreeMap<Sha256Digest, u64>>>,
     upload_root: PathBuf,
     max_upload_bytes: u64,
     max_chunk_bytes: usize,
-    quotas: UploadQuotas,
+    pub(super) quotas: UploadQuotas,
     counter: AtomicU64,
 }
 
@@ -191,262 +150,6 @@ impl SqliteUploadStore {
             .ok_or_else(|| UploadError::NotFound(upload_id.to_owned()))?;
         authorize(&session, owner_id)?;
         Ok(session)
-    }
-
-    /// Returns the finalized identity for one owner-scoped idempotency key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the metadata database cannot be read or contains invalid values.
-    pub fn completed_upload_by_key(
-        &self,
-        owner_id: &str,
-        upload_key: &str,
-    ) -> Result<Option<ArtifactIdentity>, UploadError> {
-        self.completed_upload_session_by_key(owner_id, upload_key)
-            .map(|session| session.and_then(|session| session.artifact))
-    }
-
-    /// Returns a completed owner-scoped upload session by its stable idempotency key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the metadata database cannot be read or contains invalid values.
-    pub fn completed_upload_session_by_key(
-        &self,
-        owner_id: &str,
-        upload_key: &str,
-    ) -> Result<Option<UploadSession>, UploadError> {
-        let database = self.connection()?;
-        Ok(session_by_key(&database, owner_id, upload_key)?
-            .filter(|session| session.state == UploadState::Completed))
-    }
-
-    pub fn owns_completed_artifact(
-        &self,
-        owner_id: &str,
-        digest: Sha256Digest,
-    ) -> Result<bool, UploadError> {
-        let database = self.connection()?;
-        let found = database.query_row(
-            "SELECT EXISTS(
-                SELECT 1 FROM artifact_owner_references
-                WHERE owner_id = ?1 AND digest = ?2
-            )",
-            params![owner_id, digest.to_string()],
-            |row| row.get(0),
-        )?;
-        Ok(found)
-    }
-
-    pub fn can_read_artifact(
-        &self,
-        owner_id: &str,
-        digest: Sha256Digest,
-    ) -> Result<bool, UploadError> {
-        self.owns_completed_artifact(owner_id, digest)
-    }
-
-    /// Returns the durable byte size of a managed Artifact, if present.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if metadata cannot be read or contains an invalid stored size.
-    pub fn artifact_size_bytes(&self, digest: Sha256Digest) -> Result<Option<u64>, UploadError> {
-        let database = self.connection()?;
-        artifact_size(&database, digest)
-    }
-
-    pub fn grant_reference(
-        &self,
-        request: &GrantArtifactReference,
-    ) -> Result<ArtifactReference, UploadError> {
-        validate_reference_grant(request)?;
-        let _artifact_guard = self.artifact_guard()?;
-        let mut database = self.connection()?;
-        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(existing) =
-            reference_by_key(&transaction, &request.owner_id, &request.reference_key)?
-        {
-            if reference_matches_grant(&existing, request) {
-                transaction.commit()?;
-                return Ok(existing);
-            }
-            return Err(if existing.revoked_at_ms.is_some() {
-                UploadError::ReferenceRevoked
-            } else {
-                UploadError::ConflictingReferenceKey
-            });
-        }
-        if garbage_collection_pending(&transaction, request.digest)? {
-            return Err(UploadError::GarbageCollectionPending(request.digest));
-        }
-        let size_bytes = artifact_size(&transaction, request.digest)?
-            .ok_or_else(|| UploadError::NotFound(request.digest.to_string()))?;
-        let creates_owner_usage =
-            !has_active_owner_reference(&transaction, &request.owner_id, request.digest)?;
-        if creates_owner_usage {
-            let used = owner_stored_bytes(&transaction, &request.owner_id)?.saturating_add(
-                owner_reserved_bytes(&transaction, &request.owner_id, request.now_ms)?,
-            );
-            enforce_quota(
-                QuotaScope::Owner,
-                self.quotas.per_owner_bytes,
-                used,
-                size_bytes,
-            )?;
-        }
-        insert_reference(&transaction, request, request.kind)?;
-        if creates_owner_usage {
-            transaction.execute(
-                "INSERT INTO artifact_owner_references(owner_id, digest, size_bytes)
-                 VALUES (?1, ?2, ?3)",
-                params![
-                    request.owner_id,
-                    request.digest.to_string(),
-                    to_i64(size_bytes)?
-                ],
-            )?;
-        }
-        let reference = reference_by_key(&transaction, &request.owner_id, &request.reference_key)?
-            .ok_or_else(|| {
-                UploadError::Corrupt("inserted artifact reference disappeared".into())
-            })?;
-        transaction.commit()?;
-        Ok(reference)
-    }
-
-    pub fn revoke_reference(
-        &self,
-        owner_id: &str,
-        reference_key: &str,
-        now_ms: u64,
-    ) -> Result<ArtifactReference, UploadError> {
-        validate_reference_identity(owner_id, reference_key)?;
-        let _artifact_guard = self.artifact_guard()?;
-        let mut database = self.connection()?;
-        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let reference = reference_by_key(&transaction, owner_id, reference_key)?
-            .ok_or_else(|| UploadError::NotFound(reference_key.to_owned()))?;
-        if reference.revoked_at_ms.is_some() {
-            transaction.commit()?;
-            return Ok(reference);
-        }
-        transaction.execute(
-            "UPDATE artifact_references SET revoked_at_ms = ?3
-             WHERE owner_id = ?1 AND reference_key = ?2",
-            params![owner_id, reference_key, to_i64(now_ms)?],
-        )?;
-        if !has_other_active_owner_reference(
-            &transaction,
-            owner_id,
-            reference.digest,
-            reference_key,
-        )? {
-            transaction.execute(
-                "DELETE FROM artifact_owner_references WHERE owner_id = ?1 AND digest = ?2",
-                params![owner_id, reference.digest.to_string()],
-            )?;
-        }
-        let revoked = reference_by_key(&transaction, owner_id, reference_key)?
-            .ok_or_else(|| UploadError::Corrupt("revoked artifact reference disappeared".into()))?;
-        transaction.commit()?;
-        Ok(revoked)
-    }
-
-    pub fn reference(
-        &self,
-        owner_id: &str,
-        reference_key: &str,
-    ) -> Result<ArtifactReference, UploadError> {
-        let database = self.connection()?;
-        reference_by_key(&database, owner_id, reference_key)?
-            .ok_or_else(|| UploadError::NotFound(reference_key.to_owned()))
-    }
-
-    pub fn open_referenced_artifact(
-        &self,
-        owner_id: &str,
-        digest: Sha256Digest,
-        artifacts: &dyn ArtifactStore,
-    ) -> Result<ArtifactReader, UploadError> {
-        let mut readers = self
-            .active_readers
-            .lock()
-            .map_err(|_| UploadError::Corrupt("artifact reader lock poisoned".into()))?;
-        if !self.can_read_artifact(owner_id, digest)? {
-            return Err(UploadError::OwnerMismatch);
-        }
-        let reader = artifacts.open(digest)?;
-        let count = readers.entry(digest).or_default();
-        *count = count.saturating_add(1);
-        let identity = reader.identity();
-        Ok(ArtifactReader::new(
-            identity,
-            LeasedArtifactReader {
-                reader,
-                digest,
-                active_readers: Arc::clone(&self.active_readers),
-            },
-        ))
-    }
-
-    pub fn collect_garbage(
-        &self,
-        artifacts: &FilesystemArtifactStore,
-        now_ms: u64,
-        limit: usize,
-    ) -> Result<GarbageCollectionReport, UploadError> {
-        if limit == 0 {
-            return Err(UploadError::InvalidRequest(
-                "garbage collection limit must be positive",
-            ));
-        }
-        let _artifact_guard = self.artifact_guard()?;
-        let readers = self
-            .active_readers
-            .lock()
-            .map_err(|_| UploadError::Corrupt("artifact reader lock poisoned".into()))?;
-        let mut database = self.connection()?;
-        stage_garbage_candidates(&mut database, now_ms, limit)?;
-        let candidates = pending_garbage(&database, limit)?;
-        let mut report = GarbageCollectionReport::default();
-        for (digest, size_bytes) in candidates {
-            if readers.get(&digest).copied().unwrap_or_default() != 0 {
-                database.execute(
-                    "DELETE FROM artifact_gc_pending WHERE digest = ?1",
-                    [digest.to_string()],
-                )?;
-                report.skipped_active_readers = report.skipped_active_readers.saturating_add(1);
-                continue;
-            }
-            let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            if artifact_is_reachable(&transaction, digest, now_ms)? {
-                transaction.execute(
-                    "DELETE FROM artifact_gc_pending WHERE digest = ?1",
-                    [digest.to_string()],
-                )?;
-                transaction.commit()?;
-                continue;
-            }
-            artifacts.remove_unreachable(digest)?;
-            transaction.execute(
-                "DELETE FROM artifact_owner_references WHERE digest = ?1",
-                [digest.to_string()],
-            )?;
-            transaction.execute(
-                "DELETE FROM artifact_objects WHERE digest = ?1",
-                [digest.to_string()],
-            )?;
-            transaction.execute(
-                "DELETE FROM artifact_gc_pending WHERE digest = ?1",
-                [digest.to_string()],
-            )?;
-            transaction.commit()?;
-            report.collected_objects = report.collected_objects.saturating_add(1);
-            report.reclaimed_bytes = report.reclaimed_bytes.saturating_add(size_bytes);
-        }
-        Ok(report)
     }
 
     pub fn append(
@@ -608,13 +311,13 @@ impl SqliteUploadStore {
         Ok(ids.len())
     }
 
-    fn connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>, UploadError> {
+    pub(super) fn connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>, UploadError> {
         self.connection
             .lock()
             .map_err(|_| UploadError::Corrupt("database lock poisoned".to_owned()))
     }
 
-    fn artifact_guard(&self) -> Result<std::sync::MutexGuard<'_, ()>, UploadError> {
+    pub(super) fn artifact_guard(&self) -> Result<std::sync::MutexGuard<'_, ()>, UploadError> {
         self.finalize_lock
             .lock()
             .map_err(|_| UploadError::Corrupt("artifact lifecycle lock poisoned".into()))
@@ -711,31 +414,6 @@ impl ArtifactUploadRepository for SqliteUploadStore {
         artifacts: &dyn ArtifactStore,
     ) -> Result<ArtifactReader, UploadError> {
         Self::open_referenced_artifact(self, owner_id, digest, artifacts)
-    }
-}
-
-impl ArtifactMetadataStore for SqliteUploadStore {
-    fn completed_upload_session_by_key(
-        &self,
-        owner_id: &str,
-        upload_key: &str,
-    ) -> Result<Option<UploadSession>, UploadError> {
-        Self::completed_upload_session_by_key(self, owner_id, upload_key)
-    }
-
-    fn can_read_artifact(&self, owner_id: &str, digest: Sha256Digest) -> Result<bool, UploadError> {
-        Self::can_read_artifact(self, owner_id, digest)
-    }
-
-    fn artifact_size_bytes(&self, digest: Sha256Digest) -> Result<Option<u64>, UploadError> {
-        Self::artifact_size_bytes(self, digest)
-    }
-
-    fn grant_reference(
-        &self,
-        request: &GrantArtifactReference,
-    ) -> Result<ArtifactReference, UploadError> {
-        Self::grant_reference(self, request)
     }
 }
 
