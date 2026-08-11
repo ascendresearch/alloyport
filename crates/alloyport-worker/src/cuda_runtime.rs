@@ -1,7 +1,10 @@
 //! Durable Artifact and journal boundary around supervised CUDA execution.
 
 use crate::WorkerState;
-use crate::cuda_supervisor::{CudaContainerEngine, CudaContainerSupervisor, CudaExecutionFacts};
+use crate::cuda_supervisor::{
+    ContainerLogChunk, ContainerLogStream, CudaContainerEngine, CudaContainerSupervisor,
+    CudaExecutionFacts,
+};
 use crate::executor::{
     ArtifactPublisher, ExecutionChunk, ExecutionObservation, ExecutionRun, ExecutionRuntimeError,
     ExecutionStream, ExecutorInput, ExecutorResult, RECEIPT_MEDIA_TYPE, STDERR_MEDIA_TYPE,
@@ -211,16 +214,27 @@ impl CudaExecutionRuntime {
         )];
         let execution = self
             .supervisor
-            .run_with_facts(&attempt.assignment, self.engine.as_ref(), cancellation)
+            .run_with_facts_observed(
+                &attempt.assignment,
+                self.engine.as_ref(),
+                cancellation,
+                |chunk| {
+                    let chunk = execution_chunk(chunk);
+                    observer(ExecutionObservation::Output(chunk.clone()));
+                    events.push(output_event(&self.worker_id, &input, &chunk));
+                },
+            )
             .await
             .map_err(|error| ExecutionRuntimeError::Executor(error.to_string()))?;
-        append_output(
-            &self.worker_id,
-            &input,
-            &execution.result,
-            &mut observer,
-            &mut events,
-        );
+        if !execution.live_output_streaming {
+            append_output(
+                &self.worker_id,
+                &input,
+                &execution.result,
+                &mut observer,
+                &mut events,
+            );
+        }
         let persisted = self
             .persist(&input, execution.result, &execution.facts)
             .await?;
@@ -307,6 +321,17 @@ impl CudaExecutionRuntime {
             .remove(&format!("alloyport-{attempt_id}"))
             .await
             .map_err(ExecutionRuntimeError::CleanupAfterCommit)
+    }
+}
+
+fn execution_chunk(chunk: ContainerLogChunk) -> ExecutionChunk {
+    ExecutionChunk {
+        stream: match chunk.stream {
+            ContainerLogStream::Stdout => ExecutionStream::Stdout,
+            ContainerLogStream::Stderr => ExecutionStream::Stderr,
+        },
+        byte_offset: chunk.byte_offset,
+        bytes: chunk.bytes,
     }
 }
 
@@ -439,8 +464,8 @@ mod tests {
         CudaResourceCeilings, OCI_IMAGE_MANIFEST_MEDIA_TYPE, VECTOR_ADD_FIXTURE_ID,
     };
     use crate::cuda_supervisor::{
-        ContainerExit, ContainerIdentity, ContainerLogs, ContainerPhase, ContainerSnapshot,
-        EngineFuture,
+        ContainerExit, ContainerIdentity, ContainerLogChunk, ContainerLogStream, ContainerLogs,
+        ContainerPhase, ContainerSnapshot, EngineFuture,
     };
     use crate::executor::CancellationToken;
     use crate::{AdmissionOutcome, AdmissionPolicy, OutboundWorker, WorkerError};
@@ -452,6 +477,9 @@ mod tests {
     use std::io::{Cursor, Read};
     use std::str::FromStr;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    const CUDA_RUNTIME_STDOUT: &[u8] =
+        b"PASS fixture=cuda-vectoradd-v1 elements=1048576 checksum=670562424\n";
 
     #[tokio::test]
     async fn publication_and_terminal_commit_precede_retryable_cleanup()
@@ -504,6 +532,8 @@ mod tests {
             CudaEnvironmentFacts::new("sm_121", "580.159.03", "13.0")?,
         )?);
         let publisher = OrderingPublisher::new(state.clone());
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let recorded_observations = Arc::clone(&observations);
 
         assert!(matches!(
             runtime
@@ -512,12 +542,16 @@ mod tests {
                     "attempt-1",
                     &CancellationToken::new(),
                     &publisher,
-                    |_| {}
+                    move |observation| recorded_observations
+                        .lock()
+                        .expect("observation lock")
+                        .push(observation)
                 )
                 .await,
             Err(ExecutionRuntimeError::CleanupAfterCommit(_))
         ));
         assert!(publisher.called.load(Ordering::SeqCst));
+        assert_live_observations(&observations);
         let terminal = state.attempt("attempt-1")?.expect("attempt exists");
         assert_eq!(terminal.phase, LocalAttemptPhase::Finished);
         assert!(engine.has_container());
@@ -548,6 +582,31 @@ mod tests {
         )
         .await?;
         Ok(())
+    }
+
+    fn assert_live_observations(observations: &Mutex<Vec<ExecutionObservation>>) {
+        let observations = observations.lock().expect("observation lock");
+        let output = observations
+            .iter()
+            .filter_map(|observation| match observation {
+                ExecutionObservation::Output(chunk) => Some(chunk),
+                ExecutionObservation::Started => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            output.len(),
+            2,
+            "terminal output must not duplicate live chunks"
+        );
+        assert_eq!(output[0].byte_offset, 0);
+        assert_eq!(output[1].byte_offset, 5);
+        assert_eq!(
+            output
+                .iter()
+                .flat_map(|chunk| chunk.bytes.iter().copied())
+                .collect::<Vec<_>>(),
+            CUDA_RUNTIME_STDOUT
+        );
     }
 
     async fn assert_outbound_cuda_only(
@@ -777,12 +836,40 @@ mod tests {
         fn logs<'a>(&'a self, _name: &'a str, _limit: u64) -> EngineFuture<'a, ContainerLogs> {
             Box::pin(async {
                 Ok(ContainerLogs {
-                    stdout: b"PASS fixture=cuda-vectoradd-v1 elements=1048576 checksum=670562424\n"
-                        .to_vec(),
+                    stdout: CUDA_RUNTIME_STDOUT.to_vec(),
                     stderr: Vec::new(),
                     output_limit_exceeded: false,
                 })
             })
+        }
+
+        fn follow_logs_observed<'a>(
+            &'a self,
+            _name: &'a str,
+            _limit: u64,
+            observer: &'a mut (dyn FnMut(ContainerLogChunk) + Send),
+        ) -> EngineFuture<'a, ContainerLogs> {
+            Box::pin(async move {
+                observer(ContainerLogChunk {
+                    stream: ContainerLogStream::Stdout,
+                    byte_offset: 0,
+                    bytes: CUDA_RUNTIME_STDOUT[..5].to_vec(),
+                });
+                observer(ContainerLogChunk {
+                    stream: ContainerLogStream::Stdout,
+                    byte_offset: 5,
+                    bytes: CUDA_RUNTIME_STDOUT[5..].to_vec(),
+                });
+                Ok(ContainerLogs {
+                    stdout: CUDA_RUNTIME_STDOUT.to_vec(),
+                    stderr: Vec::new(),
+                    output_limit_exceeded: false,
+                })
+            })
+        }
+
+        fn streams_live_log_observations(&self) -> bool {
+            true
         }
 
         fn remove<'a>(&'a self, _name: &'a str) -> EngineFuture<'a, ()> {

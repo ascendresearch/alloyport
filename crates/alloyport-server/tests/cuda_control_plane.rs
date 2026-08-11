@@ -1,5 +1,6 @@
 use alloyport_artifacts::upload::{BeginUpload, SqliteUploadStore, UploadQuotas};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, Sha256Digest};
+use alloyport_events::{Event, OutputStream as EventOutputStream};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_proto::v1::{
@@ -18,8 +19,8 @@ use alloyport_worker::cuda::{
 use alloyport_worker::cuda_docker::DockerCliEngine;
 use alloyport_worker::cuda_runtime::{CudaEnvironmentFacts, CudaExecutionRuntime};
 use alloyport_worker::cuda_supervisor::{
-    ContainerExit, ContainerIdentity, ContainerLogs, ContainerPhase, ContainerSnapshot,
-    CudaContainerEngine, CudaContainerSupervisor, EngineFuture,
+    ContainerExit, ContainerIdentity, ContainerLogChunk, ContainerLogStream, ContainerLogs,
+    ContainerPhase, ContainerSnapshot, CudaContainerEngine, CudaContainerSupervisor, EngineFuture,
 };
 use alloyport_worker::{OutboundWorker, StoredFinished};
 use std::error::Error;
@@ -79,6 +80,11 @@ async fn cuda_runtime_completes_through_outbound_control_and_artifact_planes()
         .finished_attempt("attempt-1")?
         .expect("CUDA terminal state is durable");
     assert_terminal_artifacts(&fixture.uploads, &finished, "attempt-1", Some(CUDA_STDOUT))?;
+    let output_chunks = assert_live_stdout(&fixture.service, CUDA_STDOUT)?;
+    assert_eq!(
+        output_chunks, 2,
+        "live CUDA output must not be repeated at terminal"
+    );
     assert_eq!(fixture.engine.remove_count(), 2);
     assert!(!fixture.engine.has_container());
 
@@ -154,6 +160,7 @@ async fn cuda_runtime_completes_through_real_docker_outbound_loopback() -> Resul
     let stdout = read_artifact(&fixture.local_artifacts, finished.stdout.as_ref())?;
     println!("GB10_OUTBOUND_STDOUT={}", String::from_utf8_lossy(&stdout));
     assert_eq!(stdout, CUDA_STDOUT);
+    assert!(assert_live_stdout(&fixture.service, CUDA_STDOUT)? > 0);
     let receipt: serde_json::Value = serde_json::from_slice(&read_artifact(
         &fixture.local_artifacts,
         finished.receipt.as_ref(),
@@ -558,6 +565,37 @@ fn required_env(name: &str) -> Result<String, Box<dyn Error>> {
     std::env::var(name).map_err(|_| format!("ignored CUDA smoke requires {name}").into())
 }
 
+fn assert_live_stdout(
+    service: &WorkerControlService,
+    expected: &[u8],
+) -> Result<usize, Box<dyn Error>> {
+    let output = service
+        .interaction_events("task-1")?
+        .into_iter()
+        .filter_map(|envelope| match envelope.event {
+            Event::CommandOutput {
+                stream: EventOutputStream::Stdout,
+                byte_offset,
+                text,
+                ..
+            } => Some((byte_offset, text)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut next_offset = 0;
+    let mut bytes = Vec::new();
+    for (offset, text) in &output {
+        assert_eq!(
+            *offset, next_offset,
+            "live stdout offsets must be contiguous"
+        );
+        next_offset = next_offset.saturating_add(u64::try_from(text.len())?);
+        bytes.extend_from_slice(text.as_bytes());
+    }
+    assert_eq!(bytes, expected);
+    Ok(output.len())
+}
+
 fn hello() -> WorkerHello {
     WorkerHello {
         protocol_major: PROTOCOL_MAJOR,
@@ -693,6 +731,35 @@ impl CudaContainerEngine for ImmediateCudaEngine {
                 output_limit_exceeded: false,
             })
         })
+    }
+
+    fn follow_logs_observed<'a>(
+        &'a self,
+        _name: &'a str,
+        _limit: u64,
+        observer: &'a mut (dyn FnMut(ContainerLogChunk) + Send),
+    ) -> EngineFuture<'a, ContainerLogs> {
+        Box::pin(async move {
+            observer(ContainerLogChunk {
+                stream: ContainerLogStream::Stdout,
+                byte_offset: 0,
+                bytes: CUDA_STDOUT[..5].to_vec(),
+            });
+            observer(ContainerLogChunk {
+                stream: ContainerLogStream::Stdout,
+                byte_offset: 5,
+                bytes: CUDA_STDOUT[5..].to_vec(),
+            });
+            Ok(ContainerLogs {
+                stdout: CUDA_STDOUT.to_vec(),
+                stderr: Vec::new(),
+                output_limit_exceeded: false,
+            })
+        })
+    }
+
+    fn streams_live_log_observations(&self) -> bool {
+        true
     }
 
     fn remove<'a>(&'a self, _name: &'a str) -> EngineFuture<'a, ()> {

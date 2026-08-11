@@ -389,7 +389,8 @@ removal. It produced exactly `PASS` for 1,048,576 elements and checksum `6705624
 `sha256:79a186...d884`, empty stderr, exit 0, and a 1,334 ms receipt. A separate direct SSH/Docker
 legacy reference attempt produced the same stdout and exit classification. The locally derived
 Docker plan fixes `--entrypoint python3`; without it, the image-authored NVIDIA entrypoint polluted
-stdout with a license banner even though the kernel passed.
+stdout with a license banner even though the kernel passed. A subsequent real-engine rerun with live
+preview forwarding passed in 1,335 ms with identical terminal digests and canonical stdout bytes.
 
 When Artifact metadata is attached to `WorkerControlService`, the controller accepts terminal
 stdout/stderr/receipt only when the reporting stable worker finalized exact owner-scoped upload keys
@@ -453,7 +454,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 97 Rust tests, one ignored by default because it explicitly requires Docker and a CUDA
+There are 98 Rust tests, one ignored by default because it explicitly requires Docker and a CUDA
 device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -521,8 +522,10 @@ facts, cleanup-failure retention, and cleanup-only terminal replay. A dedicated 
 test covers CUDA-only outbound admission, Artifact-gated completion, a post-commit cleanup failure,
 session reconnect, durable terminal replay, cleanup without a second execution, and download of the
 granted input bundle into an initially empty worker CAS. The ignored real-engine variant exercises
-the same outbound path against Docker/GB10 and verifies exact stdout plus receipt identities; normal
-CI never silently depends on it.
+the same outbound path against Docker/GB10 and verifies exact live canonical stdout plus terminal
+receipt identities; normal CI never silently depends on it. CUDA log-reader/runtime coverage proves
+stdout/stderr preview offsets, a shared combined byte budget, nonblocking drop under preview-channel
+pressure, terminal CAS independence, and no duplicate terminal preview emission.
 
 An end-to-end mutual-TLS test creates one CA, a server identity, and three client identities. It
 proves forged worker hello rejection, cross-owner upload/download isolation, termination of an old
@@ -581,10 +584,12 @@ cargo test -p alloyport-server --test cuda_control_plane \
   quotas are implemented. Worker terminal ingestion now creates typed output/receipt references;
   other controller/public grant operations and automatic retention/collection scheduling remain
   absent. There is no object-store adapter or filesystem-capacity monitor.
-- No live Docker log previews, automatic device discovery, or device reset. The Docker boundary
-  follows running logs and actively stops the identified container on combined output-budget
-  exhaustion, but the CUDA runtime still emits only bounded terminal observations plus a configured
-  environment receipt. Binary configuration is explicit rather than discovered.
+- No automatic device discovery or device reset. The Docker boundary follows running logs, forwards
+  bounded best-effort stdout/stderr previews with independent offsets, and actively stops the
+  identified container on combined output-budget exhaustion. A full preview queue never blocks log
+  draining or changes terminal bytes; later chunks expose gaps to the server warning path. Preview
+  coalescing and an explicit `output_suppressed` count are not implemented. Binary configuration is
+  explicit rather than discovered.
   Attached fake runs emit ephemeral gRPC output previews and accept control-stream cancellation;
   workers with no executor attached still terminate cancelled admitted attempts directly.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
@@ -619,8 +624,10 @@ download/grant, durable supervisor, argv-only Docker engine, gated CUDA runtime,
 terminal cleanup ordering, outbound-session integration, and bounded running-log enforcement are
 implemented. The worker binary now wires a schema-validated local policy, verified input downloader,
 Docker runtime, and mandatory remote publisher. The real GB10 outbound loopback and separate legacy
-reference attempt now agree on the fixed fixture. Next add live preview chunk publication while
-preserving the terminal CAS bytes as authority. Keep shell execution disabled.
+reference attempt agree on the fixed fixture. Live bounded previews now traverse Docker, runtime,
+outbound gRPC, and canonical event ingestion without replacing terminal CAS authority. The fixed CUDA
+vertical slice is complete; keep shell execution disabled and proceed to public event replay and
+subscription.
 
 ### 2. Public event replay and subscription
 
@@ -644,11 +651,10 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Add bounded CUDA live previews without weakening the completed execution boundary:
+Expose authorized public event replay and bounded live subscription:
 
-> Read `docs/HANDOFF.md` and Designs 0010, 0011, 0015, and 0018. Extend the Docker follower/runtime
-> boundary to forward bounded stdout/stderr chunks with independent offsets through the existing
-> ephemeral observation channel while simultaneously spooling the exact terminal bytes. Define
-> slow-consumer behavior and prove previews cannot change output-budget enforcement, receipt digests,
-> terminal Artifact publication, or reconnect recovery. Keep generic shell/container execution
-> disabled.
+> Read `docs/HANDOFF.md` and Designs 0010, 0011, and 0017. Add an authorized per-run replay API over
+> the canonical interaction repository plus a bounded live subscription with reconnect cursors.
+> Define slow-consumer termination, redaction, retention, and visible-gap semantics before attaching
+> a TUI. Reuse the canonical event types and repository sequence; do not create a second event model
+> or treat ephemeral worker previews as authority.

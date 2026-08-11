@@ -48,6 +48,19 @@ pub struct ContainerLogs {
     pub output_limit_exceeded: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContainerLogStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContainerLogChunk {
+    pub stream: ContainerLogStream,
+    pub byte_offset: u64,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CudaExecutionFacts {
     pub container_name: String,
@@ -62,6 +75,7 @@ pub struct CudaExecutionFacts {
 pub struct SupervisedCudaExecution {
     pub result: ExecutorResult,
     pub facts: CudaExecutionFacts,
+    pub live_output_streaming: bool,
 }
 
 /// Local container operations. Implementations must use argv, never a shell string.
@@ -81,6 +95,19 @@ pub trait CudaContainerEngine: Debug + Send + Sync {
     /// Follows a running container and returns early when the combined output limit is exceeded.
     fn follow_logs<'a>(&'a self, name: &'a str, limit: u64) -> EngineFuture<'a, ContainerLogs> {
         self.logs(name, limit)
+    }
+    /// Follows logs while forwarding best-effort bounded chunks with per-stream offsets.
+    fn follow_logs_observed<'a>(
+        &'a self,
+        name: &'a str,
+        limit: u64,
+        _observer: &'a mut (dyn FnMut(ContainerLogChunk) + Send),
+    ) -> EngineFuture<'a, ContainerLogs> {
+        self.follow_logs(name, limit)
+    }
+    /// Reports that observed following owns preview emission, including intentional omissions.
+    fn streams_live_log_observations(&self) -> bool {
+        false
     }
     /// Removes a terminal container after publication and the terminal journal commit.
     fn remove<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()>;
@@ -131,6 +158,25 @@ impl CudaContainerSupervisor {
         engine: &dyn CudaContainerEngine,
         cancellation: &CancellationToken,
     ) -> Result<SupervisedCudaExecution, CudaSupervisorError> {
+        self.run_with_facts_observed(assignment, engine, cancellation, |_| {})
+            .await
+    }
+
+    /// Runs reconciliation while forwarding best-effort live container output chunks.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::run`].
+    pub async fn run_with_facts_observed<F>(
+        &self,
+        assignment: &StoredAssignment,
+        engine: &dyn CudaContainerEngine,
+        cancellation: &CancellationToken,
+        mut observer: F,
+    ) -> Result<SupervisedCudaExecution, CudaSupervisorError>
+    where
+        F: FnMut(ContainerLogChunk) + Send,
+    {
         let sandbox = self
             .policy
             .materialize_bundle(assignment, self.artifacts.as_ref())?;
@@ -167,7 +213,7 @@ impl CudaContainerSupervisor {
             .limits
             .as_ref()
             .map_or(0, |limits| limits.output_bytes);
-        let (termination, logs) = if phase == ContainerPhase::Exited {
+        let (termination, logs, live_output_streaming) = if phase == ContainerPhase::Exited {
             let exit = engine
                 .wait(&identity.name)
                 .await
@@ -176,7 +222,7 @@ impl CudaContainerSupervisor {
                 .logs(&identity.name, output_limit)
                 .await
                 .map_err(CudaSupervisorError::Engine)?;
-            (Termination::Exited(exit), logs)
+            (Termination::Exited(exit), logs, false)
         } else {
             collect_running(
                 engine,
@@ -184,6 +230,7 @@ impl CudaContainerSupervisor {
                 assignment.execution.timeout_ms,
                 output_limit,
                 cancellation,
+                &mut observer,
             )
             .await?
         };
@@ -201,6 +248,7 @@ impl CudaContainerSupervisor {
                 image_id: identity.image_id,
                 device_id: plan.device_id,
             },
+            live_output_streaming,
         })
     }
 }
@@ -211,10 +259,12 @@ async fn collect_running(
     timeout_ms: u64,
     output_limit: u64,
     cancellation: &CancellationToken,
-) -> Result<(Termination, ContainerLogs), CudaSupervisorError> {
+    observer: &mut (dyn FnMut(ContainerLogChunk) + Send),
+) -> Result<(Termination, ContainerLogs, bool), CudaSupervisorError> {
     let mut cancelled = cancellation.subscribe();
     let wait = engine.wait(name);
-    let follow = engine.follow_logs(name, output_limit);
+    let live_output_streaming = engine.streams_live_log_observations();
+    let follow = engine.follow_logs_observed(name, output_limit, observer);
     let timeout = tokio::time::sleep(Duration::from_millis(timeout_ms));
     tokio::pin!(wait, follow, timeout);
     let mut collected_logs = None;
@@ -239,7 +289,7 @@ async fn collect_running(
                 };
                 if logs.output_limit_exceeded {
                     let exit = stop_and_wait(engine, name, &mut wait).await?;
-                    return Ok((Termination::OutputLimitExceeded(exit), logs));
+                    return Ok((Termination::OutputLimitExceeded(exit), logs, live_output_streaming));
                 }
                 collected_logs = Some(logs);
                 continue;
@@ -250,7 +300,7 @@ async fn collect_running(
         } else {
             follow.await.map_err(CudaSupervisorError::Engine)?
         };
-        return Ok((termination, logs));
+        return Ok((termination, logs, live_output_streaming));
     }
 }
 

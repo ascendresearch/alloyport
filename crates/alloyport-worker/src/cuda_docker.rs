@@ -2,8 +2,8 @@
 
 use crate::cuda::DockerCreatePlan;
 use crate::cuda_supervisor::{
-    ContainerExit, ContainerIdentity, ContainerLogs, ContainerPhase, ContainerSnapshot,
-    CudaContainerEngine,
+    ContainerExit, ContainerIdentity, ContainerLogChunk, ContainerLogStream, ContainerLogs,
+    ContainerPhase, ContainerSnapshot, CudaContainerEngine,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -19,6 +19,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 const METADATA_OUTPUT_LIMIT: u64 = 1024 * 1024;
+const LOG_PREVIEW_CHANNEL_CAPACITY: usize = 16;
 const ATTEMPT_LABEL: &str = "alloyport.attempt";
 const BUNDLE_LABEL: &str = "alloyport.bundle";
 const IMAGE_LABEL: &str = "alloyport.image";
@@ -69,9 +70,10 @@ impl DockerCliEngine {
         &self,
         arguments: Vec<String>,
         output_limit: u64,
+        preview: Option<tokio::sync::mpsc::Sender<ContainerLogChunk>>,
     ) -> Result<DockerCommandOutput, String> {
         let runner = Arc::clone(&self.runner);
-        tokio::task::spawn_blocking(move || runner.follow(&arguments, output_limit))
+        tokio::task::spawn_blocking(move || runner.follow(&arguments, output_limit, preview))
             .await
             .map_err(|error| format!("Docker CLI follow task failed: {error}"))?
     }
@@ -266,6 +268,7 @@ impl CudaContainerEngine for DockerCliEngine {
                         name.into(),
                     ],
                     limit,
+                    None,
                 )
                 .await?;
             require_exit_success("follow container logs", &output)?;
@@ -275,6 +278,54 @@ impl CudaContainerEngine for DockerCliEngine {
                 output_limit_exceeded: output.output_limit_exceeded,
             })
         })
+    }
+
+    fn follow_logs_observed<'a>(
+        &'a self,
+        name: &'a str,
+        limit: u64,
+        observer: &'a mut (dyn FnMut(ContainerLogChunk) + Send),
+    ) -> crate::cuda_supervisor::EngineFuture<'a, ContainerLogs> {
+        Box::pin(async move {
+            let (preview_sender, mut preview_receiver) =
+                tokio::sync::mpsc::channel(LOG_PREVIEW_CHANNEL_CAPACITY);
+            let command = self.follow_command(
+                vec![
+                    "container".into(),
+                    "logs".into(),
+                    "--follow".into(),
+                    name.into(),
+                ],
+                limit,
+                Some(preview_sender),
+            );
+            tokio::pin!(command);
+            let output = loop {
+                tokio::select! {
+                    output = &mut command => break output?,
+                    preview = preview_receiver.recv() => {
+                        if let Some(preview) = preview {
+                            observer(preview);
+                        } else {
+                            break command.await?;
+                        }
+                    }
+                }
+            };
+            while let Ok(preview) = preview_receiver.try_recv() {
+                observer(preview);
+            }
+            require_exit_success("follow container logs", &output)?;
+            Ok(ContainerLogs {
+                stdout: output.stdout,
+                stderr: output.stderr,
+                output_limit_exceeded: output.output_limit_exceeded,
+            })
+        })
+    }
+
+    fn streams_live_log_observations(&self) -> bool {
+        true
     }
 
     fn remove<'a>(&'a self, name: &'a str) -> crate::cuda_supervisor::EngineFuture<'a, ()> {
@@ -309,6 +360,7 @@ trait DockerCommandRunner: Debug + Send + Sync {
         &self,
         arguments: &[String],
         output_limit: u64,
+        _preview: Option<tokio::sync::mpsc::Sender<ContainerLogChunk>>,
     ) -> Result<DockerCommandOutput, String> {
         self.run(arguments, output_limit)
     }
@@ -355,8 +407,9 @@ impl DockerCommandRunner for SystemDockerCommandRunner {
         &self,
         arguments: &[String],
         output_limit: u64,
+        preview: Option<tokio::sync::mpsc::Sender<ContainerLogChunk>>,
     ) -> Result<DockerCommandOutput, String> {
-        follow_command(&self.binary, arguments, output_limit)
+        follow_command(&self.binary, arguments, output_limit, preview)
     }
 }
 
@@ -364,6 +417,7 @@ fn follow_command(
     binary: &Path,
     arguments: &[String],
     output_limit: u64,
+    preview: Option<tokio::sync::mpsc::Sender<ContainerLogChunk>>,
 ) -> Result<DockerCommandOutput, String> {
     let mut child = Command::new(binary)
         .args(arguments)
@@ -384,12 +438,27 @@ fn follow_command(
     let (limit_sender, limit_receiver) = mpsc::sync_channel(1);
     let stdout_total = Arc::clone(&total);
     let stdout_limit_sender = limit_sender.clone();
+    let stdout_preview = preview.clone();
     let stdout_task = thread::spawn(move || {
-        read_follow_bounded(stdout, output_limit, &stdout_total, &stdout_limit_sender)
+        read_follow_bounded(
+            stdout,
+            output_limit,
+            &stdout_total,
+            &stdout_limit_sender,
+            ContainerLogStream::Stdout,
+            stdout_preview.as_ref(),
+        )
     });
     let stderr_total = Arc::clone(&total);
     let stderr_task = thread::spawn(move || {
-        read_follow_bounded(stderr, output_limit, &stderr_total, &limit_sender)
+        read_follow_bounded(
+            stderr,
+            output_limit,
+            &stderr_total,
+            &limit_sender,
+            ContainerLogStream::Stderr,
+            preview.as_ref(),
+        )
     });
     let mut killed_for_limit = false;
     let status = loop {
@@ -455,8 +524,9 @@ fn read_follow_bounded(
     limit: u64,
     total: &AtomicU64,
     limit_sender: &mpsc::SyncSender<()>,
+    stream: ContainerLogStream,
+    preview: Option<&tokio::sync::mpsc::Sender<ContainerLogChunk>>,
 ) -> io::Result<(Vec<u8>, bool)> {
-    let retained_limit = usize::try_from(limit).unwrap_or(usize::MAX);
     let mut bytes = Vec::new();
     let mut exceeded = false;
     let mut buffer = [0_u8; 8192];
@@ -475,9 +545,21 @@ fn read_follow_bounded(
             exceeded = true;
             let _ = limit_sender.try_send(());
         }
-        let remaining = retained_limit.saturating_sub(bytes.len());
-        let keep = remaining.min(read);
+        let globally_remaining = limit.saturating_sub(previous);
+        let keep = usize::try_from(globally_remaining)
+            .unwrap_or(usize::MAX)
+            .min(read);
+        let byte_offset = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         bytes.extend_from_slice(&buffer[..keep]);
+        if keep > 0
+            && let Some(preview) = preview
+        {
+            let _ = preview.try_send(ContainerLogChunk {
+                stream,
+                byte_offset,
+                bytes: buffer[..keep].to_vec(),
+            });
+        }
         exceeded |= keep < read;
     }
     Ok((bytes, exceeded))
@@ -737,17 +819,84 @@ mod tests {
     fn followed_readers_share_one_combined_output_budget() -> Result<(), io::Error> {
         let total = AtomicU64::new(0);
         let (limit_sender, limit_receiver) = mpsc::sync_channel(1);
-        let (stdout, stdout_exceeded) =
-            read_follow_bounded(Cursor::new(b"abc"), 5, &total, &limit_sender)?;
-        let (stderr, stderr_exceeded) =
-            read_follow_bounded(Cursor::new(b"def"), 5, &total, &limit_sender)?;
+        let (preview_sender, mut preview_receiver) = tokio::sync::mpsc::channel(4);
+        let (stdout, stdout_exceeded) = read_follow_bounded(
+            Cursor::new(b"abc"),
+            5,
+            &total,
+            &limit_sender,
+            ContainerLogStream::Stdout,
+            Some(&preview_sender),
+        )?;
+        let (stderr, stderr_exceeded) = read_follow_bounded(
+            Cursor::new(b"def"),
+            5,
+            &total,
+            &limit_sender,
+            ContainerLogStream::Stderr,
+            Some(&preview_sender),
+        )?;
 
         assert_eq!(stdout, b"abc");
-        assert_eq!(stderr, b"def");
+        assert_eq!(stderr, b"de");
         assert!(!stdout_exceeded);
         assert!(stderr_exceeded);
         assert!(limit_receiver.try_recv().is_ok());
         assert_eq!(total.load(Ordering::Relaxed), 6);
+        assert_eq!(
+            preview_receiver.try_recv().expect("stdout preview"),
+            ContainerLogChunk {
+                stream: ContainerLogStream::Stdout,
+                byte_offset: 0,
+                bytes: b"abc".to_vec(),
+            }
+        );
+        assert_eq!(
+            preview_receiver.try_recv().expect("stderr preview"),
+            ContainerLogChunk {
+                stream: ContainerLogStream::Stderr,
+                byte_offset: 0,
+                bytes: b"de".to_vec(),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn slow_preview_consumer_never_blocks_or_changes_authoritative_bytes() -> Result<(), io::Error>
+    {
+        let total = AtomicU64::new(0);
+        let (limit_sender, _limit_receiver) = mpsc::sync_channel(1);
+        let (preview_sender, mut preview_receiver) = tokio::sync::mpsc::channel(1);
+        preview_sender
+            .try_send(ContainerLogChunk {
+                stream: ContainerLogStream::Stdout,
+                byte_offset: 99,
+                bytes: b"queued".to_vec(),
+            })
+            .expect("preview queue has capacity");
+
+        let (bytes, exceeded) = read_follow_bounded(
+            Cursor::new(b"authoritative"),
+            64,
+            &total,
+            &limit_sender,
+            ContainerLogStream::Stdout,
+            Some(&preview_sender),
+        )?;
+
+        assert_eq!(bytes, b"authoritative");
+        assert!(!exceeded);
+        assert_eq!(total.load(Ordering::Relaxed), 13);
+        assert_eq!(
+            preview_receiver.try_recv().expect("preexisting preview"),
+            ContainerLogChunk {
+                stream: ContainerLogStream::Stdout,
+                byte_offset: 99,
+                bytes: b"queued".to_vec(),
+            }
+        );
+        assert!(preview_receiver.try_recv().is_err());
         Ok(())
     }
 

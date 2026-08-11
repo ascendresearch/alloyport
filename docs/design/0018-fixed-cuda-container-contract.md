@@ -126,8 +126,12 @@ matching nonempty environment facts, one device, concurrency one, and Docker. Ab
 retains default-deny admission. The binary always attaches both the input downloader and terminal
 publisher over its authenticated controller endpoint; there is no binary mode that executes CUDA but
 reports unauthoritative digest strings without publication. The log follower enforces early
-output-limit termination but does not emit chunked live previews. Real GB10 validation is complete;
-preview streaming remains a separate runtime integration.
+output-limit termination and forwards bounded best-effort chunks with independent stdout/stderr
+offsets. A bounded internal channel uses nonblocking sends: preview pressure can omit chunks but can
+never block pipe draining, change the shared output-budget reservation, or alter terminal bytes.
+Later delivered offsets make omissions visible to canonical ingestion. The runtime does not emit a
+second terminal copy when live following was active. Real GB10 validation, including this preview
+path, is complete.
 
 ## Evidence and parity
 
@@ -190,4 +194,7 @@ exit 0, empty stderr, 1,334 ms, and the deterministic checksum `670562424`. A se
 SSH/Docker legacy reference attempt produced the identical single-line stdout and exit. The first
 real run exposed output from the image-authored NVIDIA entrypoint, so the locally derived plan now
 sets `--entrypoint python3` explicitly; the rerun restored exact stdout parity. No normal CI test may
-silently depend on a GPU or Docker daemon.
+silently depend on a GPU or Docker daemon. A later live-preview rerun preserved the same terminal
+digests and canonical stdout with a 1,335 ms receipt. Unit and loopback coverage additionally prove
+combined-budget reservation across streams, independent offsets, nonblocking preview drop, exact
+terminal CAS bytes, and absence of duplicate terminal previews.
