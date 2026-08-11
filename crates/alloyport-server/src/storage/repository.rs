@@ -17,6 +17,7 @@ pub enum RepositoryError {
     LockPoisoned,
     NotFound(String),
     IdentityMismatch(String),
+    InvalidIdentity(String),
     InvalidTransition {
         from: AttemptState,
         to: AttemptState,
@@ -40,6 +41,7 @@ impl Display for RepositoryError {
                     "attempt {attempt} identity does not match worker"
                 )
             }
+            Self::InvalidIdentity(detail) => write!(formatter, "invalid identity: {detail}"),
             Self::InvalidTransition { from, to } => {
                 write!(
                     formatter,

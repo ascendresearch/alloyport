@@ -1,7 +1,7 @@
 //! Transport-independent control-plane records and lifecycle values.
 
 use super::RepositoryError;
-use alloyport_core::{AttemptOutcome, ExecutionKind, NetworkPolicy, RejectionReason};
+use alloyport_core::{AttemptId, AttemptOutcome, ExecutionKind, NetworkPolicy, RejectionReason};
 use serde::{Deserialize, Serialize};
 
 /// Worker registration persisted independently of its current network session.
@@ -39,7 +39,7 @@ pub struct ConnectionRegistration {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AssignmentContract {
     pub assignment_id: String,
-    pub attempt_id: String,
+    pub attempt_id: AttemptId,
     pub attempt_number: u32,
     pub idempotency_key: String,
     pub task_id: String,

@@ -7,7 +7,7 @@ use crate::cuda::{
 };
 use crate::journal::{StoredArtifact, StoredExecution, StoredLimits};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
-use alloyport_core::{AttemptOutcome, ExecutionKind, NetworkPolicy};
+use alloyport_core::{AttemptId, AttemptOutcome, ExecutionKind, NetworkPolicy};
 use std::io::Cursor;
 use std::sync::Mutex;
 
@@ -185,7 +185,7 @@ impl Fixture {
         ContainerSnapshot {
             identity: ContainerIdentity {
                 name: format!("alloyport-{}", self.assignment.attempt_id),
-                attempt_id: self.assignment.attempt_id.clone(),
+                attempt_id: self.assignment.attempt_id.to_string(),
                 bundle_digest: self.assignment.execution.bundle.digest.clone(),
                 image_manifest_digest: self.assignment.execution.image.digest.clone(),
                 image_id: self.image_id.to_string(),
@@ -226,7 +226,7 @@ fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     )?);
     let assignment = StoredAssignment {
         assignment_id: "assignment-1".into(),
-        attempt_id: "attempt-1".into(),
+        attempt_id: AttemptId::try_from("attempt-1")?,
         attempt_number: 1,
         idempotency_key: VECTOR_ADD_FIXTURE_ID.into(),
         task_id: "task-1".into(),

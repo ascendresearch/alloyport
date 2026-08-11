@@ -23,7 +23,7 @@ impl AssignmentRepository for SqliteControlRepository {
         let existing: Option<(String, String)> = transaction
             .query_row(
                 "SELECT worker_id, contract_json FROM assignments WHERE attempt_id = ?1",
-                [&contract.attempt_id],
+                [contract.attempt_id.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
@@ -33,7 +33,7 @@ impl AssignmentRepository for SqliteControlRepository {
                 StoreAssignmentOutcome::Duplicate
             } else {
                 return Err(RepositoryError::ConflictingAttempt(
-                    contract.attempt_id.clone(),
+                    contract.attempt_id.to_string(),
                 ));
             };
             transaction.commit()?;
@@ -45,7 +45,7 @@ impl AssignmentRepository for SqliteControlRepository {
                  created_at_ms, updated_at_ms
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
             params![
-                contract.attempt_id,
+                contract.attempt_id.as_str(),
                 contract.assignment_id,
                 worker_id,
                 contract_json,

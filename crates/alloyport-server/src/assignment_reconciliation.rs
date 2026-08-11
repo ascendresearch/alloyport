@@ -65,9 +65,10 @@ impl WorkerControlService {
             let became_dispatchable = match preparation {
                 Ok(became_dispatchable) => became_dispatchable,
                 Err(detail) => {
-                    report
-                        .failures
-                        .push(PreparationReconciliationFailure { attempt_id, detail });
+                    report.failures.push(PreparationReconciliationFailure {
+                        attempt_id: attempt_id.to_string(),
+                        detail,
+                    });
                     continue;
                 }
             };
@@ -89,7 +90,7 @@ impl WorkerControlService {
                 }
                 Ok(None) => report.pending_delivery += 1,
                 Err(error) => report.failures.push(PreparationReconciliationFailure {
-                    attempt_id,
+                    attempt_id: attempt_id.to_string(),
                     detail: error.to_string(),
                 }),
             }

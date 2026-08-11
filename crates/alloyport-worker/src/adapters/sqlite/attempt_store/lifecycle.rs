@@ -48,14 +48,14 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
         let existing = transaction
             .query_row(
                 "SELECT assignment_json FROM attempts WHERE attempt_id = ?1",
-                [&assignment.attempt_id],
+                [assignment.attempt_id.as_str()],
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
         let outcome = if let Some(existing) = existing {
             if existing != assignment_json {
                 return Err(AttemptStoreError::ConflictingAttempt(
-                    assignment.attempt_id.clone(),
+                    assignment.attempt_id.to_string(),
                 ));
             }
             StoreAdmissionOutcome::Duplicate
@@ -65,7 +65,7 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
                      attempt_id, assignment_id, assignment_json, phase, admitted_at_ms, updated_at_ms
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
                 params![
-                    assignment.attempt_id,
+                    assignment.attempt_id.as_str(),
                     assignment.assignment_id,
                     assignment_json,
                     LocalAttemptPhase::Accepted as i64,
@@ -78,10 +78,10 @@ impl AttemptLifecycleStore for SqliteAttemptStore {
             &transaction,
             &WorkerOutboxMessage {
                 message_id: format!("assignment-accepted:{}", assignment.attempt_id),
-                attempt_id: assignment.attempt_id.clone(),
+                attempt_id: assignment.attempt_id.to_string(),
                 payload: WorkerOutboxPayload::AssignmentAccepted {
                     assignment_id: assignment.assignment_id.clone(),
-                    attempt_id: assignment.attempt_id.clone(),
+                    attempt_id: assignment.attempt_id.to_string(),
                     already_known: outcome == StoreAdmissionOutcome::Duplicate,
                 },
             },

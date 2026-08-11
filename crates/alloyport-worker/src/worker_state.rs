@@ -244,7 +244,7 @@ impl WorkerState {
             .map(|attempt| {
                 Ok(ActiveAttempt {
                     assignment_id: attempt.assignment.assignment_id,
-                    attempt_id: attempt.assignment.attempt_id,
+                    attempt_id: attempt.assignment.attempt_id.to_string(),
                     phase: match attempt.phase {
                         LocalAttemptPhase::Accepted => AttemptPhase::Accepted,
                         LocalAttemptPhase::Running => AttemptPhase::Running,

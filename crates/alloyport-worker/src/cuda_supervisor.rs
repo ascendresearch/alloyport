@@ -85,7 +85,7 @@ impl CudaContainerSupervisor {
         let plan = self.policy.docker_create_plan(assignment, &sandbox)?;
         let identity = ContainerIdentity {
             name: plan.container_name.clone(),
-            attempt_id: assignment.attempt_id.clone(),
+            attempt_id: assignment.attempt_id.to_string(),
             bundle_digest: assignment.execution.bundle.digest.clone(),
             image_manifest_digest: assignment.execution.image.digest.clone(),
             image_id: plan.expected_image_id.to_string(),

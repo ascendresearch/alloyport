@@ -4,7 +4,7 @@ use crate::journal::{
     StoredArtifact, StoredAssignment, StoredEnvironment, StoredExecution, StoredFinished,
     StoredLimits, WorkerOutboxPayload,
 };
-use alloyport_core::{ExecutionKind, NetworkPolicy};
+use alloyport_core::{AttemptId, ExecutionKind, NetworkPolicy};
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, CancellationAcknowledged,
     ExecutionFinished, server_to_worker, worker_to_server,
@@ -17,7 +17,8 @@ pub(super) fn assignment_to_stored(assignment: &Assignment) -> StoredAssignment 
         .expect("validated assignment contains execution");
     StoredAssignment {
         assignment_id: assignment.assignment_id.clone(),
-        attempt_id: assignment.attempt_id.clone(),
+        attempt_id: AttemptId::try_from(assignment.attempt_id.clone())
+            .expect("validated assignment contains a non-empty attempt ID"),
         attempt_number: assignment.attempt_number,
         idempotency_key: assignment.idempotency_key.clone(),
         task_id: assignment.task_id.clone(),

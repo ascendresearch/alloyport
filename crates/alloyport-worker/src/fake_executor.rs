@@ -32,7 +32,7 @@ impl From<&StoredAssignment> for ExecutorInput {
     fn from(assignment: &StoredAssignment) -> Self {
         Self {
             assignment_id: assignment.assignment_id.clone(),
-            attempt_id: assignment.attempt_id.clone(),
+            attempt_id: assignment.attempt_id.to_string(),
             task_id: assignment.task_id.clone(),
             candidate_id: assignment.candidate_id.clone(),
             argv: assignment.execution.argv.clone(),

@@ -222,7 +222,7 @@ impl CudaFixturePolicy {
                 "source digest does not match the bundle manifest".into(),
             ));
         }
-        let directory = self.sandbox_root.join(&assignment.attempt_id);
+        let directory = self.sandbox_root.join(assignment.attempt_id.as_str());
         fs::create_dir_all(&directory)?;
         write_once(&directory.join(SOURCE_FILENAME), bundle.source.as_bytes())?;
         write_once(&directory.join(RUNNER_FILENAME), RUNNER.as_bytes())?;

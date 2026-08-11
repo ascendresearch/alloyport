@@ -5,7 +5,7 @@ use crate::storage::{
     ObservationDisposition, ObservedAttempt, RepositoryError, ServerOutboxFrame,
     ServerOutboxRepository, StoreAssignmentOutcome, WorkerConnectionRepository, WorkerRegistration,
 };
-use alloyport_core::{AttemptOutcome, ExecutionKind};
+use alloyport_core::{AttemptId, AttemptOutcome, ExecutionKind};
 use std::error::Error;
 
 #[test]
@@ -59,16 +59,22 @@ fn deferred_preparation_rotates_behind_newer_work() -> Result<(), Box<dyn Error>
     repository.store_assignment("worker-1", &contract(), 1_000)?;
     let mut second = contract();
     second.assignment_id = "assignment-2".into();
-    second.attempt_id = "attempt-2".into();
+    second.attempt_id = AttemptId::try_from("attempt-2")?;
     repository.store_assignment("worker-1", &second, 1_001)?;
 
     assert_eq!(
-        repository.preparing_assignments(1)?[0].contract.attempt_id,
+        repository.preparing_assignments(1)?[0]
+            .contract
+            .attempt_id
+            .as_str(),
         "attempt-1"
     );
     assert!(repository.defer_assignment_preparation("attempt-1", "worker-1", 2_000)?);
     assert_eq!(
-        repository.preparing_assignments(1)?[0].contract.attempt_id,
+        repository.preparing_assignments(1)?[0]
+            .contract
+            .attempt_id
+            .as_str(),
         "attempt-2"
     );
     Ok(())
@@ -83,7 +89,7 @@ fn assignment_delivery_rolls_back_lease_and_state_when_outbox_insert_fails()
 
     let mut second = contract();
     second.assignment_id = "assignment-2".into();
-    second.attempt_id = "attempt-2".into();
+    second.attempt_id = AttemptId::try_from("attempt-2")?;
     repository.store_assignment("worker-1", &second, 1_001)?;
     repository.mark_assignment_dispatchable("attempt-2", "worker-1", 1_001)?;
     let failed = repository.prepare_assignment_delivery(&AssignmentDeliveryPreparation {
@@ -245,11 +251,18 @@ fn expired_attempt_reassignment_creates_a_fresh_linked_contract() -> Result<(), 
         })
     ));
     assert_eq!(repository.expire_leases(1_100)?, vec!["attempt-1"]);
+    assert!(matches!(
+        repository.reassign_expired("attempt-1", "worker-2", "  ", 1_101),
+        Err(RepositoryError::InvalidIdentity(_))
+    ));
 
-    let reassigned = repository.reassign_expired("attempt-1", "worker-2", "attempt-2", 1_101)?;
+    let reassigned = repository.reassign_expired("attempt-1", "worker-2", "attempt-2", 1_102)?;
     assert_eq!(reassigned.outcome, StoreAssignmentOutcome::Inserted);
     assert_eq!(reassigned.assignment.worker_id, "worker-2");
-    assert_eq!(reassigned.assignment.contract.attempt_id, "attempt-2");
+    assert_eq!(
+        reassigned.assignment.contract.attempt_id.as_str(),
+        "attempt-2"
+    );
     assert_eq!(reassigned.assignment.contract.attempt_number, 2);
     assert_eq!(reassigned.assignment.state, AttemptState::Preparing);
     assert_eq!(
@@ -338,7 +351,7 @@ fn cancellation_cannot_resurrect_expired_work() -> Result<(), Box<dyn Error>> {
 
     let mut second = contract();
     second.assignment_id = "assignment-2".to_owned();
-    second.attempt_id = "attempt-2".to_owned();
+    second.attempt_id = AttemptId::try_from("attempt-2")?;
     repository.store_assignment("worker-1", &second, 2_000)?;
     prepare_test_assignment(&repository, "attempt-2", 2_000, 100)?;
     assert_eq!(repository.expire_leases(2_100)?, vec!["attempt-2"]);
@@ -510,7 +523,7 @@ fn prepare_test_assignment(
 fn contract() -> AssignmentContract {
     AssignmentContract {
         assignment_id: "assignment-1".to_owned(),
-        attempt_id: "attempt-1".to_owned(),
+        attempt_id: AttemptId::try_from("attempt-1").expect("valid fixture attempt ID"),
         attempt_number: 1,
         idempotency_key: "task-1:build".to_owned(),
         task_id: "task-1".to_owned(),

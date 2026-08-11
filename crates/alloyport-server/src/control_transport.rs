@@ -6,7 +6,7 @@ use crate::storage::{
     ArtifactIdentity, AssignmentContract, EnvironmentEntry, ExecutionContract, RepositoryError,
     ResourceContract, WorkerCapabilities, WorkerRegistration,
 };
-use alloyport_core::{ExecutionKind, NetworkPolicy};
+use alloyport_core::{AttemptId, ExecutionKind, NetworkPolicy};
 use alloyport_events::{
     ArtifactRef as EventArtifactRef, Authority, Event, Producer, ProducerEvent, Visibility,
 };
@@ -98,6 +98,7 @@ pub(super) fn repository_status(error: RepositoryError) -> Status {
     match error {
         RepositoryError::NotFound(detail) => Status::not_found(detail),
         RepositoryError::IdentityMismatch(detail) => Status::permission_denied(detail),
+        RepositoryError::InvalidIdentity(detail) => Status::invalid_argument(detail),
         RepositoryError::InvalidTransition { .. } => Status::failed_precondition(error.to_string()),
         _ => Status::internal(error.to_string()),
     }
@@ -162,7 +163,8 @@ pub(super) fn assignment_to_contract(assignment: &Assignment) -> AssignmentContr
         .expect("validated assignment contains execution");
     AssignmentContract {
         assignment_id: assignment.assignment_id.clone(),
-        attempt_id: assignment.attempt_id.clone(),
+        attempt_id: AttemptId::try_from(assignment.attempt_id.clone())
+            .expect("validated assignment contains a non-empty attempt ID"),
         attempt_number: assignment.attempt_number,
         idempotency_key: assignment.idempotency_key.clone(),
         task_id: assignment.task_id.clone(),
@@ -211,7 +213,7 @@ pub(super) fn assignment_to_contract(assignment: &Assignment) -> AssignmentContr
 pub(super) fn contract_to_assignment(contract: &AssignmentContract) -> Assignment {
     Assignment {
         assignment_id: contract.assignment_id.clone(),
-        attempt_id: contract.attempt_id.clone(),
+        attempt_id: contract.attempt_id.to_string(),
         attempt_number: contract.attempt_number,
         idempotency_key: contract.idempotency_key.clone(),
         task_id: contract.task_id.clone(),
@@ -288,7 +290,7 @@ pub(super) fn worker_event(
         event,
     );
     frame.task_id = Some(contract.task_id.clone());
-    frame.operation_id = Some(contract.attempt_id.clone());
+    frame.operation_id = Some(contract.attempt_id.to_string());
     frame.emitted_at_unix_ms = emitted_at_unix_ms;
     frame.authority = Authority::Observed;
     frame.visibility = Visibility::User;

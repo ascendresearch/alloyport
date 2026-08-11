@@ -1,6 +1,7 @@
 //! `SQLite` row mapping and assignment-state persistence helpers.
 
 use crate::storage::{AssignmentRecord, AttemptState, RepositoryError};
+use alloyport_core::AttemptId;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 pub(super) fn assignment_in_transaction(
@@ -66,7 +67,8 @@ pub(super) fn insert_reassignment(
         ));
     }
     replacement_worker_id.clone_into(&mut replacement.worker_id);
-    replacement_attempt_id.clone_into(&mut replacement.contract.attempt_id);
+    replacement.contract.attempt_id = AttemptId::try_from(replacement_attempt_id)
+        .map_err(|error| RepositoryError::InvalidIdentity(error.to_string()))?;
     replacement.contract.attempt_number = replacement.contract.attempt_number.saturating_add(1);
     replacement.state = AttemptState::Preparing;
     replacement.created_at_ms = at_ms;
@@ -79,7 +81,7 @@ pub(super) fn insert_reassignment(
              created_at_ms, updated_at_ms
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
         params![
-            replacement.contract.attempt_id,
+            replacement.contract.attempt_id.as_str(),
             replacement.contract.assignment_id,
             replacement.worker_id,
             contract_json,
