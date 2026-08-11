@@ -144,9 +144,14 @@ The first vertical slice was implemented on 2026-08-10:
   execution site; current SSH transport returns output at command completion rather than live chunks;
 - local recipe patches and `kernel_write` emit independently observed Git deltas after their commits.
 
-This does not make the design fully implemented. Streaming provider adapters, incremental remote
-stdout/stderr, content-addressed output artifacts, approvals, persistent replay, redaction policy,
-and the interactive `ratatui` renderer remain open.
+Design 0017 adds the first durable server ingestor: worker command lifecycle and previews are
+explicitly translated into canonical SQLite-backed events with stable replay identity, offset
+conflict detection, visible disconnect gaps, and controller-restart recovery. Design 0016 provides
+the content-addressed terminal output/receipt boundary used by those events.
+
+This does not make the design fully implemented. Streaming provider adapters, public replay and
+subscription APIs, approvals, retention, redaction policy, and the interactive `ratatui` renderer
+remain open.
 
 `authority` is one of:
 

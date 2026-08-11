@@ -58,6 +58,7 @@ name = "alloyport-server"
 version = "0.1.0"
 dependencies = [
  "alloyport-artifacts",
+ "alloyport-events",
  "alloyport-proto",
  "alloyport-worker",
  "rcgen",

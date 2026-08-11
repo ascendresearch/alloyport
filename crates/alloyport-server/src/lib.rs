@@ -2,21 +2,28 @@
 
 pub mod artifact;
 pub mod identity;
+pub mod interaction;
 pub mod storage;
 
 use alloyport_artifacts::Sha256Digest;
 use alloyport_artifacts::upload::{
     ArtifactReferenceKind, GrantArtifactReference, SqliteUploadStore,
 };
+use alloyport_events::{
+    ArtifactRef as EventArtifactRef, Authority, Event, EventEnvelope,
+    OutputStream as EventOutputStream, Producer, ProducerEvent, Visibility,
+};
 use alloyport_proto::v1::worker_control_server::WorkerControl;
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, CancelAttempt,
     CancellationAcknowledged, ControlAcknowledgement, EnvironmentVariable, ExecutionFinished,
-    ExecutionSpec, ExecutionStarted, Heartbeat, ResourceLimits, ServerToWorker, ServerWelcome,
-    WorkerHello, WorkerStatus, WorkerToServer, server_to_worker, worker_to_server,
+    ExecutionSpec, ExecutionStarted, Heartbeat, OutputChunk, OutputStream as WorkerOutputStream,
+    ResourceLimits, ServerToWorker, ServerWelcome, WorkerHello, WorkerStatus, WorkerToServer,
+    server_to_worker, worker_to_server,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR, ValidationError, validate_assignment};
 use identity::{ConnectionIdentityResolver, ResolvedConnectionIdentity};
+use interaction::{AppendOutcome, InteractionError, InteractionStore, SqliteInteractionStore};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -76,6 +83,7 @@ pub enum EnqueueError {
     Invalid(ValidationError),
     ConflictingAttempt(String),
     Repository(RepositoryError),
+    Interaction(InteractionError),
 }
 
 impl Display for EnqueueError {
@@ -89,6 +97,7 @@ impl Display for EnqueueError {
                 )
             }
             Self::Repository(error) => Display::fmt(error, formatter),
+            Self::Interaction(error) => Display::fmt(error, formatter),
         }
     }
 }
@@ -98,6 +107,7 @@ impl Error for EnqueueError {
         match self {
             Self::Invalid(error) => Some(error),
             Self::Repository(error) => Some(error),
+            Self::Interaction(error) => Some(error),
             Self::ConflictingAttempt(_) => None,
         }
     }
@@ -115,6 +125,12 @@ impl From<RepositoryError> for EnqueueError {
             RepositoryError::ConflictingAttempt(attempt_id) => Self::ConflictingAttempt(attempt_id),
             other => Self::Repository(other),
         }
+    }
+}
+
+impl From<InteractionError> for EnqueueError {
+    fn from(error: InteractionError) -> Self {
+        Self::Interaction(error)
     }
 }
 
@@ -142,6 +158,7 @@ pub struct WorkerControlService {
     clock: Arc<dyn Clock>,
     identity_resolver: Option<Arc<dyn ConnectionIdentityResolver>>,
     artifact_metadata: Option<Arc<SqliteUploadStore>>,
+    interactions: Arc<dyn InteractionStore>,
     connection_counter: Arc<AtomicU64>,
     lease_counter: Arc<AtomicU64>,
 }
@@ -171,24 +188,56 @@ impl WorkerControlService {
     ///
     /// Returns a repository error if `SQLite` cannot open or migrate the database.
     pub fn open_sqlite(path: impl AsRef<Path>) -> Result<Self, RepositoryError> {
-        Ok(Self::with_repository(
-            Arc::new(SqliteControlRepository::open(path)?),
+        let path = path.as_ref();
+        let repository = Arc::new(SqliteControlRepository::open(path)?);
+        let interactions = SqliteInteractionStore::open(path).map_err(|error| {
+            RepositoryError::Corrupt(format!("initialize interaction store: {error}"))
+        })?;
+        Ok(Self::with_repositories(
+            repository,
+            Arc::new(interactions),
             Arc::new(SystemClock),
         ))
     }
 
     /// Builds a service around an injected repository and clock.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the bundled `SQLite` library cannot initialize an in-memory event store.
     #[must_use]
     pub fn with_repository(repository: Arc<dyn ControlRepository>, clock: Arc<dyn Clock>) -> Self {
+        let interactions = SqliteInteractionStore::in_memory()
+            .expect("an in-memory SQLite interaction store must initialize");
+        Self::with_repositories(repository, Arc::new(interactions), clock)
+    }
+
+    /// Builds a service around injected control and interaction repositories.
+    #[must_use]
+    pub fn with_repositories(
+        repository: Arc<dyn ControlRepository>,
+        interactions: Arc<dyn InteractionStore>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(ControlState::default())),
             repository,
             clock,
             identity_resolver: None,
             artifact_metadata: None,
+            interactions,
             connection_counter: Arc::new(AtomicU64::new(unique_seed())),
             lease_counter: Arc::new(AtomicU64::new(unique_seed())),
         }
+    }
+
+    /// Returns the canonical interaction stream for one task/run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the durable event repository cannot be read.
+    pub fn interaction_events(&self, run_id: &str) -> Result<Vec<EventEnvelope>, InteractionError> {
+        self.interactions.events(run_id)
     }
 
     /// Requires every worker stream to match a verified, enrolled connection identity.
@@ -289,12 +338,13 @@ impl WorkerControlService {
         validate_assignment(&assignment)?;
         let worker_id = worker_id.into();
         let contract = assignment_to_contract(&assignment);
-        match self
+        let now_ms = self.clock.now_unix_ms();
+        let stored = self
             .repository
-            .store_assignment(&worker_id, &contract, self.clock.now_unix_ms())?
-        {
-            StoreAssignmentOutcome::Duplicate => return Ok(EnqueueOutcome::Duplicate),
-            StoreAssignmentOutcome::Inserted => {}
+            .store_assignment(&worker_id, &contract, now_ms)?;
+        self.record_run_started(&contract, now_ms)?;
+        if stored == StoreAssignmentOutcome::Duplicate {
+            return Ok(EnqueueOutcome::Duplicate);
         }
 
         let outbound = self
@@ -335,6 +385,7 @@ impl WorkerControlService {
             self.clock.now_unix_ms(),
         )?;
         validate_assignment(&contract_to_assignment(&reassignment.assignment.contract))?;
+        self.record_run_started(&reassignment.assignment.contract, self.clock.now_unix_ms())?;
         if reassignment.outcome == StoreAssignmentOutcome::Duplicate {
             return Ok(EnqueueOutcome::Duplicate);
         }
@@ -645,12 +696,14 @@ impl WorkerControlService {
                 self.observe_started(worker_id, started, now_ms)?;
             }
             Some(worker_to_server::Message::ExecutionFinished(finished)) => {
-                self.observe_finished(worker_id, finished, now_ms)?;
+                self.observe_finished(worker_id, &finished, now_ms)?;
             }
             Some(worker_to_server::Message::CancellationAcknowledged(acknowledged)) => {
                 self.observe_cancellation_acknowledged(worker_id, acknowledged, now_ms)?;
             }
-            Some(worker_to_server::Message::OutputChunk(_)) => {}
+            Some(worker_to_server::Message::OutputChunk(output)) => {
+                self.observe_output(worker_id, &output, now_ms)?;
+            }
             Some(worker_to_server::Message::Hello(_)) => {
                 return Err(Status::invalid_argument(
                     "hello is only valid as the first frame",
@@ -717,6 +770,112 @@ impl WorkerControlService {
         )))
     }
 
+    fn record_run_started(
+        &self,
+        contract: &AssignmentContract,
+        now_ms: u64,
+    ) -> Result<AppendOutcome, InteractionError> {
+        let mut frame = ProducerEvent::new(
+            contract.task_id.clone(),
+            Producer::new("alloyport-server", "controller"),
+            Event::RunStarted {
+                task: contract.task_id.clone(),
+            },
+        );
+        frame.task_id = Some(contract.task_id.clone());
+        frame.emitted_at_unix_ms = now_ms;
+        frame.authority = Authority::Observed;
+        frame.visibility = Visibility::User;
+        self.interactions
+            .append(&format!("task:{}:run-started", contract.task_id), &frame)
+    }
+
+    fn record_command_started(
+        &self,
+        worker_id: &str,
+        attempt_id: &str,
+        now_ms: u64,
+    ) -> Result<AppendOutcome, Status> {
+        let assignment = self
+            .repository
+            .assignment(attempt_id)
+            .map_err(repository_status)?
+            .ok_or_else(|| Status::failed_precondition("started attempt is unknown"))?;
+        let frame = worker_event(
+            &assignment.contract,
+            worker_id,
+            now_ms,
+            Event::CommandStarted {
+                command: assignment.contract.execution.argv.join(" "),
+                cwd: Some(assignment.contract.execution.working_directory.clone()),
+                execution_site: worker_id.to_owned(),
+                description: Some("worker assignment execution".into()),
+            },
+        );
+        self.interactions
+            .append(&format!("attempt:{attempt_id}:command-started"), &frame)
+            .map_err(|error| interaction_status(&error))
+    }
+
+    fn record_command_finished(
+        &self,
+        worker_id: &str,
+        finished: &ExecutionFinished,
+        now_ms: u64,
+    ) -> Result<(), Status> {
+        self.record_command_started(worker_id, &finished.attempt_id, now_ms)?;
+        let assignment = self
+            .repository
+            .assignment(&finished.attempt_id)
+            .map_err(repository_status)?
+            .ok_or_else(|| Status::failed_precondition("finished attempt is unknown"))?;
+        for (artifact, reference, suffix) in [
+            (finished.stdout.as_ref(), "stdout", "stdout"),
+            (finished.stderr.as_ref(), "stderr", "stderr"),
+            (finished.receipt.as_ref(), "receipt", "receipt"),
+        ] {
+            let Some(artifact) = artifact else {
+                continue;
+            };
+            let frame = worker_event(
+                &assignment.contract,
+                worker_id,
+                now_ms,
+                Event::ArtifactProduced {
+                    artifact: event_artifact(artifact, reference),
+                },
+            );
+            self.interactions
+                .append(
+                    &format!("attempt:{}:artifact:{suffix}", finished.attempt_id),
+                    &frame,
+                )
+                .map_err(|error| interaction_status(&error))?;
+        }
+        let completion = worker_event(
+            &assignment.contract,
+            worker_id,
+            now_ms,
+            Event::CommandCompleted {
+                exit_code: finished.exit_code.unwrap_or(-1),
+                elapsed_ms: finished.elapsed_ms,
+                timed_out: finished.outcome
+                    == i32::from(alloyport_proto::v1::AttemptOutcome::TimedOut),
+                output_artifact: finished
+                    .stdout
+                    .as_ref()
+                    .map(|artifact| event_artifact(artifact, "stdout")),
+            },
+        );
+        self.interactions
+            .append(
+                &format!("attempt:{}:command-completed", finished.attempt_id),
+                &completion,
+            )
+            .map_err(|error| interaction_status(&error))?;
+        Ok(())
+    }
+
     fn observe_heartbeat(
         &self,
         worker_id: &str,
@@ -776,19 +935,22 @@ impl WorkerControlService {
         started: ExecutionStarted,
         now_ms: u64,
     ) -> Result<ObservationDisposition, Status> {
-        self.observe(
+        let attempt_id = started.attempt_id.clone();
+        let disposition = self.observe(
             worker_id,
             started.assignment_id,
             started.attempt_id,
             now_ms,
             AttemptObservation::Started,
-        )
+        )?;
+        self.record_command_started(worker_id, &attempt_id, now_ms)?;
+        Ok(disposition)
     }
 
     fn observe_finished(
         &self,
         worker_id: &str,
-        finished: ExecutionFinished,
+        finished: &ExecutionFinished,
         now_ms: u64,
     ) -> Result<ObservationDisposition, Status> {
         if let Some(uploads) = self.artifact_metadata.as_ref() {
@@ -796,25 +958,116 @@ impl WorkerControlService {
                 uploads,
                 worker_id,
                 &finished.attempt_id,
-                &finished,
+                finished,
                 now_ms,
             )?;
         }
-        self.observe(
+        let observation = FinishedObservation {
+            outcome: finished.outcome,
+            exit_code: finished.exit_code,
+            elapsed_ms: finished.elapsed_ms,
+            receipt: finished.receipt.as_ref().map(artifact_to_identity),
+            stdout: finished.stdout.as_ref().map(artifact_to_identity),
+            stderr: finished.stderr.as_ref().map(artifact_to_identity),
+            detail: finished.detail.clone(),
+        };
+        let disposition = self.observe(
             worker_id,
-            finished.assignment_id,
-            finished.attempt_id,
+            finished.assignment_id.clone(),
+            finished.attempt_id.clone(),
             now_ms,
-            AttemptObservation::Finished(FinishedObservation {
-                outcome: finished.outcome,
-                exit_code: finished.exit_code,
-                elapsed_ms: finished.elapsed_ms,
-                receipt: finished.receipt.as_ref().map(artifact_to_identity),
-                stdout: finished.stdout.as_ref().map(artifact_to_identity),
-                stderr: finished.stderr.as_ref().map(artifact_to_identity),
-                detail: finished.detail,
-            }),
-        )
+            AttemptObservation::Finished(observation),
+        )?;
+        self.record_command_finished(worker_id, finished, now_ms)?;
+        Ok(disposition)
+    }
+
+    fn observe_output(
+        &self,
+        worker_id: &str,
+        output: &OutputChunk,
+        now_ms: u64,
+    ) -> Result<(), Status> {
+        let assignment = self
+            .repository
+            .assignment(&output.attempt_id)
+            .map_err(repository_status)?
+            .ok_or_else(|| Status::failed_precondition("output attempt is unknown"))?;
+        if assignment.worker_id != worker_id {
+            return Err(Status::permission_denied(format!(
+                "attempt {} belongs to another worker",
+                output.attempt_id
+            )));
+        }
+        if assignment.state != AssignmentState::Running {
+            return Err(Status::failed_precondition(format!(
+                "output attempt {} is not running",
+                output.attempt_id
+            )));
+        }
+        let stream =
+            WorkerOutputStream::try_from(output.stream).unwrap_or(WorkerOutputStream::Unspecified);
+        let event_stream = match stream {
+            WorkerOutputStream::Stdout => EventOutputStream::Stdout,
+            WorkerOutputStream::Stderr => EventOutputStream::Stderr,
+            WorkerOutputStream::Unspecified => {
+                return Err(Status::invalid_argument("output stream is unspecified"));
+            }
+        };
+        let text = String::from_utf8_lossy(&output.payload);
+        let display_sanitized =
+            output.display_sanitized || matches!(text, std::borrow::Cow::Owned(_));
+        let frame = worker_event(
+            &assignment.contract,
+            worker_id,
+            now_ms,
+            Event::CommandOutput {
+                stream: event_stream,
+                byte_offset: output.byte_offset,
+                text: text.into_owned(),
+                display_sanitized,
+            },
+        );
+        let appended = self
+            .interactions
+            .append_output(
+                &format!(
+                    "attempt:{}:output:{}:{}",
+                    output.attempt_id, output.stream, output.byte_offset
+                ),
+                &output.attempt_id,
+                output.stream,
+                output.byte_offset,
+                &output.payload,
+                &frame,
+            )
+            .map_err(|error| interaction_status(&error))?;
+        if appended.missing_bytes_before != 0 {
+            let expected = output
+                .byte_offset
+                .saturating_sub(appended.missing_bytes_before);
+            let warning = worker_event(
+                &assignment.contract,
+                worker_id,
+                now_ms,
+                Event::Warning {
+                    message: format!(
+                        "live {stream:?} preview omitted bytes {expected}..{}; complete output remains in the terminal Artifact",
+                        output.byte_offset
+                    ),
+                },
+            );
+            self.interactions
+                .append(
+                    &format!(
+                        "attempt:{}:output-gap:{}:{expected}:{}",
+                        output.attempt_id, output.stream, output.byte_offset
+                    ),
+                    &warning,
+                )
+                .map_err(|error| interaction_status(&error))?;
+        }
+        Ok(())
     }
 
     fn observe_cancellation_acknowledged(
@@ -1156,6 +1409,47 @@ fn identity_to_artifact(identity: &ArtifactIdentity) -> ArtifactRef {
         digest: identity.digest.clone(),
         size_bytes: identity.size_bytes,
         media_type: identity.media_type.clone(),
+    }
+}
+
+fn event_artifact(artifact: &ArtifactRef, reference: &str) -> EventArtifactRef {
+    EventArtifactRef {
+        digest: artifact.digest.clone(),
+        media_type: artifact.media_type.clone(),
+        size_bytes: artifact.size_bytes,
+        reference: reference.into(),
+    }
+}
+
+fn worker_event(
+    contract: &AssignmentContract,
+    worker_id: &str,
+    emitted_at_unix_ms: u64,
+    event: Event,
+) -> ProducerEvent {
+    let mut frame = ProducerEvent::new(
+        contract.task_id.clone(),
+        Producer::new("alloyport-worker", worker_id),
+        event,
+    );
+    frame.task_id = Some(contract.task_id.clone());
+    frame.operation_id = Some(contract.attempt_id.clone());
+    frame.emitted_at_unix_ms = emitted_at_unix_ms;
+    frame.authority = Authority::Observed;
+    frame.visibility = Visibility::User;
+    frame
+}
+
+fn interaction_status(error: &InteractionError) -> Status {
+    let detail = error.to_string();
+    match error {
+        InteractionError::InvalidFrame(_)
+        | InteractionError::ConflictingDedupKey(_)
+        | InteractionError::ConflictingOutput { .. }
+        | InteractionError::ValueOutOfRange(_) => Status::invalid_argument(detail),
+        InteractionError::Sqlite(_)
+        | InteractionError::Serialization(_)
+        | InteractionError::LockPoisoned => Status::internal(detail),
     }
 }
 

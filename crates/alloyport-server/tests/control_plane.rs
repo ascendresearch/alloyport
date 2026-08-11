@@ -190,6 +190,8 @@ async fn accepted_assignment_replay_after_restart_does_not_regress_state()
         first_server.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Accepted)
     })
     .await?;
+    let canonical_before_restart = first_server.interaction_events("task-1")?;
+    assert_eq!(canonical_before_restart.len(), 1);
     first_session.abort();
     let _ = first_session.await;
     let _ = first_shutdown_send.send(());
@@ -220,6 +222,11 @@ async fn accepted_assignment_replay_after_restart_does_not_regress_state()
         recovered_server.assignment_state("attempt-1")?,
         Some(AssignmentState::Accepted),
         "an idempotent replay must not regress accepted state to sent"
+    );
+    assert_eq!(
+        recovered_server.interaction_events("task-1")?,
+        canonical_before_restart,
+        "canonical identity and sequence must survive controller restart"
     );
 
     second_session.abort();
@@ -620,11 +627,44 @@ async fn fake_execution_resumes_artifact_uploads_before_controller_accepts_termi
         .finished_attempt("attempt-1")?
         .expect("terminal state is committed only after all remote finalizations");
     assert_uploaded_execution_artifacts(&uploads, &finished, stdout_digest)?;
+    let events = service.interaction_events("task-1")?;
+    assert_canonical_fake_events(&events)?;
 
     worker_task.abort();
     let _ = worker_task.await;
     let _ = shutdown_send.send(());
     server_task.await??;
+    Ok(())
+}
+
+fn assert_canonical_fake_events(
+    events: &[alloyport_events::EventEnvelope],
+) -> Result<(), Box<dyn Error>> {
+    assert_eq!(events.len(), 7);
+    assert!(matches!(
+        events[0].event,
+        alloyport_events::Event::RunStarted { .. }
+    ));
+    assert!(matches!(
+        events[1].event,
+        alloyport_events::Event::CommandStarted { .. }
+    ));
+    assert!(matches!(
+        events[2].event,
+        alloyport_events::Event::CommandOutput { .. }
+    ));
+    assert!(events[3..6].iter().all(|event| matches!(
+        event.event,
+        alloyport_events::Event::ArtifactProduced { .. }
+    )));
+    assert!(matches!(
+        events[6].event,
+        alloyport_events::Event::CommandCompleted { .. }
+    ));
+    let mut reducer = alloyport_events::RunReducer::new();
+    for event in events {
+        reducer.apply(event)?;
+    }
     Ok(())
 }
 
