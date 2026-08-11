@@ -19,6 +19,13 @@ stable identifier.
 | 0009 | [Product definition and staged CUDA scope](0009-product-definition-and-staged-cuda-scope.md) | Accepted |
 | 0010 | [Interactive terminal and event stream](0010-interactive-terminal-and-event-stream.md) | Accepted; first vertical slice implemented |
 | 0011 | [Outbound worker control plane](0011-outbound-worker-control-plane.md) | Accepted; first contract slice implemented |
+| 0012 | [Filesystem artifact content-addressed store](0012-filesystem-artifact-cas.md) | Accepted; implemented |
+| 0013 | [Durable certificate enrollment and stable worker identity](0013-durable-certificate-enrollment.md) | Accepted; implemented |
+| 0014 | [Durable Artifact references and conservative garbage collection](0014-artifact-references-and-garbage-collection.md) | Accepted; implemented |
+| 0015 | [Typed deterministic fake executor runtime](0015-typed-fake-executor-runtime.md) | Accepted; implemented |
+| 0016 | [Gated remote execution Artifact publication](0016-gated-remote-artifact-publication.md) | Accepted; implemented |
+| 0017 | [Canonical worker interaction-event ingestion](0017-canonical-worker-interaction-events.md) | Accepted; implemented |
+| 0018 | [Fixed CUDA container execution contract](0018-fixed-cuda-container-contract.md) | Accepted; contract slice implemented |
 
 ## Convention
 

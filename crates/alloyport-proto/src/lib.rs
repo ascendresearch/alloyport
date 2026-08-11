@@ -29,7 +29,7 @@ pub mod artifact_v1 {
 }
 
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 2;
+pub const PROTOCOL_MINOR: u32 = 3;
 
 /// Why an incoming wire message cannot enter the `AlloyPort` domain.
 #[derive(Clone, Debug, Eq, PartialEq)]

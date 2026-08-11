@@ -36,6 +36,10 @@ Read these documents before changing architecture or implementation:
     executor inputs/outcomes, output spooling, terminal ordering, and fake restart semantics.
 11. [`design/0016-gated-remote-artifact-publication.md`](design/0016-gated-remote-artifact-publication.md)
     for resumable worker publication, terminal gating, controller validation, and typed grants.
+12. [`design/0017-canonical-worker-interaction-events.md`](design/0017-canonical-worker-interaction-events.md)
+    for durable worker-event translation, replay identity, output offset conflicts, and gap handling.
+13. [`design/0018-fixed-cuda-container-contract.md`](design/0018-fixed-cuda-container-contract.md)
+    for the fixed CUDA fixture, local allowlisting, bundle materialization, and derived Docker plan.
 
 Design documents state intended behavior. Tests and code state what this revision actually implements.
 
@@ -147,8 +151,9 @@ Release construction requires every gate and independent evidence.
 ### `alloyport-events`
 
 Typed producer events, canonical event envelopes, per-run sequencing, lifecycle reduction, JSONL,
-and plain rendering. This is the first Codex-like interaction vertical slice. The server has not yet
-translated worker protocol messages into these events.
+and plain rendering. This is the first Codex-like interaction vertical slice. The server now
+translates assigned worker command lifecycle, output previews, and terminal Artifact observations
+into a durable canonical stream.
 
 ### `alloyport-cli`
 
@@ -207,6 +212,14 @@ Current behavior:
 - rejects cumulative acknowledgements that regress or name a server sequence not yet sent;
 - records accepted, rejected, running, and finished states without regressing accepted/running state
   during replay;
+- appends a durable canonical `run.started` when a task is first assigned and explicitly translates
+  worker start, output, terminal Artifact, and command-completion observations before acknowledging
+  their durable frames;
+- assigns stable per-task event identity and sequence in SQLite, deduplicates lifecycle replay across
+  changed transport sessions and process instances, and preserves the original canonical envelope;
+- checks raw output replay by attempt, stream, and byte offset, rejects changed or overlapping bytes,
+  and emits a visible warning for accepted forward gaps while treating final Artifacts as complete
+  output authority;
 - renews active leases from heartbeats, expires them with a periodic reaper, and retains a late
   finished observation as stale rather than replacing the expired attempt state;
 - recovers queued and non-terminal assignments after a server process restart when the worker
@@ -335,6 +348,21 @@ The worker library also implements the Design 0015 deterministic fake executor r
   from the server's committed offset, validates the completed remote identity, and prevents the
   terminal journal/outbox commit until all three objects are finalized.
 
+Design 0018 adds the first real-CUDA contract boundary without starting Docker from the worker yet:
+
+- protocol minor 3 defines a dedicated `CudaFixture` executor kind that remains default-deny;
+- local policy binds one fixture, bundle digest, OCI manifest digest, expected local image ID,
+  enumerated device, sandbox root, and resource ceilings;
+- verified JSON bundle materialization writes only fixed worker-owned filenames, survives restart
+  idempotently, and rejects changed bytes or an inner source-digest mismatch;
+- Docker create argv is derived without a shell, arbitrary environment, server-selected mount/device,
+  or network, and splits the declared disk budget across bounded `/work` and `/tmp` tmpfs.
+
+The self-contained fixture covers CUDA compilation, allocation/copy, a real kernel launch,
+synchronization, and deterministic device-result verification. An explicit ephemeral smoke on the
+development GB10 produced `PASS` for 1,048,576 elements and checksum `670562424`; it did not yet run
+through `OutboundWorker`.
+
 When Artifact metadata is attached to `WorkerControlService`, the controller accepts terminal
 stdout/stderr/receipt only when the reporting stable worker finalized exact owner-scoped upload keys
 with matching digest, size, and media type. It then creates idempotent `AssignmentOutput` and
@@ -392,7 +420,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 78 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
+There are 82 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -421,7 +449,13 @@ the task is still running, verifies terminal replay without a second executor/re
 running fake task through the server control API.
 Another combined control/Artifact loopback test begins with a partially committed stdout upload,
 resumes it from the durable server offset, finalizes empty stderr and the receipt, creates typed
-controller references, and only then accepts the terminal lifecycle frame.
+controller references, and only then accepts the terminal lifecycle frame. It also reduces the
+persisted canonical run/start/output/Artifact/completion stream. Restart coverage verifies that a
+replayed accepted assignment neither duplicates nor renumbers its canonical run event.
+
+Interaction repository coverage includes transactional per-run sequencing, semantic replay across
+changed timestamps and producer instances, conflicting deduplication keys, exact raw output replay,
+changed and overlapping output rejection, visible forward gaps, and SQLite close/reopen recovery.
 
 Fake executor coverage includes independent output offsets, bounded preview backpressure, timeout,
 cancellation, output exhaustion, deterministic elapsed time, stdout/stderr/receipt CAS spooling,
@@ -484,15 +518,19 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
   quotas are implemented. Worker terminal ingestion now creates typed output/receipt references;
   other controller/public grant operations and automatic retention/collection scheduling remain
   absent. There is no object-store adapter or filesystem-capacity monitor.
-- No container/process executor, resource enforcement, running-process signal delivery, or device
-  reset. Attached fake runs emit ephemeral gRPC output previews and accept control-stream
-  cancellation; workers with no executor attached still terminate cancelled admitted attempts
-  directly.
+- No container/process supervisor, running-process signal delivery, or device reset. A fixed CUDA
+  contract, verified bundle materializer, and resource-bounded Docker create planner exist, but no
+  worker code invokes or reattaches to Docker yet. Attached fake runs emit ephemeral gRPC output
+  previews and accept control-stream cancellation; workers with no executor attached still terminate
+  cancelled admitted attempts directly.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
-- The fake runtime produces observed `alloyport-events` command/artifact frames. The outbound stream
-  carries raw output previews, but the server currently discards them after protocol validation and
-  does not canonically ingest worker lifecycle messages.
-- No external scheduling API, task controller integration, or terminal UI worker view.
+- Assigned worker lifecycle and raw previews are durably translated into observed canonical events,
+  but there is no public replay/subscription API, broadcast channel, authorization boundary,
+  retention/redaction scheduler, or terminal UI worker view. Preview gaps are visible and final
+  Artifacts retain the complete bytes; preview coalescing is not implemented.
+- No external scheduling API or task controller integration. The worker translator intentionally
+  does not emit `run.completed`, gate verdicts, or audited transitions because it does not own those
+  decisions.
 - mTLS enrollment, rotation, revocation, Artifact authorization, and worker hello binding are covered
   end to end. Certificate issuance, online enrollment, CA revocation/expiry monitoring, pool/role
   authorization, and replicated identity storage are not implemented.
@@ -504,23 +542,22 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 
 ## Recommended next implementation order
 
-### 1. Canonically ingest worker interaction events
-
-The Design 0015 runtime now launches after admission, multiplexes live output, survives session
-reconnect, and accepts cancellation through its active token. Design 0016 now uploads and validates
-the local spool before terminal acceptance and creates durable output/receipt roots. Next,
-canonically ingest started/output/artifact/completed observations server-side under Design 0010,
-including replay and preview deduplication rules. Keep GC explicit.
-
-Keep shell execution disabled. If later enabled for probes, require an explicit worker policy and a
-separate executor kind; do not reduce assignments to a shell string.
-
-### 2. One CUDA vertical slice
+### 1. One CUDA vertical slice
 
 Port the existing content-addressed bundle-to-container behavior from the Python harness into the new
 worker path. Do not copy the old SSH wrapper. Run a fixed fixture once through the old path and once
 through the new path as separate attempts, then compare bundle digest, image/environment identity,
 stdout/stderr, exit classification, and receipt fields.
+
+The typed executor, fixture bundle, local allowlist, and Docker create plan are implemented. Next add
+the durable Docker supervisor, Artifact bundle download/grant, bounded output, cancellation/timeout,
+reattach, environment receipt, and outbound-session integration. Keep shell execution disabled.
+
+### 2. Public event replay and subscription
+
+Expose authorized per-run replay and a bounded live subscription over the canonical repository.
+Define reconnect cursors, slow-consumer behavior, redaction, and retention before attaching a TUI;
+the transport must not become a second event type system.
 
 ### 3. One Ascend vertical slice
 
@@ -538,11 +575,11 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Add canonical worker-event ingestion without merging transport and interaction-event types:
+Implement one fixed CUDA execution vertical slice without reviving the SSH runtime path:
 
-> Read `docs/HANDOFF.md`, Design 0010, Design 0011, Design 0015, and Design 0016. Add a durable server
-> event repository and explicit worker-protocol-to-`alloyport-events` translation. Give durable
-> lifecycle frames stable deduplication identities, define how ephemeral output offsets are checked
-> and deduplicated across reconnect, and sequence canonical events per task. Test duplicate terminal
-> delivery, output replay/offset conflicts, disconnect gaps, canonical restart recovery, and ensure
-> observations cannot publish verdict or audit authority.
+> Read `docs/HANDOFF.md` and Designs 0007, 0011, 0015 through 0018. Implement a durable Docker
+> supervisor behind the existing `CudaFixturePolicy`: verify the local image ID, grant/download the
+> input bundle, create or reattach by deterministic container identity, bound stdout/stderr, stop on
+> cancellation/timeout, retain recovery state until Artifact publication and terminal journal commit,
+> and record bundle/source/image/driver/device facts in the receipt. Attach it to `OutboundWorker`,
+> test the state machine with a fake engine, then run the explicit GB10 smoke through loopback gRPC.

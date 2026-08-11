@@ -1,6 +1,7 @@
 //! Outbound worker client and local assignment admission state.
 
 pub mod artifact_upload;
+pub mod cuda;
 pub mod executor;
 pub mod journal;
 
@@ -125,6 +126,7 @@ impl From<AttemptStoreError> for WorkerError {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AdmissionPolicy {
     allow_shell: bool,
+    allow_cuda_fixture: bool,
 }
 
 impl AdmissionPolicy {
@@ -132,6 +134,13 @@ impl AdmissionPolicy {
     #[must_use]
     pub const fn allowing_shell(mut self) -> Self {
         self.allow_shell = true;
+        self
+    }
+
+    /// Returns a policy that permits the dedicated, locally constrained CUDA fixture executor.
+    #[must_use]
+    pub const fn allowing_cuda_fixture(mut self) -> Self {
+        self.allow_cuda_fixture = true;
         self
     }
 }
@@ -189,15 +198,19 @@ impl WorkerState {
     /// Returns [`WorkerError`] if validation fails or the same attempt ID is reused for other bytes.
     pub fn admit(&self, assignment: &Assignment) -> Result<AdmissionOutcome, WorkerError> {
         validate_assignment(assignment).map_err(WorkerError::InvalidAssignment)?;
-        if assignment
-            .execution
-            .as_ref()
-            .is_some_and(|execution| execution.executor_kind == i32::from(ExecutorKind::Shell))
-            && !self.policy.allow_shell
-        {
-            return Err(WorkerError::PolicyViolation(
-                "shell executor is disabled".to_owned(),
-            ));
+        if let Some(execution) = assignment.execution.as_ref() {
+            let executor = ExecutorKind::try_from(execution.executor_kind)
+                .unwrap_or(ExecutorKind::Unspecified);
+            if executor == ExecutorKind::Shell && !self.policy.allow_shell {
+                return Err(WorkerError::PolicyViolation(
+                    "shell executor is disabled".to_owned(),
+                ));
+            }
+            if executor == ExecutorKind::CudaFixture && !self.policy.allow_cuda_fixture {
+                return Err(WorkerError::PolicyViolation(
+                    "CUDA fixture executor is disabled".to_owned(),
+                ));
+            }
         }
         let stored = assignment_to_stored(assignment);
         let outcome = self.store.admit(&stored, now_unix_ms())?;
@@ -1386,6 +1399,26 @@ mod tests {
             WorkerState::with_policy(AdmissionPolicy::default().allowing_shell())
                 .admit(&shell)
                 .expect("explicit policy allows shell"),
+            AdmissionOutcome::New
+        );
+    }
+
+    #[test]
+    fn cuda_fixture_executor_requires_explicit_local_policy() {
+        let mut cuda = assignment("cuda-vectoradd-v1");
+        cuda.execution
+            .as_mut()
+            .expect("fixture has execution")
+            .executor_kind = ExecutorKind::CudaFixture.into();
+
+        assert!(matches!(
+            WorkerState::default().admit(&cuda),
+            Err(WorkerError::PolicyViolation(_))
+        ));
+        assert_eq!(
+            WorkerState::with_policy(AdmissionPolicy::default().allowing_cuda_fixture())
+                .admit(&cuda)
+                .expect("explicit policy allows the typed CUDA executor"),
             AdmissionOutcome::New
         );
     }

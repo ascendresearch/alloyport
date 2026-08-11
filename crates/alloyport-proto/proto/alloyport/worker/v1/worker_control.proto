@@ -130,6 +130,9 @@ enum ExecutorKind {
   EXECUTOR_KIND_PROCESS = 1;
   EXECUTOR_KIND_CONTAINER = 2;
   EXECUTOR_KIND_SHELL = 3;
+  // Policy-bound Phase 1 CUDA fixture execution. This is deliberately not a generic container
+  // command: the worker must match the fixture, bundle, image, resources, and device locally.
+  EXECUTOR_KIND_CUDA_FIXTURE = 4;
 }
 
 message EnvironmentVariable {
