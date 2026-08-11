@@ -2,7 +2,7 @@
 //!
 //! Database drivers, transactions, schema migrations, and SQL belong to outer adapters.
 
-use alloyport_core::{AttemptOutcome, ExecutionKind, NetworkPolicy};
+use alloyport_core::{AttemptOutcome, ExecutionKind, NetworkPolicy, RejectionReason};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -98,7 +98,7 @@ pub enum WorkerOutboxPayload {
     AssignmentRejected {
         assignment_id: String,
         attempt_id: String,
-        reason: i32,
+        reason: RejectionReason,
         detail: String,
     },
     ExecutionStarted {

@@ -306,12 +306,13 @@ directories (including their migration and adapter-test files).
   registry and public `ExecutionBackend` composition port, including duplicate-capability and
   third-party probe-backend coverage.
 - [x] First R3 shared-domain slices: `alloyport_core::{ExecutionKind, NetworkPolicy,
-  AttemptOutcome}` replace raw integers in both server and worker durable contracts and are used by
-  backend registration, application policy, and fake/CUDA runtime classification. Their serde
-  representations remain the existing numeric JSON; executor/outcome unspecified or unknown and
-  network-policy unknown values cannot enter the domain, while network unspecified remains the
-  protocol-compatible default subject to backend policy. Protobuf conversion occurs at transport
-  mapping edges. Rejection reason, typed-ID, and complete immutable-contract migration remain.
+  AttemptOutcome, RejectionReason}` replace raw integers in both server and worker durable contracts
+  and are used by backend registration, application policy, fake/CUDA runtime classification, and
+  admission rejection. Their serde representations remain the existing numeric JSON; unspecified
+  or unknown executor/outcome/rejection values and unknown network-policy values cannot enter the
+  domain, while network unspecified remains the protocol-compatible default subject to backend
+  policy. Protobuf conversion occurs at transport mapping edges. Typed-ID and complete immutable-
+  contract migration remain.
 - [x] Worker executor responsibilities split: the durable fake execution coordinator is 501 lines
   (down from a 1,395-line mixed module), the shared local-spool/remote-publication boundary is 113
   lines, canonical event projection is 56 lines, and deterministic fake process behavior is 344

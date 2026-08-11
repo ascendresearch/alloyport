@@ -151,7 +151,7 @@ pub(super) fn outbox_to_wire(payload: WorkerOutboxPayload) -> worker_to_server::
         } => worker_to_server::Message::AssignmentRejected(AssignmentRejected {
             assignment_id,
             attempt_id,
-            reason,
+            reason: reason.into(),
             detail,
         }),
         WorkerOutboxPayload::ExecutionStarted {

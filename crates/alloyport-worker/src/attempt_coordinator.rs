@@ -2,8 +2,8 @@
 
 use super::{OutboundWorker, WorkerError};
 use crate::journal::{LocalAttemptPhase, StoredFinished, WorkerOutboxPayload};
-use alloyport_core::{AttemptOutcome, ExecutionKind};
-use alloyport_proto::v1::{Assignment, RejectionReason, WorkerToServer};
+use alloyport_core::{AttemptOutcome, ExecutionKind, RejectionReason};
+use alloyport_proto::v1::{Assignment, WorkerToServer};
 use alloyport_proto::validate_assignment;
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
@@ -31,7 +31,7 @@ impl OutboundWorker {
                     .enqueue_lifecycle_async(WorkerOutboxPayload::AssignmentRejected {
                         assignment_id: assignment_id.clone(),
                         attempt_id: attempt_id.clone(),
-                        reason: RejectionReason::Invalid.into(),
+                        reason: RejectionReason::Invalid,
                         detail: error.to_string(),
                     })
                     .await?;
@@ -42,7 +42,7 @@ impl OutboundWorker {
                     .enqueue_lifecycle_async(WorkerOutboxPayload::AssignmentRejected {
                         assignment_id: assignment_id.clone(),
                         attempt_id: attempt_id.clone(),
-                        reason: RejectionReason::Conflict.into(),
+                        reason: RejectionReason::Conflict,
                         detail: "attempt ID conflicts with locally admitted content".to_owned(),
                     })
                     .await?;
@@ -53,7 +53,7 @@ impl OutboundWorker {
                     .enqueue_lifecycle_async(WorkerOutboxPayload::AssignmentRejected {
                         assignment_id: assignment_id.clone(),
                         attempt_id: attempt_id.clone(),
-                        reason: RejectionReason::Policy.into(),
+                        reason: RejectionReason::Policy,
                         detail,
                     })
                     .await?;

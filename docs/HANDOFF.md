@@ -213,9 +213,9 @@ in dedicated implementation modules, as do assignment and attempt/lease operatio
 repository shell now owns only connection creation, migrations, and locking.
 The public `storage::*` contract is a compatibility facade over separate clock policy,
 transport-independent model, and capability-port/error modules.
-Server and worker durable contracts share `alloyport_core::ExecutionKind`, `NetworkPolicy`, and
-`AttemptOutcome`; persisted JSON stays numeric for compatibility, while Protobuf conversion is
-confined to transport mappings and observation ingestion.
+Server and worker durable contracts share `alloyport_core::ExecutionKind`, `NetworkPolicy`,
+`AttemptOutcome`, and `RejectionReason`; persisted JSON stays numeric for compatibility, while
+Protobuf conversion is confined to transport mappings and observation ingestion.
 Canonical Interaction persistence is capability-segregated into event-write, event-read, and
 run-access ports. Its SQLite schema shell, event/output log, and authorization grants are separate
 implementation modules, alongside independent replay-to-live broadcast and display sanitization.

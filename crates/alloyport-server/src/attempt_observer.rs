@@ -7,7 +7,7 @@ use super::{
     artifact_to_identity, repository_status, validate_and_grant_finished_artifacts,
     worker_to_server,
 };
-use alloyport_core::AttemptOutcome;
+use alloyport_core::{AttemptOutcome, RejectionReason};
 
 impl WorkerControlService {
     pub(super) fn observe_message(
@@ -103,7 +103,8 @@ impl WorkerControlService {
             rejected.attempt_id,
             now_ms,
             AttemptObservation::Rejected {
-                reason: rejected.reason,
+                reason: RejectionReason::try_from(rejected.reason)
+                    .map_err(|error| Status::invalid_argument(error.to_string()))?,
                 detail: rejected.detail,
             },
         )

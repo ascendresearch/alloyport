@@ -4,7 +4,7 @@ mod execution;
 
 pub use execution::{
     AttemptOutcome, AttemptOutcomeError, ExecutionKind, ExecutionKindError, NetworkPolicy,
-    NetworkPolicyError,
+    NetworkPolicyError, RejectionReason, RejectionReasonError,
 };
 
 use std::collections::BTreeSet;

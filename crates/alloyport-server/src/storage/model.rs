@@ -1,7 +1,7 @@
 //! Transport-independent control-plane records and lifecycle values.
 
 use super::RepositoryError;
-use alloyport_core::{AttemptOutcome, ExecutionKind, NetworkPolicy};
+use alloyport_core::{AttemptOutcome, ExecutionKind, NetworkPolicy, RejectionReason};
 use serde::{Deserialize, Serialize};
 
 /// Worker registration persisted independently of its current network session.
@@ -154,11 +154,18 @@ pub struct LeaseRecord {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AttemptObservation {
-    Accepted { already_known: bool },
-    Rejected { reason: i32, detail: String },
+    Accepted {
+        already_known: bool,
+    },
+    Rejected {
+        reason: RejectionReason,
+        detail: String,
+    },
     Started,
     Finished(FinishedObservation),
-    CancellationAcknowledged { already_terminal: bool },
+    CancellationAcknowledged {
+        already_terminal: bool,
+    },
 }
 
 impl AttemptObservation {

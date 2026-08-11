@@ -169,6 +169,51 @@ impl Display for AttemptOutcomeError {
 
 impl Error for AttemptOutcomeError {}
 
+/// Durable reason a worker refused an assignment before execution.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[repr(i32)]
+#[serde(try_from = "i32", into = "i32")]
+pub enum RejectionReason {
+    Invalid = 1,
+    Unsupported = 2,
+    Policy = 3,
+    Capacity = 4,
+    Conflict = 5,
+}
+
+impl From<RejectionReason> for i32 {
+    fn from(reason: RejectionReason) -> Self {
+        reason as Self
+    }
+}
+
+impl TryFrom<i32> for RejectionReason {
+    type Error = RejectionReasonError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Invalid),
+            2 => Ok(Self::Unsupported),
+            3 => Ok(Self::Policy),
+            4 => Ok(Self::Capacity),
+            5 => Ok(Self::Conflict),
+            _ => Err(RejectionReasonError(value)),
+        }
+    }
+}
+
+/// A wire or persisted rejection-reason number is not part of the domain vocabulary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RejectionReasonError(pub i32);
+
+impl Display for RejectionReasonError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        write!(formatter, "invalid rejection reason {}", self.0)
+    }
+}
+
+impl Error for RejectionReasonError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +242,12 @@ mod tests {
             AttemptOutcome::IntegrityViolation
         );
         assert!(serde_json::from_str::<AttemptOutcome>("0").is_err());
+        assert_eq!(serde_json::to_string(&RejectionReason::Policy)?, "3");
+        assert_eq!(
+            serde_json::from_str::<RejectionReason>("5")?,
+            RejectionReason::Conflict
+        );
+        assert!(serde_json::from_str::<RejectionReason>("0").is_err());
         Ok(())
     }
 }
