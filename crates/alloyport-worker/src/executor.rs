@@ -106,6 +106,16 @@ pub struct ExecutionChunk {
     pub bytes: Vec<u8>,
 }
 
+/// A live, non-durable observation emitted while an execution is running.
+///
+/// Durable started/finished state remains authoritative in the worker journal. These observations
+/// are only a low-latency bridge for the currently connected control session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecutionObservation {
+    Started,
+    Output(ExecutionChunk),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutorResult {
     pub outcome: AttemptOutcome,
@@ -479,6 +489,12 @@ impl FakeExecutionRuntime {
         })
     }
 
+    /// Returns the stable logical worker identity recorded in fake receipts and events.
+    #[must_use]
+    pub fn worker_id(&self) -> &str {
+        &self.worker_id
+    }
+
     /// Executes one admitted fake attempt and commits its artifacts before its terminal journal row.
     ///
     /// # Errors
@@ -492,6 +508,30 @@ impl FakeExecutionRuntime {
         executor: &FakeExecutor,
         cancellation: &CancellationToken,
     ) -> Result<ExecutionRun, ExecutionRuntimeError> {
+        self.run_observed(state, attempt_id, executor, cancellation, |_| {})
+            .await
+    }
+
+    /// Executes one attempt while forwarding best-effort live observations to a caller.
+    ///
+    /// The observer is deliberately synchronous: the runtime's own bounded executor channel
+    /// remains the backpressure boundary, while a disconnected control session cannot terminate
+    /// or stall durable execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::run`].
+    pub async fn run_observed<F>(
+        &self,
+        state: &WorkerState,
+        attempt_id: &str,
+        executor: &FakeExecutor,
+        cancellation: &CancellationToken,
+        mut observer: F,
+    ) -> Result<ExecutionRun, ExecutionRuntimeError>
+    where
+        F: FnMut(ExecutionObservation) + Send,
+    {
         let _claim = AttemptClaim::acquire(Arc::clone(&self.active_attempts), attempt_id)?;
         let attempt = state
             .attempt(attempt_id)?
@@ -508,9 +548,10 @@ impl FakeExecutionRuntime {
             });
         }
         state.mark_running(attempt_id)?;
+        observer(ExecutionObservation::Started);
         let input = ExecutorInput::from(&attempt.assignment);
         let (result, mut events) = self
-            .execute_with_events(&input, executor, cancellation)
+            .execute_with_events(&input, executor, cancellation, &mut observer)
             .await;
         let persisted = self.persist_result(&input, result).await?;
         state.mark_finished(attempt_id, &persisted.finished)?;
@@ -523,12 +564,16 @@ impl FakeExecutionRuntime {
         })
     }
 
-    async fn execute_with_events(
+    async fn execute_with_events<F>(
         &self,
         input: &ExecutorInput,
         executor: &FakeExecutor,
         cancellation: &CancellationToken,
-    ) -> (ExecutorResult, Vec<ProducerEvent>) {
+        observer: &mut F,
+    ) -> (ExecutorResult, Vec<ProducerEvent>)
+    where
+        F: FnMut(ExecutionObservation) + Send,
+    {
         let mut events = vec![producer_event(
             &self.worker_id,
             input,
@@ -548,6 +593,7 @@ impl FakeExecutionRuntime {
                     result = &mut execution => break result,
                     chunk = receiver.recv() => {
                         if let Some(chunk) = chunk {
+                            observer(ExecutionObservation::Output(chunk.clone()));
                             events.push(output_event(&self.worker_id, input, &chunk));
                         }
                     }
@@ -556,6 +602,7 @@ impl FakeExecutionRuntime {
         };
         drop(sender);
         while let Some(chunk) = receiver.recv().await {
+            observer(ExecutionObservation::Output(chunk.clone()));
             events.push(output_event(&self.worker_id, input, &chunk));
         }
         (result, events)
@@ -909,11 +956,19 @@ mod tests {
             FakeStep::Stdout(b"world".to_vec()),
             FakeStep::Stderr(b"warning".to_vec()),
         ]));
+        let mut observations = Vec::new();
         let run = runtime
-            .run(&state, "attempt-1", &executor, &CancellationToken::new())
+            .run_observed(
+                &state,
+                "attempt-1",
+                &executor,
+                &CancellationToken::new(),
+                |observation| observations.push(observation),
+            )
             .await?;
         assert!(!run.replayed_terminal);
         assert_eq!(run.finished.outcome, i32::from(AttemptOutcome::Succeeded));
+        assert_live_observations(&observations);
         assert_eq!(state.outbox_len()?, 3);
         assert_eq!(run.reference_intents.len(), 3);
         assert_eq!(
@@ -1080,6 +1135,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn assert_live_observations(observations: &[ExecutionObservation]) {
+        assert_eq!(
+            observations,
+            [
+                ExecutionObservation::Started,
+                ExecutionObservation::Output(ExecutionChunk {
+                    stream: ExecutionStream::Stdout,
+                    byte_offset: 0,
+                    bytes: b"hello ".to_vec(),
+                }),
+                ExecutionObservation::Output(ExecutionChunk {
+                    stream: ExecutionStream::Stdout,
+                    byte_offset: 6,
+                    bytes: b"world".to_vec(),
+                }),
+                ExecutionObservation::Output(ExecutionChunk {
+                    stream: ExecutionStream::Stderr,
+                    byte_offset: 0,
+                    bytes: b"warning".to_vec(),
+                }),
+            ]
+        );
     }
 
     fn executor_input(timeout_ms: u64, output_limit_bytes: u64) -> ExecutorInput {

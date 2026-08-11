@@ -306,7 +306,7 @@ Current behavior:
   per-connection delivery mappings after seven days;
 - denies the shell executor by default; only an explicit local `AdmissionPolicy` can allow it;
 - exits a session on drain; cancellation is durably acknowledged and becomes terminal immediately
-  while no executor process exists.
+  while no executor is attached.
 
 The worker library also implements the Design 0015 deterministic fake executor runtime:
 
@@ -321,12 +321,18 @@ The worker library also implements the Design 0015 deterministic fake executor r
   receipt reference intents without granting server authorization;
 - returns an existing finished record without rerunning or duplicating events, safely reruns only the
   side-effect-free fake plan from a restored `Running` state, and prevents two in-process executors
-  from claiming one attempt.
+  from claiming one attempt;
+- can be explicitly attached to `OutboundWorker`, which launches it only after durable admission and
+  accepted-message delivery, keeps one active-attempt task registry across stream reconnects,
+  multiplexes raw-byte stdout/stderr previews with correct independent offsets, and routes a durable
+  cancellation acknowledgement to the registered token before terminal completion;
+- treats live observations as bounded and ephemeral while retaining started/finished authority in
+  the journal outbox, so disconnecting a stream neither cancels execution nor loses its terminal
+  replay.
 
 The worker binary uses `ALLOYPORT_WORKER_DATABASE` or defaults to `alloyport-worker.sqlite3`.
-The fake runtime is not yet launched by the outbound session or binary. Do not enable real candidate
-execution until process identity, attach/terminate recovery, sandboxing, and resource enforcement are
-durable too.
+The worker binary does not attach the fake runtime. Do not enable real candidate execution until
+process identity, attach/terminate recovery, sandboxing, and resource enforcement are durable too.
 
 The `alloyport-worker` binary reconnects with capped exponential backoff. Required identity variables:
 
@@ -376,7 +382,7 @@ cargo test --workspace --locked
 cargo +1.88.0 test --workspace --locked
 ```
 
-There are 71 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
+There are 73 Rust tests. Control-plane coverage includes a real loopback gRPC stream and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -399,6 +405,10 @@ repository tests for:
 - worker-local idempotency and changed-content conflict;
 - default shell-executor denial and explicit local opt-in;
 - protocol validation for sandbox paths and artifact digests.
+
+The loopback control-plane suite also attaches the fake executor, disconnects and reconnects while
+the task is still running, verifies terminal replay without a second executor/receipt, and cancels a
+running fake task through the server control API.
 
 Fake executor coverage includes independent output offsets, bounded preview backpressure, timeout,
 cancellation, output exhaustion, deterministic elapsed time, stdout/stderr/receipt CAS spooling,
@@ -446,9 +456,10 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 
 - Lease-expiry reassignment is explicit and durable, but there is no scheduler policy that chooses a
   replacement worker or proactively invokes it for every expired lease.
-- The worker journal, lifecycle outbox, and fake executor's local Artifact spool are disk backed. The
-  outbound session does not launch that runtime or upload its spool; real executor process identity
-  and attach/terminate recovery are not implemented.
+- The worker journal, lifecycle outbox, and fake executor's local Artifact spool are disk backed. An
+  explicitly configured outbound worker launches that fake runtime and preserves its task across
+  stream reconnects, but does not upload its spool; real executor process identity and
+  attach/terminate recovery are not implemented.
 - Durable lifecycle replay and seven-day orphaned-delivery retention are implemented. Heartbeats,
   status, output previews, welcomes, and ACK-only frames deliberately remain ephemeral; there is no
   generalized durable message bus or server replication.
@@ -457,12 +468,14 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
   quotas are implemented. Typed controller-granted references and conservative GC are
   implemented as library operations, but no controller/public API or automatic retention/collection
   scheduler invokes them. There is no object-store adapter or filesystem-capacity monitor.
-- No container/process executor, gRPC output streaming, resource enforcement, running-process signal
-  delivery, or device reset. The fake runtime has a cancellation token, but control-stream
-  cancellation is not connected to it and still terminates admitted no-executor attempts directly.
+- No container/process executor, resource enforcement, running-process signal delivery, or device
+  reset. Attached fake runs emit ephemeral gRPC output previews and accept control-stream
+  cancellation; workers with no executor attached still terminate cancelled admitted attempts
+  directly.
 - No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
-- The fake runtime produces observed `alloyport-events` command/artifact frames, but the outbound
-  stream does not carry them and the server does not canonically ingest worker lifecycle messages.
+- The fake runtime produces observed `alloyport-events` command/artifact frames. The outbound stream
+  carries raw output previews, but the server currently discards them after protocol validation and
+  does not canonically ingest worker lifecycle messages.
 - No external scheduling API, task controller integration, or terminal UI worker view.
 - mTLS enrollment, rotation, revocation, Artifact authorization, and worker hello binding are covered
   end to end. Certificate issuance, online enrollment, CA revocation/expiry monitoring, pool/role
@@ -475,13 +488,13 @@ This proves connection/heartbeat only. There is no public scheduling API in the 
 
 ## Recommended next implementation order
 
-### 1. Connect the fake runtime to outbound worker control
+### 1. Complete Artifact and event integration for fake execution
 
-Launch the Design 0015 runtime after new assignment admission, multiplex live output without losing
-durable lifecycle ordering, and connect `CancelAttempt` to the active token. Upload the local spool
-through the Artifact service before reporting terminal digests, then let the controller validate and
-grant Design 0014 output/receipt references. Canonically ingest observed command events server-side.
-Keep GC explicit until those assignment and receipt roots are durable.
+The Design 0015 runtime now launches after admission, multiplexes live output, survives session
+reconnect, and accepts cancellation through its active token. Next, upload its local spool through the
+Artifact service before reporting terminal digests, then let the controller validate and grant Design
+0014 output/receipt references. Canonically ingest observed command events server-side. Keep GC
+explicit until those assignment and receipt roots are durable.
 
 Keep shell execution disabled. If later enabled for probes, require an explicit worker policy and a
 separate executor kind; do not reduce assignments to a shell string.
@@ -509,12 +522,13 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Connect the fake runtime to the outbound session without bypassing Artifact or evidence boundaries:
+Complete the remote Artifact and canonical-event half of fake execution without weakening terminal
+ordering:
 
-> Read `docs/HANDOFF.md`, Design 0010, Design 0011, Design 0014, and Design 0015. Add an active-attempt
-> task registry to `OutboundWorker`, start the fake runtime only after durable new admission, stream
-> bounded previews with correct per-stream offsets, and route `CancelAttempt` to its cancellation
-> token while preserving acknowledgement and terminal ordering. Upload spooled stdout/stderr/receipt
-> before `ExecutionFinished`, create controller-owned reference grants, and ingest the observed events
-> into canonical server order. Test disconnect/reconnect, cancel/finish races, upload retry, and no
-> duplicate executor or terminal receipt.
+> Read `docs/HANDOFF.md`, Design 0010, Design 0011, Design 0014, and Design 0015. Add a worker Artifact
+> uploader that resumes by durable owner/idempotency keys and uploads stdout, stderr, and receipt
+> before `ExecutionFinished` becomes sendable. Have the controller validate the terminal Artifact
+> identities, create owner-stable AssignmentOutput/Receipt grants, and translate observed lifecycle
+> and output into canonical event order. Test upload retry across reconnect, cancel/finish races,
+> duplicate terminal delivery, grant idempotency, and refusal to publish a digest whose bytes are not
+> remotely present.

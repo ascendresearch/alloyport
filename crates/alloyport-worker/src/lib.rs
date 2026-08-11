@@ -7,21 +7,25 @@ use alloyport_proto::v1::worker_control_client::WorkerControlClient;
 use alloyport_proto::v1::{
     ActiveAttempt, ArtifactRef, Assignment, AssignmentAccepted, AssignmentRejected, AttemptOutcome,
     AttemptPhase, CancellationAcknowledged, ExecutionFinished, ExecutorKind, Heartbeat,
-    RejectionReason, ServerToWorker, WorkerHealth, WorkerHello, WorkerToServer, server_to_worker,
-    worker_to_server,
+    OutputChunk, OutputStream, RejectionReason, ServerToWorker, WorkerHealth, WorkerHello,
+    WorkerToServer, server_to_worker, worker_to_server,
 };
 use alloyport_proto::{ValidationError, validate_assignment, validate_worker_hello};
+use executor::{
+    CancellationToken, ExecutionObservation, ExecutionStream, FakeExecutionRuntime, FakeExecutor,
+};
 use journal::{
     AttemptStore, AttemptStoreError, LocalAttemptPhase, LocalAttemptRecord, SqliteAttemptStore,
     StoreAdmissionOutcome, StoredArtifact, StoredAssignment, StoredEnvironment, StoredExecution,
     StoredLimits, WorkerOutboxMessage, WorkerOutboxPayload,
 };
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Request;
 use tonic::transport::Endpoint;
@@ -48,6 +52,7 @@ pub enum WorkerError {
     AttemptStore(AttemptStoreError),
     Transport(tonic::transport::Error),
     Rpc(tonic::Status),
+    Execution(String),
     Protocol(String),
     StreamClosed,
 }
@@ -68,6 +73,7 @@ impl Display for WorkerError {
             Self::AttemptStore(error) => Display::fmt(error, formatter),
             Self::Transport(error) => Display::fmt(error, formatter),
             Self::Rpc(error) => Display::fmt(error, formatter),
+            Self::Execution(detail) => write!(formatter, "worker execution failed: {detail}"),
             Self::Protocol(detail) => write!(formatter, "worker protocol error: {detail}"),
             Self::StreamClosed => write!(formatter, "worker control stream closed"),
         }
@@ -83,6 +89,7 @@ impl Error for WorkerError {
             Self::AttemptStore(error) => Some(error),
             Self::ConflictingAttempt(_)
             | Self::PolicyViolation(_)
+            | Self::Execution(_)
             | Self::Protocol(_)
             | Self::StreamClosed => None,
         }
@@ -291,6 +298,19 @@ impl WorkerState {
         self.store.outbox_len().map_err(WorkerError::from)
     }
 
+    /// Returns durable terminal data for a locally known attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the journal cannot be read.
+    pub fn finished_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<StoredFinished>, WorkerError> {
+        self.attempt(attempt_id)
+            .map(|attempt| attempt.and_then(|record| record.finished))
+    }
+
     fn attempt(&self, attempt_id: &str) -> Result<Option<LocalAttemptRecord>, WorkerError> {
         self.store.attempt(attempt_id).map_err(WorkerError::from)
     }
@@ -333,6 +353,27 @@ pub struct OutboundWorker {
     endpoint: Endpoint,
     hello: WorkerHello,
     state: Arc<Mutex<WorkerState>>,
+    execution: Option<Arc<FakeExecutionIntegration>>,
+    execution_updates: broadcast::Sender<ExecutionUpdate>,
+}
+
+#[derive(Debug)]
+struct FakeExecutionIntegration {
+    runtime: Arc<FakeExecutionRuntime>,
+    executor: Arc<FakeExecutor>,
+    active: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
+}
+
+#[derive(Clone, Debug)]
+enum ExecutionUpdate {
+    Observation {
+        attempt_id: String,
+        observation: ExecutionObservation,
+    },
+    Completed {
+        attempt_id: String,
+        result: Result<(), String>,
+    },
 }
 
 impl OutboundWorker {
@@ -369,11 +410,42 @@ impl OutboundWorker {
     ) -> Result<Self, WorkerError> {
         validate_worker_hello(&hello).map_err(WorkerError::InvalidHello)?;
         state.store.bind_worker(&hello.worker_id)?;
+        let (execution_updates, _) = broadcast::channel(128);
         Ok(Self {
             endpoint,
             hello,
             state: Arc::new(Mutex::new(state)),
+            execution: None,
+            execution_updates,
         })
+    }
+
+    /// Attaches the deterministic fake executor to assignments admitted by this worker.
+    ///
+    /// This is an explicit integration seam for control-plane and restart testing. Production
+    /// process/container executors will use the same task-registry and cancellation contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime would record receipts for a different logical worker.
+    pub fn with_fake_executor(
+        mut self,
+        runtime: Arc<FakeExecutionRuntime>,
+        executor: Arc<FakeExecutor>,
+    ) -> Result<Self, WorkerError> {
+        if runtime.worker_id() != self.hello.worker_id {
+            return Err(WorkerError::Execution(format!(
+                "fake runtime identity {} does not match worker {}",
+                runtime.worker_id(),
+                self.hello.worker_id
+            )));
+        }
+        self.execution = Some(Arc::new(FakeExecutionIntegration {
+            runtime,
+            executor,
+            active: Arc::new(Mutex::new(BTreeMap::new())),
+        }));
+        Ok(self)
     }
 
     #[must_use]
@@ -391,6 +463,7 @@ impl OutboundWorker {
         let channel = self.endpoint.clone().connect().await?;
         let mut client = WorkerControlClient::new(channel);
         let (outbound, receiver) = mpsc::channel(64);
+        let mut execution_updates = self.execution_updates.subscribe();
 
         let mut hello = self.hello.clone();
         hello.active_attempts = self.state.lock().await.active_attempts()?;
@@ -417,6 +490,7 @@ impl OutboundWorker {
         let mut next_worker_sequence = 2;
         let mut last_server_sequence = welcome_frame.sequence;
         let mut last_worker_sequence_acknowledged = welcome_frame.acknowledges_worker_through;
+        let mut delivered_message_ids = BTreeSet::new();
         let require_message_ids = negotiated_protocol_minor >= 2;
         {
             let state = self.state.lock().await;
@@ -428,6 +502,7 @@ impl OutboundWorker {
             &outbound,
             &mut next_worker_sequence,
             last_server_sequence,
+            &mut delivered_message_ids,
         )
         .await?;
 
@@ -450,6 +525,7 @@ impl OutboundWorker {
                         &outbound,
                         &mut next_worker_sequence,
                         server_sequence,
+                        &mut delivered_message_ids,
                     ).await? {
                         return Ok(());
                     }
@@ -471,6 +547,16 @@ impl OutboundWorker {
                             available_slots: self.available_slots().await?,
                             health: WorkerHealth::Ready.into(),
                         }),
+                    ).await?;
+                }
+                update = execution_updates.recv(), if self.execution.is_some() => {
+                    self.handle_execution_receive(
+                        update,
+                        &connection_id,
+                        &outbound,
+                        &mut next_worker_sequence,
+                        last_server_sequence,
+                        &mut delivered_message_ids,
                     ).await?;
                 }
             }
@@ -542,6 +628,7 @@ impl OutboundWorker {
         outbound: &mpsc::Sender<WorkerToServer>,
         next_worker_sequence: &mut u64,
         acknowledged: u64,
+        delivered_message_ids: &mut BTreeSet<String>,
     ) -> Result<bool, WorkerError> {
         match frame.message {
             Some(server_to_worker::Message::Welcome(welcome)) => {
@@ -560,6 +647,7 @@ impl OutboundWorker {
                     outbound,
                     next_worker_sequence,
                     acknowledged,
+                    delivered_message_ids,
                 )
                 .await?;
                 Ok(false)
@@ -572,6 +660,7 @@ impl OutboundWorker {
                     outbound,
                     next_worker_sequence,
                     acknowledged,
+                    delivered_message_ids,
                 )
                 .await?;
                 Ok(false)
@@ -590,6 +679,7 @@ impl OutboundWorker {
         outbound: &mpsc::Sender<WorkerToServer>,
         next_worker_sequence: &mut u64,
         acknowledged: u64,
+        delivered_message_ids: &mut BTreeSet<String>,
     ) -> Result<(), WorkerError> {
         let assignment_id = assignment.assignment_id.clone();
         let attempt_id = assignment.attempt_id.clone();
@@ -648,8 +738,18 @@ impl OutboundWorker {
                 (LocalAttemptPhase::Accepted, _) => {}
             }
         }
-        self.send_pending_outbox(connection_id, outbound, next_worker_sequence, acknowledged)
-            .await
+        self.send_pending_outbox(
+            connection_id,
+            outbound,
+            next_worker_sequence,
+            acknowledged,
+            delivered_message_ids,
+        )
+        .await?;
+        if admitted {
+            self.ensure_execution(&attempt_id).await?;
+        }
+        Ok(())
     }
 
     async fn handle_cancel(
@@ -659,8 +759,9 @@ impl OutboundWorker {
         outbound: &mpsc::Sender<WorkerToServer>,
         next_worker_sequence: &mut u64,
         acknowledged: u64,
+        delivered_message_ids: &mut BTreeSet<String>,
     ) -> Result<(), WorkerError> {
-        {
+        let already_terminal = {
             let state = self.state.lock().await;
             let attempt = state.attempt(&cancel.attempt_id)?.ok_or_else(|| {
                 WorkerError::Protocol(format!(
@@ -675,7 +776,24 @@ impl OutboundWorker {
                 attempt_id: cancel.attempt_id.clone(),
                 already_terminal,
             })?;
-            if !already_terminal {
+            already_terminal
+        };
+
+        if already_terminal {
+            self.send_pending_outbox(
+                connection_id,
+                outbound,
+                next_worker_sequence,
+                acknowledged,
+                delivered_message_ids,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        if self.execution.is_none() {
+            {
+                let state = self.state.lock().await;
                 state.mark_finished(
                     &cancel.attempt_id,
                     &StoredFinished {
@@ -688,18 +806,206 @@ impl OutboundWorker {
                         detail: cancel.reason.clone(),
                     },
                 )?;
+                state
+                    .attempt(&cancel.attempt_id)?
+                    .and_then(|record| record.finished)
+                    .ok_or_else(|| {
+                        WorkerError::Protocol(
+                            "cancelled attempt lacks terminal journal data".to_owned(),
+                        )
+                    })?;
             }
-            state
-                .attempt(&cancel.attempt_id)?
-                .and_then(|record| record.finished)
-                .ok_or_else(|| {
-                    WorkerError::Protocol(
-                        "cancelled attempt lacks terminal journal data".to_owned(),
-                    )
-                })?;
+            return self
+                .send_pending_outbox(
+                    connection_id,
+                    outbound,
+                    next_worker_sequence,
+                    acknowledged,
+                    delivered_message_ids,
+                )
+                .await;
         }
-        self.send_pending_outbox(connection_id, outbound, next_worker_sequence, acknowledged)
+
+        let cancellation = self
+            .ensure_execution(&cancel.attempt_id)
+            .await?
+            .ok_or_else(|| {
+                WorkerError::Protocol(format!(
+                    "non-terminal attempt {} did not start an executor",
+                    cancel.attempt_id
+                ))
+            })?;
+
+        // Put the durable acknowledgement on the wire before making cancellation visible to the
+        // executor. Even an immediate fake completion therefore cannot overtake the ACK.
+        self.send_pending_outbox(
+            connection_id,
+            outbound,
+            next_worker_sequence,
+            acknowledged,
+            delivered_message_ids,
+        )
+        .await?;
+        cancellation.cancel();
+
+        Ok(())
+    }
+
+    async fn ensure_execution(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<CancellationToken>, WorkerError> {
+        let Some(integration) = self.execution.as_ref() else {
+            return Ok(None);
+        };
+        let attempt = self
+            .state
+            .lock()
             .await
+            .attempt(attempt_id)?
+            .ok_or_else(|| WorkerError::Protocol(format!("attempt {attempt_id} is missing")))?;
+        if attempt.phase == LocalAttemptPhase::Finished {
+            return Ok(None);
+        }
+
+        let mut active = integration.active.lock().await;
+        if let Some(cancellation) = active.get(attempt_id) {
+            return Ok(Some(cancellation.clone()));
+        }
+        let cancellation = CancellationToken::new();
+        active.insert(attempt_id.to_owned(), cancellation.clone());
+        drop(active);
+
+        let attempt_id = attempt_id.to_owned();
+        let cancellation_for_task = cancellation.clone();
+        let state = self.state.lock().await.clone();
+        let integration = Arc::clone(integration);
+        let updates = self.execution_updates.clone();
+        tokio::spawn(async move {
+            let observed_attempt_id = attempt_id.clone();
+            let observed_updates = updates.clone();
+            let result = integration
+                .runtime
+                .run_observed(
+                    &state,
+                    &attempt_id,
+                    &integration.executor,
+                    &cancellation_for_task,
+                    move |observation| {
+                        let _ = observed_updates.send(ExecutionUpdate::Observation {
+                            attempt_id: observed_attempt_id.clone(),
+                            observation,
+                        });
+                    },
+                )
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            integration.active.lock().await.remove(&attempt_id);
+            let _ = updates.send(ExecutionUpdate::Completed { attempt_id, result });
+        });
+        Ok(Some(cancellation))
+    }
+
+    async fn handle_execution_update(
+        &self,
+        update: ExecutionUpdate,
+        connection_id: &str,
+        outbound: &mpsc::Sender<WorkerToServer>,
+        next_worker_sequence: &mut u64,
+        acknowledged: u64,
+        delivered_message_ids: &mut BTreeSet<String>,
+    ) -> Result<(), WorkerError> {
+        match update {
+            ExecutionUpdate::Observation {
+                attempt_id,
+                observation: ExecutionObservation::Started,
+            } => {
+                let _ = attempt_id;
+                self.send_pending_outbox(
+                    connection_id,
+                    outbound,
+                    next_worker_sequence,
+                    acknowledged,
+                    delivered_message_ids,
+                )
+                .await
+            }
+            ExecutionUpdate::Observation {
+                attempt_id,
+                observation: ExecutionObservation::Output(chunk),
+            } => {
+                Self::send_ephemeral(
+                    outbound,
+                    next_worker_sequence,
+                    acknowledged,
+                    worker_to_server::Message::OutputChunk(OutputChunk {
+                        attempt_id,
+                        stream: match chunk.stream {
+                            ExecutionStream::Stdout => OutputStream::Stdout,
+                            ExecutionStream::Stderr => OutputStream::Stderr,
+                        }
+                        .into(),
+                        byte_offset: chunk.byte_offset,
+                        display_sanitized: std::str::from_utf8(&chunk.bytes).is_err(),
+                        payload: chunk.bytes,
+                    }),
+                )
+                .await
+            }
+            ExecutionUpdate::Completed { attempt_id, result } => {
+                result.map_err(|detail| {
+                    WorkerError::Execution(format!("attempt {attempt_id}: {detail}"))
+                })?;
+                self.send_pending_outbox(
+                    connection_id,
+                    outbound,
+                    next_worker_sequence,
+                    acknowledged,
+                    delivered_message_ids,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn handle_execution_receive(
+        &self,
+        update: Result<ExecutionUpdate, broadcast::error::RecvError>,
+        connection_id: &str,
+        outbound: &mpsc::Sender<WorkerToServer>,
+        next_worker_sequence: &mut u64,
+        acknowledged: u64,
+        delivered_message_ids: &mut BTreeSet<String>,
+    ) -> Result<(), WorkerError> {
+        match update {
+            Ok(update) => {
+                self.handle_execution_update(
+                    update,
+                    connection_id,
+                    outbound,
+                    next_worker_sequence,
+                    acknowledged,
+                    delivered_message_ids,
+                )
+                .await
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                // Output previews are explicitly best effort. Durable lifecycle rows are recovered
+                // on the next observation, heartbeat, or reconnect.
+                self.send_pending_outbox(
+                    connection_id,
+                    outbound,
+                    next_worker_sequence,
+                    acknowledged,
+                    delivered_message_ids,
+                )
+                .await
+            }
+            Err(broadcast::error::RecvError::Closed) => Err(WorkerError::Protocol(
+                "execution update channel closed".to_owned(),
+            )),
+        }
     }
 
     async fn send_ephemeral(
@@ -727,15 +1033,20 @@ impl OutboundWorker {
         outbound: &mpsc::Sender<WorkerToServer>,
         next_worker_sequence: &mut u64,
         acknowledges_server_through: u64,
+        delivered_message_ids: &mut BTreeSet<String>,
     ) -> Result<(), WorkerError> {
         let pending = self.state.lock().await.pending_outbox()?;
         for entry in pending {
+            if delivered_message_ids.contains(&entry.message_id) {
+                continue;
+            }
             let sequence = *next_worker_sequence;
             self.state
                 .lock()
                 .await
                 .record_delivery(connection_id, sequence, &entry.message_id)?;
             *next_worker_sequence += 1;
+            delivered_message_ids.insert(entry.message_id.clone());
             outbound
                 .send(WorkerToServer {
                     sequence,

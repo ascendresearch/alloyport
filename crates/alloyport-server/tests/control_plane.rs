@@ -1,3 +1,4 @@
+use alloyport_artifacts::FilesystemArtifactStore;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, AttemptOutcome, Backend, ExecutionSpec, ExecutorKind,
@@ -8,6 +9,7 @@ use alloyport_server::storage::SqliteControlRepository;
 use alloyport_server::{
     AssignmentState, CancelOutcome, EnqueueOutcome, ManualClock, WorkerControlService,
 };
+use alloyport_worker::executor::{FakeExecutionPlan, FakeExecutionRuntime, FakeExecutor, FakeStep};
 use alloyport_worker::{OutboundWorker, StoredFinished};
 use std::error::Error;
 use std::sync::Arc;
@@ -338,6 +340,173 @@ async fn cancellation_is_acknowledged_and_becomes_terminal() -> Result<(), Box<d
         service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Finished)
     })
     .await?;
+    assert_eq!(
+        service.cancel_attempt("attempt-1", "duplicate").await?,
+        CancelOutcome::AlreadyTerminal
+    );
+
+    worker_task.abort();
+    let _ = worker_task.await;
+    let _ = shutdown_send.send(());
+    server_task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fake_execution_survives_stream_disconnect_and_replays_one_terminal_result()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let artifacts = Arc::new(FilesystemArtifactStore::open(
+        directory.path().join("spool"),
+        4_096,
+    )?);
+    let runtime = Arc::new(FakeExecutionRuntime::new(
+        "cuda-1",
+        Arc::clone(&artifacts),
+        1,
+    )?);
+    let executor = Arc::new(FakeExecutor::new(FakeExecutionPlan::successful(vec![
+        FakeStep::Stdout(b"before disconnect".to_vec()),
+        FakeStep::Delay(Duration::from_millis(250)),
+        FakeStep::Stderr(b"after disconnect".to_vec()),
+    ])));
+
+    let service = WorkerControlService::new();
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (shutdown_send, shutdown_receive) = oneshot::channel();
+    let grpc_service = service.clone();
+    let server_task = tokio::spawn(async move {
+        Server::builder()
+            .add_service(WorkerControlServer::new(grpc_service))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_receive.await;
+            })
+            .await
+    });
+
+    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?
+        .with_fake_executor(runtime, executor)?;
+    let worker_state = worker.state();
+    let first_worker = worker.clone();
+    let first_session = tokio::spawn(async move { first_worker.run_session().await });
+    wait_until(|| async {
+        service
+            .worker_snapshot("cuda-1")
+            .await
+            .is_some_and(|snapshot| snapshot.connected)
+    })
+    .await?;
+    assert_eq!(
+        service.enqueue_assignment("cuda-1", assignment()).await?,
+        EnqueueOutcome::Sent
+    );
+    wait_until(|| async {
+        service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Running)
+    })
+    .await?;
+
+    first_session.abort();
+    let _ = first_session.await;
+    wait_until(|| async {
+        service
+            .worker_snapshot("cuda-1")
+            .await
+            .is_some_and(|snapshot| !snapshot.connected)
+    })
+    .await?;
+
+    let second_session = tokio::spawn(async move { worker.run_session().await });
+    wait_until(|| async {
+        service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Finished)
+    })
+    .await?;
+    let finished = worker_state
+        .lock()
+        .await
+        .finished_attempt("attempt-1")?
+        .expect("fake runtime must commit a terminal result while disconnected");
+    assert_eq!(finished.outcome, i32::from(AttemptOutcome::Succeeded));
+    assert!(finished.receipt.is_some());
+    assert!(finished.stdout.is_some());
+    assert!(finished.stderr.is_some());
+
+    wait_until(|| async { worker_state.lock().await.outbox_len().ok() == Some(0) }).await?;
+    assert_eq!(
+        worker_state.lock().await.finished_attempt("attempt-1")?,
+        Some(finished),
+        "reconnect must replay journal state without launching a second executor"
+    );
+
+    second_session.abort();
+    let _ = second_session.await;
+    let _ = shutdown_send.send(());
+    server_task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fake_execution_cancellation_acknowledges_before_terminal_completion()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let artifacts = Arc::new(FilesystemArtifactStore::open(
+        directory.path().join("spool"),
+        4_096,
+    )?);
+    let runtime = Arc::new(FakeExecutionRuntime::new("cuda-1", artifacts, 1)?);
+    let executor = Arc::new(FakeExecutor::new(FakeExecutionPlan::successful(vec![
+        FakeStep::Delay(Duration::from_secs(30)),
+    ])));
+    let service = WorkerControlService::new();
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (shutdown_send, shutdown_receive) = oneshot::channel();
+    let grpc_service = service.clone();
+    let server_task = tokio::spawn(async move {
+        Server::builder()
+            .add_service(WorkerControlServer::new(grpc_service))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_receive.await;
+            })
+            .await
+    });
+
+    let worker = OutboundWorker::new(Endpoint::from_shared(format!("http://{address}"))?, hello())?
+        .with_fake_executor(runtime, executor)?;
+    let worker_state = worker.state();
+    let worker_task = tokio::spawn(async move { worker.run_session().await });
+    wait_until(|| async {
+        service
+            .worker_snapshot("cuda-1")
+            .await
+            .is_some_and(|snapshot| snapshot.connected)
+    })
+    .await?;
+    assert_eq!(
+        service.enqueue_assignment("cuda-1", assignment()).await?,
+        EnqueueOutcome::Sent
+    );
+    wait_until(|| async {
+        service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Running)
+    })
+    .await?;
+    assert_eq!(
+        service
+            .cancel_attempt("attempt-1", "operator cancelled fake execution")
+            .await?,
+        CancelOutcome::Sent
+    );
+    wait_until(|| async {
+        service.assignment_state("attempt-1").ok().flatten() == Some(AssignmentState::Finished)
+    })
+    .await?;
+    let finished = worker_state
+        .lock()
+        .await
+        .finished_attempt("attempt-1")?
+        .expect("cancelled fake execution must persist its receipt and terminal result");
+    assert_eq!(finished.outcome, i32::from(AttemptOutcome::Cancelled));
+    assert!(finished.receipt.is_some());
     assert_eq!(
         service.cancel_attempt("attempt-1", "duplicate").await?,
         CancelOutcome::AlreadyTerminal

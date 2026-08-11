@@ -58,13 +58,34 @@ The emitted interaction objects are producer events with observed authority. The
 responsible for canonical IDs and ordering under Design 0010; tests verify the events can be accepted
 by the canonical sequencer.
 
+## Outbound control-session integration
+
+`OutboundWorker` can explicitly attach a fake runtime and executor. The attachment is opt-in and is
+not enabled by the worker binary. After an assignment has been durably admitted and its accepted
+outbox entry has been placed on the current stream, the worker registers one asynchronous execution
+task for that attempt. Replayed `Accepted` or `Running` attempts recover through the same registry;
+an already active or terminal attempt cannot launch a second executor.
+
+The registry belongs to the cloneable worker instance rather than one gRPC session. Dropping and
+reopening a stream therefore does not cancel execution. Live started/output observations use a
+bounded broadcast channel: a connected session sends raw-byte `OutputChunk` previews with the
+executor's independent stdout/stderr offsets, while a disconnected or lagging session may lose those
+ephemeral previews without closing the executor's bounded internal output receiver. Started and
+finished lifecycle messages remain journal/outbox authoritative and replay after reconnect.
+
+For an active execution, `CancelAttempt` first creates and sends the durable cancellation
+acknowledgement, then makes cancellation visible through the registered token. The runtime still
+spools stdout, stderr, and the receipt before committing and reporting its cancelled terminal row.
+Workers without an attached executor retain the bootstrap behavior of directly terminating an
+admitted no-executor attempt.
+
 ## Deliberate limits
 
-The fake runtime is a library component and is not yet launched by `OutboundWorker::run_session` or
-the worker binary. Live output chunks are not yet multiplexed onto the gRPC control stream,
-control-plane cancellation is not connected to its token, and worker-local spool artifacts are not
-uploaded to the remote Artifact service. Reference intents therefore do not yet become durable
-server grants.
+The fake runtime can be launched by `OutboundWorker::run_session`, but remains a test-oriented
+library attachment and is not configured by the worker binary. Worker-local spool artifacts are not
+uploaded to the remote Artifact service, so their digests must not yet be treated as remotely
+readable evidence. Reference intents do not become durable server grants. The server currently
+accepts and sequence-validates live output frames but does not persist or canonically translate them.
 
 There is no process/container executor, process identity, OS signal delivery, CPU/memory/disk
 enforcement, sandbox provisioning, device access, output coalescing, or spool retention policy. The
@@ -75,4 +96,6 @@ fake receipt is a typed bootstrap record, not the signed complete RunReceipt fro
 Tests cover independent byte offsets, bounded-channel backpressure, success, timeout, cancellation,
 output exhaustion, stdout/stderr/receipt CAS persistence, event ordering, typed reference intents,
 terminal replay without duplicate outbox rows, deterministic recovery from a stored `Running` state,
-and rejection of concurrent executors for one attempt.
+rejection of concurrent executors for one attempt, control-stream disconnect/reconnect during an
+active run, terminal replay without a second receipt, and control-plane cancellation of a running
+fake attempt.
