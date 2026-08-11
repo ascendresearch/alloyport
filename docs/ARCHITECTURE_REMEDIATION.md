@@ -168,7 +168,7 @@ code. All five originally mixed database modules are now separated:
 | worker journal | `AttemptStore` | `adapters/sqlite/attempt_store.rs` |
 | interactions | `InteractionEventStore`, `RunGrantStore` | two SQLite adapters |
 | identity | `IdentityRegistry` | `adapters/sqlite/identity_registry.rs` |
-| Artifact metadata | `ArtifactMetadataRepository` | `adapters/sqlite/artifact_metadata.rs` |
+| Artifact metadata | upload/reference domain types | `adapters/sqlite/upload_store.rs` and cohesive query modules |
 
 Migrations live beside their adapters and are tested from every supported historical schema.
 Repository contract suites run against the SQLite implementation and application tests use fakes.
@@ -235,6 +235,10 @@ directories (including their migration and adapter-test files).
   contains no SQL or database-driver types.
 - [x] Artifact upload model separated from `SqliteUploadStore`; `upload.rs` contains no SQL or
   database-driver types.
+- [x] Artifact SQLite implementation split by responsibility: the lifecycle orchestrator is 678
+  lines (down from 2,204), while schema/migrations, quota accounting, durable references, garbage
+  collection, record mapping/staging helpers, and adapter tests live in separate modules. No
+  production module in this adapter exceeds the 800-line review threshold.
 - [x] SQL-location architecture check has no legacy allowlist entries.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.
