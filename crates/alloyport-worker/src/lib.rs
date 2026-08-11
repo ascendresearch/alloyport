@@ -11,6 +11,7 @@ pub mod cuda_runtime;
 pub mod cuda_supervisor;
 pub mod execution_backend;
 pub mod executor;
+pub mod fake_executor;
 pub mod journal;
 mod wire_mapping;
 mod worker_state;

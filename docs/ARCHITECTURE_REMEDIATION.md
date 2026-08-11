@@ -263,6 +263,10 @@ directories (including their migration and adapter-test files).
 - [x] First R4 execution-backend slice: closed Fake/CUDA dispatch replaced by an executor-kind
   registry and public `ExecutionBackend` composition port, including duplicate-capability and
   third-party probe-backend coverage.
+- [x] Worker executor responsibilities split: durable execution/Artifact coordination is 606 lines
+  (down from a 1,395-line mixed module), deterministic fake process behavior is 344 lines, and its
+  460-line behavioral suite is isolated from production code. Existing `executor::*` imports remain
+  source-compatible through explicit re-exports.
 - [x] SQL-location architecture check has no legacy allowlist entries.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.
