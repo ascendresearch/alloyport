@@ -60,3 +60,42 @@ pub trait CudaContainerEngine: Debug + Send + Sync {
     /// Removes a terminal container after publication and the terminal journal commit.
     fn remove<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()>;
 }
+
+impl crate::container_supervision::RunningContainerEngine for dyn CudaContainerEngine + '_ {
+    fn wait<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ContainerExit> {
+        CudaContainerEngine::wait(self, name)
+    }
+
+    fn stop<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()> {
+        CudaContainerEngine::stop(self, name)
+    }
+
+    fn follow_logs_observed<'a>(
+        &'a self,
+        name: &'a str,
+        limit: u64,
+        observer: &'a mut (dyn FnMut(ContainerLogChunk) + Send),
+    ) -> EngineFuture<'a, ContainerLogs> {
+        CudaContainerEngine::follow_logs_observed(self, name, limit, observer)
+    }
+
+    fn streams_live_log_observations(&self) -> bool {
+        CudaContainerEngine::streams_live_log_observations(self)
+    }
+}
+
+impl crate::container_supervision::ContainerReconcileEngine<DockerCreatePlan>
+    for dyn CudaContainerEngine + '_
+{
+    fn inspect<'a>(&'a self, name: &'a str) -> EngineFuture<'a, Option<ContainerSnapshot>> {
+        CudaContainerEngine::inspect(self, name)
+    }
+
+    fn create<'a>(
+        &'a self,
+        plan: &'a DockerCreatePlan,
+        identity: &'a ContainerIdentity,
+    ) -> EngineFuture<'a, ()> {
+        CudaContainerEngine::create(self, plan, identity)
+    }
+}

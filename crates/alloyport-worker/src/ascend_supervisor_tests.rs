@@ -1,7 +1,7 @@
 use super::*;
 use crate::ascend::{
     ASCEND_ADD_FIXTURE_ID, ASCEND_FIXTURE_BUNDLE_MEDIA_TYPE, ASCEND_FIXTURE_FEATURE,
-    AscendEnvironmentFacts, AscendResourceCeilings,
+    AscendDockerCreatePlan, AscendEnvironmentFacts, AscendResourceCeilings,
 };
 use crate::journal::{StoredArtifact, StoredExecution, StoredLimits};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
@@ -12,6 +12,7 @@ use alloyport_core::{
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 
 #[tokio::test]
 async fn missing_container_is_created_and_exited_recovery_never_restarts()
@@ -120,40 +121,6 @@ async fn cancellation_timeout_and_output_exhaustion_stop_the_same_container()
     assert_eq!(exhausted.outcome, AttemptOutcome::InfraError);
     assert_eq!(exhausted_engine.counts(), (1, 1, 1));
     Ok(())
-}
-
-#[test]
-fn zero_exit_without_marker_and_combined_output_overflow_fail_closed() {
-    let exit = Termination::Exited(ContainerExit {
-        exit_code: 0,
-        elapsed_ms: 9,
-    });
-    let missing_marker = classify(
-        exit,
-        ContainerLogs {
-            stdout: b"not verified\n".to_vec(),
-            stderr: Vec::new(),
-            output_limit_exceeded: false,
-        },
-        100,
-    );
-    assert_eq!(missing_marker.outcome, AttemptOutcome::IntegrityViolation);
-
-    let exhausted = classify(
-        exit,
-        enforce_output_limit(
-            ContainerLogs {
-                stdout: b"1234".to_vec(),
-                stderr: b"5678".to_vec(),
-                output_limit_exceeded: false,
-            },
-            5,
-        ),
-        100,
-    );
-    assert_eq!(exhausted.outcome, AttemptOutcome::InfraError);
-    assert_eq!(exhausted.stdout, b"1234");
-    assert_eq!(exhausted.stderr, b"5");
 }
 
 struct Fixture {

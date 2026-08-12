@@ -3,7 +3,7 @@
 use super::*;
 use crate::cuda::{
     CUDA_FIXTURE_BUNDLE_MEDIA_TYPE, CUDA_FIXTURE_FEATURE, CudaFixtureBundle, CudaResourceCeilings,
-    OCI_IMAGE_MANIFEST_MEDIA_TYPE, VECTOR_ADD_FIXTURE_ID,
+    DockerCreatePlan, OCI_IMAGE_MANIFEST_MEDIA_TYPE, VECTOR_ADD_FIXTURE_ID,
 };
 use crate::journal::{StoredArtifact, StoredExecution, StoredLimits};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
@@ -12,6 +12,7 @@ use alloyport_core::{
 };
 use std::io::Cursor;
 use std::sync::Mutex;
+use std::time::Duration;
 
 #[tokio::test]
 async fn missing_container_is_created_while_exited_container_is_replayed()
@@ -114,7 +115,7 @@ async fn running_output_exhaustion_stops_the_container_before_it_exits()
 }
 
 #[tokio::test]
-async fn image_mismatch_and_terminal_classification_are_fail_closed()
+async fn image_mismatch_fails_closed_before_container_creation()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = fixture()?;
     let wrong_image = FakeEngine::new(Sha256Digest::digest_bytes(b"wrong").to_string());
@@ -126,52 +127,6 @@ async fn image_mismatch_and_terminal_classification_are_fail_closed()
         Err(CudaSupervisorError::ImageMismatch { .. })
     ));
     assert_eq!(wrong_image.counts(), (0, 0, 0));
-
-    let exit = Termination::Exited(ContainerExit {
-        exit_code: 0,
-        elapsed_ms: 9,
-    });
-    let missing_marker = classify(
-        exit,
-        ContainerLogs {
-            stdout: b"not a fixture result\n".to_vec(),
-            stderr: Vec::new(),
-            output_limit_exceeded: false,
-        },
-        100,
-    );
-    assert_eq!(missing_marker.outcome, AttemptOutcome::IntegrityViolation);
-
-    let exhausted = classify(
-        exit,
-        enforce_output_limit(
-            ContainerLogs {
-                stdout: b"1234".to_vec(),
-                stderr: b"5678".to_vec(),
-                output_limit_exceeded: false,
-            },
-            5,
-        ),
-        100,
-    );
-    assert_eq!(exhausted.outcome, AttemptOutcome::InfraError);
-    assert_eq!(exhausted.stdout, b"1234");
-    assert_eq!(exhausted.stderr, b"5");
-
-    let failed = classify(
-        Termination::Exited(ContainerExit {
-            exit_code: 17,
-            elapsed_ms: 9,
-        }),
-        ContainerLogs {
-            stdout: Vec::new(),
-            stderr: b"compiler failed\n".to_vec(),
-            output_limit_exceeded: false,
-        },
-        100,
-    );
-    assert_eq!(failed.outcome, AttemptOutcome::CandidateFailed);
-    assert_eq!(failed.exit_code, Some(17));
     Ok(())
 }
 

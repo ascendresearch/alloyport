@@ -51,9 +51,16 @@ not considered compatible merely because it implements the Rust trait.
    streams/runs, and terminal run-grant revocation. SQLite-only tests retain reopen durability;
    application tests retain replay-to-live, slow-consumer, cross-run notification, cursor rejection,
    authorization, and sanitization behavior.
-7. **Execution backends and gRPC adapters — next.** Preserve typed failure classes, immutable assignment
-   identity, cancellation, terminal Artifact gating, and replay semantics across fake, CUDA, Ascend,
-   and transport adapters. Hardware evidence remains a separate explicitly configured gate.
+7. **Fixed-accelerator container execution — implemented.** CUDA and Ascend retain separate typed
+   policies, create plans, device/environment facts, and receipt data, but now share container
+   identity reconciliation, cancellation/timeout/output supervision, stop-and-wait semantics, and
+   terminal outcome classification. One contract vector suite applies success, candidate failure,
+   cancellation, timeout, output exhaustion, and missing verification-marker rules to both fixture
+   policies. Adapter tests retain image/device policy and engine-command evidence; real hardware
+   remains an explicitly configured gate.
+8. **gRPC adapters — next.** Preserve typed failure classes, authenticated identity, immutable
+   assignment identity, cancellation, terminal Artifact gating, replay cursors, and transport status
+   mapping without moving use-case policy into service implementations.
 
 ## Non-goals
 

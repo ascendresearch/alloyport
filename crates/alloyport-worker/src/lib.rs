@@ -12,6 +12,8 @@ pub mod ascend_supervisor;
 mod attempt_coordinator;
 mod backend_error;
 pub mod container_engine;
+mod container_outcome;
+mod container_supervision;
 mod control_session;
 pub mod cuda;
 pub mod cuda_docker;

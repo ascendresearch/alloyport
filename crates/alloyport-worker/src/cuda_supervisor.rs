@@ -1,22 +1,32 @@
 //! Durable reconciliation state machine for policy-bound CUDA containers.
 
 mod engine;
-mod outcome;
 
+use crate::backend_error::BackendError;
+use crate::container_outcome::{
+    ContainerTermination as Termination, FixtureOutcomePolicy, classify_fixture_outcome,
+    enforce_output_limit,
+};
+use crate::container_supervision::{
+    ContainerReconcileError, reconcile_container, supervise_running_container,
+};
+use crate::cuda::{CudaContractError, CudaFixturePolicy};
+use crate::executor::{CancellationToken, ExecutorResult};
+use crate::journal::StoredAssignment;
+use alloyport_artifacts::ArtifactStore;
 pub use engine::{
     ContainerEngineError, ContainerExit, ContainerIdentity, ContainerLogChunk, ContainerLogStream,
     ContainerLogs, ContainerPhase, ContainerSnapshot, CudaContainerEngine, CudaExecutionFacts,
     EngineFuture, SupervisedCudaExecution,
 };
-use outcome::{Termination, classify, enforce_output_limit};
-
-use crate::backend_error::BackendError;
-use crate::cuda::{CudaContractError, CudaFixturePolicy, DockerCreatePlan};
-use crate::executor::{CancellationToken, ExecutorResult};
-use crate::journal::StoredAssignment;
-use alloyport_artifacts::ArtifactStore;
 use std::sync::Arc;
-use std::time::Duration;
+
+const OUTCOME_POLICY: FixtureOutcomePolicy = FixtureOutcomePolicy {
+    fixture_id: crate::cuda::VECTOR_ADD_FIXTURE_ID,
+    exited_detail: "CUDA fixture exited",
+    nonzero_detail: "CUDA fixture returned a nonzero exit code",
+    missing_marker_detail: "CUDA fixture exited zero without its verification marker",
+};
 
 #[derive(Clone, Debug)]
 pub struct CudaContainerSupervisor {
@@ -131,7 +141,7 @@ impl CudaContainerSupervisor {
                 .map_err(CudaSupervisorError::Engine)?;
             (Termination::Exited(exit), logs, false)
         } else {
-            collect_running(
+            supervise_running_container(
                 engine,
                 &identity.name,
                 assignment.execution.timeout_ms,
@@ -139,13 +149,15 @@ impl CudaContainerSupervisor {
                 cancellation,
                 &mut observer,
             )
-            .await?
+            .await
+            .map_err(CudaSupervisorError::Engine)?
         };
         Ok(SupervisedCudaExecution {
-            result: classify(
+            result: classify_fixture_outcome(
                 termination,
                 enforce_output_limit(logs, output_limit),
                 assignment.execution.timeout_ms,
+                OUTCOME_POLICY,
             ),
             facts: CudaExecutionFacts {
                 container_name: identity.name,
@@ -161,122 +173,6 @@ impl CudaContainerSupervisor {
     }
 }
 
-async fn collect_running(
-    engine: &dyn CudaContainerEngine,
-    name: &str,
-    timeout_ms: u64,
-    output_limit: u64,
-    cancellation: &CancellationToken,
-    observer: &mut (dyn FnMut(ContainerLogChunk) + Send),
-) -> Result<(Termination, ContainerLogs, bool), CudaSupervisorError> {
-    let mut cancelled = cancellation.subscribe();
-    let wait = engine.wait(name);
-    let live_output_streaming = engine.streams_live_log_observations();
-    let follow = engine.follow_logs_observed(name, output_limit, observer);
-    let timeout = tokio::time::sleep(Duration::from_millis(timeout_ms));
-    tokio::pin!(wait, follow, timeout);
-    let mut collected_logs = None;
-    loop {
-        let termination = tokio::select! {
-            biased;
-            () = wait_for_cancellation(&mut cancelled) => {
-                stop_and_wait(engine, name, &mut wait).await.map(Termination::Cancelled)?
-            }
-            () = &mut timeout => {
-                stop_and_wait(engine, name, &mut wait).await.map(Termination::TimedOut)?
-            }
-            exit = &mut wait => Termination::Exited(exit.map_err(CudaSupervisorError::Engine)?),
-            logs = &mut follow, if collected_logs.is_none() => {
-                let logs = match logs {
-                    Ok(logs) => logs,
-                    Err(error) => {
-                        let _ = engine.stop(name).await;
-                        let _ = (&mut wait).await;
-                        return Err(CudaSupervisorError::Engine(error));
-                    }
-                };
-                if logs.output_limit_exceeded {
-                    let exit = stop_and_wait(engine, name, &mut wait).await?;
-                    return Ok((Termination::OutputLimitExceeded(exit), logs, live_output_streaming));
-                }
-                collected_logs = Some(logs);
-                continue;
-            }
-        };
-        let logs = if let Some(logs) = collected_logs {
-            logs
-        } else {
-            follow.await.map_err(CudaSupervisorError::Engine)?
-        };
-        return Ok((termination, logs, live_output_streaming));
-    }
-}
-
-async fn stop_and_wait(
-    engine: &dyn CudaContainerEngine,
-    name: &str,
-    wait: &mut EngineFuture<'_, ContainerExit>,
-) -> Result<ContainerExit, CudaSupervisorError> {
-    engine
-        .stop(name)
-        .await
-        .map_err(CudaSupervisorError::Engine)?;
-    wait.await.map_err(CudaSupervisorError::Engine)
-}
-
-async fn reconcile_container(
-    engine: &dyn CudaContainerEngine,
-    plan: &DockerCreatePlan,
-    identity: &ContainerIdentity,
-) -> Result<ContainerPhase, CudaSupervisorError> {
-    if let Some(snapshot) = engine
-        .inspect(&identity.name)
-        .await
-        .map_err(CudaSupervisorError::Engine)?
-    {
-        if snapshot.identity != *identity {
-            return Err(CudaSupervisorError::IdentityConflict(identity.name.clone()));
-        }
-        return Ok(snapshot.phase);
-    }
-
-    engine
-        .create(plan, identity)
-        .await
-        .map_err(CudaSupervisorError::Engine)?;
-    let created = engine
-        .inspect(&identity.name)
-        .await
-        .map_err(CudaSupervisorError::Engine)?
-        .ok_or_else(|| {
-            CudaSupervisorError::Invariant(format!(
-                "container {} is missing immediately after create",
-                identity.name
-            ))
-        })?;
-    if created.identity != *identity {
-        return Err(CudaSupervisorError::IdentityConflict(identity.name.clone()));
-    }
-    if created.phase != ContainerPhase::Created {
-        return Err(CudaSupervisorError::Invariant(format!(
-            "new container {} has unexpected phase {:?}",
-            identity.name, created.phase
-        )));
-    }
-    Ok(created.phase)
-}
-
-async fn wait_for_cancellation(cancellation: &mut tokio::sync::watch::Receiver<bool>) {
-    loop {
-        if *cancellation.borrow_and_update() {
-            return;
-        }
-        if cancellation.changed().await.is_err() {
-            return;
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum CudaSupervisorError {
     Contract(CudaContractError),
@@ -289,6 +185,21 @@ pub enum CudaSupervisorError {
 impl From<CudaContractError> for CudaSupervisorError {
     fn from(error: CudaContractError) -> Self {
         Self::Contract(error)
+    }
+}
+
+impl From<ContainerReconcileError> for CudaSupervisorError {
+    fn from(error: ContainerReconcileError) -> Self {
+        match error {
+            ContainerReconcileError::Engine(error) => Self::Engine(error),
+            ContainerReconcileError::MissingAfterCreate(name) => Self::Invariant(format!(
+                "container {name} is missing immediately after create"
+            )),
+            ContainerReconcileError::IdentityConflict(name) => Self::IdentityConflict(name),
+            ContainerReconcileError::UnexpectedCreatedPhase { name, phase } => Self::Invariant(
+                format!("new container {name} has unexpected phase {phase:?}"),
+            ),
+        }
     }
 }
 

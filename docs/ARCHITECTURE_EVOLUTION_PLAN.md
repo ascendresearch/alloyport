@@ -144,8 +144,11 @@ canonical Interaction events, wire messages, and durable audit/evidence as separ
 - [x] Interaction persistence contract runs canonical deduplication, output correlation, cursor,
   run isolation, and terminal authorization semantics against SQLite and a focused reference while
   replay-to-live delivery remains an application concern.
+- [x] CUDA and Ascend fixed-accelerator execution share typed container reconciliation, running
+  supervision, output-budget, and terminal-outcome policy while retaining backend-specific plans,
+  device/environment facts, and hardware gates.
 - [ ] Remaining high-value Port contract suites implemented in the order recorded in
-  `PORT_CONTRACTS.md`, beginning with execution backends and gRPC adapters.
+  `PORT_CONTRACTS.md`, beginning with gRPC adapters.
 - [ ] Common gRPC middleware/error policy established.
 - [x] Strict schema-1 server configuration, explicit locator precedence, file-relative paths, and a
   shared serving/identity-administration command boundary introduced.

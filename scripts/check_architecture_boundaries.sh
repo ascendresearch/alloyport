@@ -421,6 +421,26 @@ if ! rg -q '^pub trait CudaContainerEngine' \
     crates/alloyport-worker/src/cuda_supervisor/engine.rs; then
     violations+=("CUDA container engine plugin port is missing")
 fi
+if ! rg -q '^pub\(crate\) async fn supervise_running_container' \
+    crates/alloyport-worker/src/container_supervision.rs \
+    || ! rg -q '^pub\(crate\) async fn reconcile_container' \
+        crates/alloyport-worker/src/container_supervision.rs \
+    || ! rg -q '^pub\(crate\) fn classify_fixture_outcome' \
+        crates/alloyport-worker/src/container_outcome.rs \
+    || ! rg -q '^    fn cuda_and_ascend_share_terminal_outcome_contract' \
+        crates/alloyport-worker/src/container_outcome.rs \
+    || ! rg -q 'impl crate::container_supervision::RunningContainerEngine for dyn CudaContainerEngine' \
+        crates/alloyport-worker/src/cuda_supervisor/engine.rs \
+    || ! rg -q 'impl crate::container_supervision::RunningContainerEngine for dyn AscendContainerEngine' \
+        crates/alloyport-worker/src/ascend_supervisor/engine.rs; then
+    violations+=("CUDA and Ascend no longer share container reconciliation, supervision, and outcome policy")
+fi
+if duplicated_accelerator_supervision=$(rg -n \
+    '^mod outcome;|^async fn collect_running|^async fn stop_and_wait|^async fn reconcile_container' \
+    crates/alloyport-worker/src/cuda_supervisor.rs \
+    crates/alloyport-worker/src/ascend_supervisor.rs); then
+    violations+=("accelerator-specific supervisor duplicated shared container lifecycle policy: ${duplicated_accelerator_supervision}")
+fi
 
 if ((${#violations[@]} != 0)); then
     printf 'Architecture boundary check failed:\n' >&2

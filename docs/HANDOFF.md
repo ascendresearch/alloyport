@@ -774,7 +774,11 @@ now also has shared substitutability evidence: SQLite and a focused memory refer
 sequence, canonical deduplication/conflict, raw-output gap/overlap, bounded cursor, run isolation,
 and terminal grant-revocation rules. SQLite retains reopen evidence, while replay-to-live delivery,
 slow-consumer recovery, authorization, and sanitization remain application-level tests. Execution
-backends and gRPC adapters are the next Port contract slice.
+backend commonality has advanced as well: CUDA and Ascend now use one transport-neutral container
+identity reconciler, one running-container cancellation/timeout/output supervisor, and one terminal
+outcome classifier with backend-specific typed policy constants. Their create plans, image/device
+checks, environment facts, receipts, and hardware gates remain deliberately separate. gRPC adapter
+status/authentication contracts are the next slice.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 
