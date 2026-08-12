@@ -3,9 +3,11 @@
 - Handoff date: 2026-08-12
 - Repository: `/data/projects/shinesheep/alloyport`
 - Branch: `main`
-- Baseline: this file is part of the repository's initial commit; run `git rev-parse HEAD` to obtain
-  its local commit ID
-- Project state: architecture bootstrap with fixed CUDA and fixed Ascend runtime composition
+- Baseline: the 2026-08-12 closeout includes `c6da8a8` (shared authenticated gRPC context) and
+  `96b3a01` (explicit internal gRPC message bounds); run `git log --oneline` for the handoff commit
+  and later local history
+- Project state: modular-monolith architecture evolution with working fixed CUDA and fixed Ascend
+  runtime composition
 
 This document is the entry point for a new Codex session. It separates product intent, accepted
 architecture, implemented behavior, and planned behavior so that work does not drift simply because
@@ -639,9 +641,10 @@ The architecture-remediation round closed on 2026-08-11. Its layering, persisten
 error, and module-size constraints are recorded in `docs/ARCHITECTURE_REMEDIATION.md` and enforced by
 the two boundary scripts. The fixed Ascend runtime extends those ports through the existing backend
 registry with verified bundle materialization, Docker composition, durable device evidence,
-Artifact-gated receipt publication, and production-binary configuration. The remaining Ascend work
-is the trusted pinned-image harness and explicit real-environment acceptance, not a new control-state
-machine.
+Artifact-gated receipt publication, and production-binary configuration. The trusted pinned-image
+harness and explicit real-environment acceptance have passed. Remaining Ascend work is a separately
+recorded legacy-SSH parity attempt plus production-binary reconnect/configuration exercise, not a
+new control-state machine or another execution of the already accepted fixture.
 
 The following commands passed at the closing verification:
 
@@ -653,7 +656,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 171 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 182 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -677,6 +680,13 @@ repository tests for:
 - worker-local idempotency and changed-content conflict;
 - default shell-executor denial and explicit local opt-in;
 - protocol validation for sandbox paths and artifact digests.
+
+The closing API-boundary slices also prove centralized domain-error-to-gRPC status mapping, one
+authenticated request context across Control/Artifact/Interaction, credential revalidation before
+each committed Artifact upload chunk, shared client/server message-size envelopes, server rejection
+of oversized preview frames, gap-free 64 KiB backend-neutral preview splitting, and preservation of
+valid UTF-8 character boundaries. Artifact upload framing remains derived from its configured chunk
+limit; large authoritative output remains in the CAS rather than widening Control or Interaction.
 
 The loopback control-plane suite also attaches the fake executor, disconnects and reconnects while
 the task is still running, verifies terminal replay without a second executor/receipt, and cancels a
@@ -940,4 +950,5 @@ API yet:
 > Read `docs/HANDOFF.md` and Designs 0018, 0021, and 0022. Populate an uncommitted unified Ascend
 > worker config from the verified local image ID and a fresh read-only inventory, start the production
 > binary against a loopback controller, and verify bounded reconnect plus bound-device heartbeats
-> without rerunning or duplicating the already accepted real outbound fixture.
+> without rerunning or duplicating the already accepted real outbound fixture. Do not add a public
+> task-submission API in this slice.
