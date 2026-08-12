@@ -7,6 +7,7 @@ mod agent_runtime_policy;
 mod agent_runtime_support;
 mod artifact;
 mod assignment;
+mod candidate_build;
 mod candidate_source;
 mod device;
 mod execution;
@@ -40,10 +41,18 @@ pub use agent_runtime_support::{
     AgentLoopAdvance, AgentRuntimeFaultInjector, AgentRuntimeFaultPoint, AgentToolGateway,
     EpisodeRepository, EpisodeRepositoryError, InMemoryEpisodeRepository, NoAgentRuntimeFault,
     OneShotAgentRuntimeFault, RuntimeToolDescriptor, ScriptedFakeToolGateway, ScriptedToolStep,
-    ToolGatewayAction, ToolGatewayError, ToolGatewayOutcome, ToolInvocation, VersionedEpisodeState,
+    ToolGatewayAction, ToolGatewayError, ToolGatewayFuture, ToolGatewayOutcome, ToolInvocation,
+    VersionedEpisodeState,
 };
 pub use artifact::{ArtifactDescriptor, DigestParseError, Sha256Digest};
 pub use assignment::{AssignmentContract, EnvironmentEntry, ExecutionContract, ResourceContract};
+pub use candidate_build::{
+    ASCEND_BUILD_BUNDLE_MEDIA_TYPE, ASCEND_BUILD_FEATURE, ASCEND_BUILD_GATE_REVISION_V1,
+    ASCEND_BUILD_RECEIPT_SCHEMA_V1, AscendBuildAttemptError, AscendBuildAttemptFuture,
+    AscendBuildAttemptObservation, AscendBuildAttemptPort, AscendBuildEnvironment,
+    AscendBuildReceipt, AscendBuildTerminal, CANDIDATE_BUILD_BUNDLE_SCHEMA_V1,
+    CandidateBuildBundle, CandidateBuildError, CandidateBuildFile,
+};
 pub use candidate_source::{
     CANDIDATE_SOURCE_MANIFEST_SCHEMA_V1, CandidateSourceError, CandidateSourceFile,
     CandidateSourceManifest, CandidateSourceManifestSpec, SOURCE_GATE_RECEIPT_SCHEMA_V1,

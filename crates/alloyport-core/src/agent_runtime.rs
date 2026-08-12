@@ -1,13 +1,5 @@
 //! Durable, provider-neutral Agent Episode reducer and deterministic fake adapters.
 
-use crate::{
-    AgentEpisodeRecord, AgentLoopPolicy, EpisodeId, EpisodeStatus, GatewayToolCall,
-    ModelAttemptRecord, ModelAttemptSpec, ModelAttemptStatus, ModelGateway, ModelGatewayOutcome,
-    ModelTurnRequest, Sha256Digest, ToolEffectClass, ToolOperationRecord, ToolOperationSpec,
-    ToolOperationStatus, ToolResultAuthority, TurnRecord, TurnSpec,
-};
-use serde::Serialize;
-
 use crate::agent_runtime_helpers::{
     AgentLoopRuntimeError, crash_if, derive_model_continuation_input_digest,
     derived_model_attempt_id, derived_tool_operation_id, derived_turn_id, digest_label,
@@ -18,7 +10,13 @@ use crate::agent_runtime_support::{
     EpisodeRepository, RuntimeToolDescriptor, ToolGatewayOutcome, ToolInvocation,
     VersionedEpisodeState,
 };
-
+use crate::{
+    AgentEpisodeRecord, AgentLoopPolicy, EpisodeId, EpisodeStatus, GatewayToolCall,
+    ModelAttemptRecord, ModelAttemptSpec, ModelAttemptStatus, ModelGateway, ModelGatewayOutcome,
+    ModelTurnRequest, Sha256Digest, ToolEffectClass, ToolOperationRecord, ToolOperationSpec,
+    ToolOperationStatus, ToolResultAuthority, TurnRecord, TurnSpec,
+};
+use serde::Serialize;
 /// Immutable runtime values not interpreted by a provider adapter.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentLoopRuntimeSpec {
@@ -175,7 +173,7 @@ impl AgentLoopRunner {
                 self.plan_turn_tools(repository, versioned, tools, faults)
             }
             EpisodeStatus::ToolWorkPending => {
-                Self::drive_tools(repository, versioned, tools, faults)
+                Self::drive_tools(repository, versioned, tools, faults).await
             }
             EpisodeStatus::StopReview => Self::review_stop(repository, versioned),
             EpisodeStatus::CancellationPending => {
@@ -215,6 +213,7 @@ impl AgentLoopRunner {
             matches!(
                 operation.record.status(),
                 ToolOperationStatus::Dispatching
+                    | ToolOperationStatus::Running
                     | ToolOperationStatus::Ambiguous
                     | ToolOperationStatus::Reconciling
             )
@@ -628,7 +627,7 @@ impl AgentLoopRunner {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn drive_tools<R, T, F>(
+    async fn drive_tools<R, T, F>(
         repository: &mut R,
         mut versioned: VersionedEpisodeState,
         tools: &mut T,
@@ -696,13 +695,19 @@ impl AgentLoopRunner {
             versioned.state.tool_operations[index]
                 .record
                 .transition(ToolOperationStatus::Reconciling)?;
-        } else if status != ToolOperationStatus::Reconciling {
+        } else if !matches!(
+            status,
+            ToolOperationStatus::Reconciling | ToolOperationStatus::Running
+        ) {
             return Err(AgentLoopRuntimeError::InvalidDurableState(
                 "tool work contains an unsupported nonterminal state",
             ));
         }
-        let reconciling = versioned.state.tool_operations[index].record.status()
-            == ToolOperationStatus::Reconciling;
+        let dispatch_status = versioned.state.tool_operations[index].record.status();
+        let reconciling = matches!(
+            dispatch_status,
+            ToolOperationStatus::Reconciling | ToolOperationStatus::Running
+        );
         let invocation = ToolInvocation {
             operation_id: versioned.state.tool_operations[index].record.id().clone(),
             call: versioned.state.tool_operations[index].call.clone(),
@@ -711,9 +716,9 @@ impl AgentLoopRunner {
         versioned.revision = repository.save(versioned.revision, versioned.state.clone())?;
         crash_if(faults, AgentRuntimeFaultPoint::AfterToolDispatchCommit)?;
         let outcome = if reconciling {
-            tools.reconcile(&invocation)?
+            tools.reconcile(&invocation).await?
         } else {
-            tools.execute(&invocation)?
+            tools.execute(&invocation).await?
         };
         crash_if(faults, AgentRuntimeFaultPoint::AfterToolOutcomeBeforeCommit)?;
         match outcome {
@@ -742,8 +747,17 @@ impl AgentLoopRunner {
                 crash_if(faults, AgentRuntimeFaultPoint::AfterToolResultCommit)?;
                 Ok(AgentLoopAdvance::Progressed(EpisodeStatus::ToolWorkPending))
             }
+            ToolGatewayOutcome::Pending { .. } => {
+                if dispatch_status != ToolOperationStatus::Running {
+                    versioned.state.tool_operations[index]
+                        .record
+                        .transition(ToolOperationStatus::Running)?;
+                }
+                repository.save(versioned.revision, versioned.state)?;
+                Ok(AgentLoopAdvance::Progressed(EpisodeStatus::ToolWorkPending))
+            }
             ToolGatewayOutcome::Ambiguous { .. } => {
-                if !reconciling {
+                if dispatch_status != ToolOperationStatus::Reconciling {
                     versioned.state.tool_operations[index]
                         .record
                         .transition(ToolOperationStatus::Ambiguous)?;
@@ -781,7 +795,6 @@ impl AgentLoopRunner {
         Ok(progress(next))
     }
 }
-
 #[cfg(test)]
 #[path = "agent_runtime_tests.rs"]
 mod agent_runtime_tests;

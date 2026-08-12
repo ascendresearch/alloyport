@@ -17,6 +17,7 @@ pub enum ExecutionKind {
     Shell = 3,
     CudaFixture = 4,
     AscendFixture = 5,
+    AscendBuild = 6,
 }
 
 impl ExecutionKind {
@@ -29,6 +30,7 @@ impl ExecutionKind {
             Self::Shell => "EXECUTOR_KIND_SHELL",
             Self::CudaFixture => "EXECUTOR_KIND_CUDA_FIXTURE",
             Self::AscendFixture => "EXECUTOR_KIND_ASCEND_FIXTURE",
+            Self::AscendBuild => "EXECUTOR_KIND_ASCEND_BUILD",
         }
     }
 }
@@ -49,6 +51,7 @@ impl TryFrom<i32> for ExecutionKind {
             3 => Ok(Self::Shell),
             4 => Ok(Self::CudaFixture),
             5 => Ok(Self::AscendFixture),
+            6 => Ok(Self::AscendBuild),
             _ => Err(ExecutionKindError(value)),
         }
     }

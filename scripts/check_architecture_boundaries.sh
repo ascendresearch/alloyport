@@ -549,6 +549,34 @@ if candidate_tool_provider_coupling=$(rg -n -i \
     '\b(deepseek|anthropic|openai|reqwest|curl)\b' crates/alloyport-candidate-tools); then
     violations+=("candidate tools gained provider or HTTP coupling: ${candidate_tool_provider_coupling}")
 fi
+if ! rg -q '^    Running,' crates/alloyport-core/src/agent.rs \
+    || ! rg -q '^    Pending \{' crates/alloyport-core/src/agent_runtime_support.rs \
+    || ! rg -q 'tools\.reconcile\(&invocation\)\.await' crates/alloyport-core/src/agent_runtime.rs; then
+    violations+=("remote Agent tools no longer retain asynchronous pending/running reconciliation semantics")
+fi
+if ! rg -q 'AscendBuild = 6' crates/alloyport-core/src/execution.rs \
+    || ! rg -q '^pub trait AscendBuildAttemptPort' crates/alloyport-core/src/candidate_build.rs \
+    || ! rg -q '^pub struct AscendBuildReceipt' crates/alloyport-core/src/candidate_build.rs \
+    || ! rg -q '^pub struct AscendBuildPolicy' crates/alloyport-worker/src/ascend_build.rs \
+    || ! rg -q '^impl AscendBuildAttemptPort for WorkerBuildAttemptAdapter' \
+        crates/alloyport-server/src/build_attempt.rs \
+    || ! rg -q '^    fn finished_observation\(' \
+        crates/alloyport-server/src/adapters/sqlite/control_assignments.rs \
+    || ! rg -q 'verify_source_gate_receipt\(' \
+        crates/alloyport-candidate-tools/src/build_tool.rs; then
+    violations+=("Ascend Build Gate no longer crosses typed candidate, worker, and control-plane ports")
+fi
+if build_provider_coupling=$(rg -n -i '\b(deepseek|anthropic|openai|reqwest|curl)\b' \
+    crates/alloyport-core/src/candidate_build.rs \
+    crates/alloyport-candidate-tools/src/build_tool.rs \
+    crates/alloyport-worker/src/ascend_build.rs \
+    crates/alloyport-server/src/build_attempt.rs); then
+    violations+=("Ascend Build Gate gained provider or HTTP coupling: ${build_provider_coupling}")
+fi
+if ! rg -q 'ExecutionKind::AscendFixture' crates/alloyport-worker/src/ascend.rs \
+    || ! rg -q 'ExecutionKind::AscendBuild' crates/alloyport-worker/src/ascend_build.rs; then
+    violations+=("dynamic Ascend build and fixed Ascend fixture contracts were conflated")
+fi
 
 if ((${#violations[@]} != 0)); then
     printf 'Architecture boundary check failed:\n' >&2

@@ -7,6 +7,8 @@ use crate::{
 use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
+use std::future::Future;
+use std::pin::Pin;
 
 /// Compare-and-swap repository used by the reducer; adapters own physical durability.
 pub trait EpisodeRepository: Debug + Send {
@@ -137,10 +139,16 @@ pub enum ToolGatewayOutcome {
         receipt_digests: Vec<Sha256Digest>,
         satisfies_subtask: bool,
     },
+    Pending {
+        diagnostic_digest: Sha256Digest,
+    },
     Ambiguous {
         diagnostic_digest: Sha256Digest,
     },
 }
+
+pub type ToolGatewayFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<ToolGatewayOutcome, ToolGatewayError>> + Send + 'a>>;
 
 pub trait AgentToolGateway: Debug + Send {
     fn descriptor(&self, name: &str) -> Option<RuntimeToolDescriptor>;
@@ -150,18 +158,16 @@ pub trait AgentToolGateway: Debug + Send {
     /// # Errors
     ///
     /// Returns an error when the fake or adapter cannot process the request.
-    fn execute(&mut self, request: &ToolInvocation)
-    -> Result<ToolGatewayOutcome, ToolGatewayError>;
+    #[must_use]
+    fn execute<'a>(&'a mut self, request: &'a ToolInvocation) -> ToolGatewayFuture<'a>;
 
     /// Reconciles an operation whose physical outcome is unknown.
     ///
     /// # Errors
     ///
     /// Returns an error when reconciliation cannot be performed.
-    fn reconcile(
-        &mut self,
-        request: &ToolInvocation,
-    ) -> Result<ToolGatewayOutcome, ToolGatewayError>;
+    #[must_use]
+    fn reconcile<'a>(&'a mut self, request: &'a ToolInvocation) -> ToolGatewayFuture<'a>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,18 +238,12 @@ impl AgentToolGateway for ScriptedFakeToolGateway {
         self.descriptors.get(name).cloned()
     }
 
-    fn execute(
-        &mut self,
-        request: &ToolInvocation,
-    ) -> Result<ToolGatewayOutcome, ToolGatewayError> {
-        self.invoke(ToolGatewayAction::Execute, request)
+    fn execute<'a>(&'a mut self, request: &'a ToolInvocation) -> ToolGatewayFuture<'a> {
+        Box::pin(async move { self.invoke(ToolGatewayAction::Execute, request) })
     }
 
-    fn reconcile(
-        &mut self,
-        request: &ToolInvocation,
-    ) -> Result<ToolGatewayOutcome, ToolGatewayError> {
-        self.invoke(ToolGatewayAction::Reconcile, request)
+    fn reconcile<'a>(&'a mut self, request: &'a ToolInvocation) -> ToolGatewayFuture<'a> {
+        Box::pin(async move { self.invoke(ToolGatewayAction::Reconcile, request) })
     }
 }
 

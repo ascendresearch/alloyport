@@ -112,14 +112,25 @@ impl WorkerState {
                     "shell executor is disabled".to_owned(),
                 ));
             }
-            if executor == ExecutionKind::CudaFixture && !self.policy.allow_cuda_fixture {
+            if executor == ExecutionKind::CudaFixture
+                && self.policy.allowed_fixed_executors & super::ALLOW_CUDA_FIXTURE == 0
+            {
                 return Err(WorkerError::PolicyViolation(
                     "CUDA fixture executor is disabled".to_owned(),
                 ));
             }
-            if executor == ExecutionKind::AscendFixture && !self.policy.allow_ascend_fixture {
+            if executor == ExecutionKind::AscendFixture
+                && self.policy.allowed_fixed_executors & super::ALLOW_ASCEND_FIXTURE == 0
+            {
                 return Err(WorkerError::PolicyViolation(
                     "Ascend fixture executor is disabled".to_owned(),
+                ));
+            }
+            if executor == ExecutionKind::AscendBuild
+                && self.policy.allowed_fixed_executors & super::ALLOW_ASCEND_BUILD == 0
+            {
+                return Err(WorkerError::PolicyViolation(
+                    "Ascend build executor is disabled".to_owned(),
                 ));
             }
         }

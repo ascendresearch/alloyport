@@ -11,6 +11,7 @@ mod assignment_delivery;
 mod assignment_reconciliation;
 mod attempt_observer;
 mod attempt_projection;
+mod build_attempt;
 mod control_transport;
 mod grpc_status;
 pub mod identity;
@@ -78,6 +79,7 @@ const OUTBOX_ORPHAN_RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const INTERACTION_LIVE_CAPACITY: usize = 1_024;
 const INTERACTION_REPLAY_BATCH_SIZE: usize = 256;
 
+pub use build_attempt::WorkerBuildAttemptAdapter;
 pub use storage::{AttemptState as AssignmentState, LeaseRecord, ManualClock};
 
 /// Read-only worker registry view for scheduling and diagnostics.

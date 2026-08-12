@@ -1,11 +1,12 @@
+use crate::build_tool::{CandidateBuildTool, CandidateBuildToolConfig, REQUEST_ASCEND_BUILD_TOOL};
 use crate::materialization::{CandidateMaterialization, CandidateMaterializationError};
 use alloyport_artifacts::{ArtifactStore, ArtifactStoreError, IngestRequest};
 use alloyport_core::{
     AgentToolGateway, ArtifactDescriptor, BundlePath, CandidateId, CandidateSourceFile,
     CandidateSourceManifest, CandidateSourceManifestSpec, GeneratedSourceBundle,
     GenerationStrategy, MigrationSpec, RuntimeToolDescriptor, Sha256Digest, SourceGateReceipt,
-    TaskId, ToolEffectClass, ToolGatewayError, ToolGatewayOutcome, ToolInvocation,
-    ToolOperationStatus, ToolResultAuthority, evaluate_source_gate,
+    TaskId, ToolEffectClass, ToolGatewayError, ToolGatewayFuture, ToolGatewayOutcome,
+    ToolInvocation, ToolOperationStatus, ToolResultAuthority, evaluate_source_gate,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -27,6 +28,7 @@ pub struct CandidateToolConfig {
     generation_strategy: GenerationStrategy,
     public_symbol: String,
     input_source_paths: BTreeSet<BundlePath>,
+    target_architecture: String,
 }
 
 impl CandidateToolConfig {
@@ -50,7 +52,22 @@ impl CandidateToolConfig {
             generation_strategy,
             public_symbol: migration_spec.public_entry().symbol().to_owned(),
             input_source_paths,
+            target_architecture: migration_spec.target().soc().to_owned(),
         }
+    }
+
+    pub(crate) fn matches_manifest(&self, manifest: &CandidateSourceManifest) -> bool {
+        manifest.matches_context(
+            &self.task_id,
+            self.migration_spec_digest,
+            self.generation_strategy,
+            &self.public_symbol,
+            &self.input_source_paths,
+        )
+    }
+
+    pub(crate) fn target_architecture(&self) -> &str {
+        &self.target_architecture
     }
 }
 
@@ -59,6 +76,7 @@ pub struct CandidateToolGateway {
     config: CandidateToolConfig,
     artifacts: Arc<dyn ArtifactStore>,
     workspace_root: PathBuf,
+    build: Option<CandidateBuildTool>,
 }
 
 impl Debug for CandidateToolGateway {
@@ -67,6 +85,7 @@ impl Debug for CandidateToolGateway {
             .debug_struct("CandidateToolGateway")
             .field("config", &self.config)
             .field("workspace_root", &self.workspace_root)
+            .field("build_enabled", &self.build.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -101,7 +120,19 @@ impl CandidateToolGateway {
             config,
             artifacts,
             workspace_root,
+            build: None,
         })
+    }
+
+    /// Enables the remote Ascend build tool without changing source-tool behavior.
+    #[must_use]
+    pub fn with_ascend_build(
+        mut self,
+        config: CandidateBuildToolConfig,
+        attempts: Box<dyn alloyport_core::AscendBuildAttemptPort>,
+    ) -> Self {
+        self.build = Some(CandidateBuildTool::new(config, attempts));
+        self
     }
 
     fn submit(&self, request: &ToolInvocation) -> Result<ToolGatewayOutcome, ToolGatewayError> {
@@ -242,7 +273,7 @@ impl CandidateToolGateway {
             },
             result_digest: artifact.digest,
             receipt_digests: vec![artifact.digest],
-            satisfies_subtask: passed,
+            satisfies_subtask: passed && self.build.is_none(),
         })
     }
 
@@ -270,22 +301,54 @@ impl AgentToolGateway for CandidateToolGateway {
                 effect_class: ToolEffectClass::ReadOnly,
                 result_authority: ToolResultAuthority::VerifiedReference,
             }),
+            REQUEST_ASCEND_BUILD_TOOL if self.build.is_some() => Some(RuntimeToolDescriptor {
+                name: name.to_owned(),
+                version: "1".to_owned(),
+                effect_class: ToolEffectClass::RemoteExecution,
+                result_authority: ToolResultAuthority::VerifiedReference,
+            }),
             _ => None,
         }
     }
 
-    fn execute(
-        &mut self,
-        request: &ToolInvocation,
-    ) -> Result<ToolGatewayOutcome, ToolGatewayError> {
-        self.invoke(request)
+    fn execute<'a>(&'a mut self, request: &'a ToolInvocation) -> ToolGatewayFuture<'a> {
+        Box::pin(async move {
+            if request.call.name == REQUEST_ASCEND_BUILD_TOOL {
+                let build = self
+                    .build
+                    .as_mut()
+                    .ok_or(ToolGatewayError::UnexpectedRequest)?;
+                return build
+                    .execute(
+                        &self.config,
+                        self.artifacts.as_ref(),
+                        &self.workspace_root,
+                        request,
+                    )
+                    .await;
+            }
+            self.invoke(request)
+        })
     }
 
-    fn reconcile(
-        &mut self,
-        request: &ToolInvocation,
-    ) -> Result<ToolGatewayOutcome, ToolGatewayError> {
-        self.invoke(request)
+    fn reconcile<'a>(&'a mut self, request: &'a ToolInvocation) -> ToolGatewayFuture<'a> {
+        Box::pin(async move {
+            if request.call.name == REQUEST_ASCEND_BUILD_TOOL {
+                let build = self
+                    .build
+                    .as_mut()
+                    .ok_or(ToolGatewayError::UnexpectedRequest)?;
+                return build
+                    .reconcile(
+                        &self.config,
+                        self.artifacts.as_ref(),
+                        &self.workspace_root,
+                        request,
+                    )
+                    .await;
+            }
+            self.invoke(request)
+        })
     }
 }
 
@@ -336,7 +399,7 @@ fn candidate_id(
     .map_err(|error| adapter_error(error.to_string()))
 }
 
-fn ingest_bytes(
+pub(crate) fn ingest_bytes(
     artifacts: &dyn ArtifactStore,
     bytes: &[u8],
 ) -> Result<alloyport_artifacts::ArtifactIdentity, ToolGatewayError> {
@@ -354,7 +417,7 @@ fn ingest_bytes(
         .map_err(|error| artifact_error(&error))
 }
 
-fn read_bounded(
+pub(crate) fn read_bounded(
     artifacts: &dyn ArtifactStore,
     digest: Sha256Digest,
     maximum: u64,
@@ -375,7 +438,7 @@ fn read_bounded(
     Ok(bytes)
 }
 
-fn adapter_error(message: impl Into<String>) -> ToolGatewayError {
+pub(crate) fn adapter_error(message: impl Into<String>) -> ToolGatewayError {
     ToolGatewayError::Adapter(message.into())
 }
 
@@ -383,6 +446,6 @@ fn artifact_error(error: &ArtifactStoreError) -> ToolGatewayError {
     adapter_error(error.to_string())
 }
 
-fn materialization_error(error: &CandidateMaterializationError) -> ToolGatewayError {
+pub(crate) fn materialization_error(error: &CandidateMaterializationError) -> ToolGatewayError {
     adapter_error(error.to_string())
 }

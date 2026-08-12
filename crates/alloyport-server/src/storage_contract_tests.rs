@@ -153,6 +153,11 @@ fn observation_transition_contract(
         repository.attempt_state("attempt-observe")?,
         AttemptState::Finished
     );
+    let finished = repository
+        .finished_observation("attempt-observe")?
+        .expect("terminal observation remains queryable");
+    assert_eq!(finished.outcome, AttemptOutcome::Succeeded);
+    assert_eq!(finished.detail, "completed");
     assert_eq!(
         repository
             .request_cancellation("attempt-observe", "too late", 3_004)?
@@ -245,6 +250,10 @@ fn identity_contract(repository: &impl AttemptLifecycleHarness) -> Result<(), Bo
 trait AttemptLifecycleHarness: AttemptLifecycleRepository {
     fn populate_contract_fixtures(&self) -> Result<(), RepositoryError>;
     fn attempt_state(&self, attempt_id: &str) -> Result<AttemptState, RepositoryError>;
+    fn finished_observation(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<FinishedObservation>, RepositoryError>;
 }
 
 impl AttemptLifecycleHarness for SqliteControlRepository {
@@ -269,6 +278,13 @@ impl AttemptLifecycleHarness for SqliteControlRepository {
             .map(|assignment| assignment.state)
             .ok_or_else(|| RepositoryError::NotFound(attempt_id.to_owned()))
     }
+
+    fn finished_observation(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<FinishedObservation>, RepositoryError> {
+        AssignmentReadRepository::finished_observation(self, attempt_id)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -283,6 +299,7 @@ struct MemoryAttempt {
     state: AttemptState,
     lease: Option<LeaseRecord>,
     cancellation_reason: Option<String>,
+    finished: Option<FinishedObservation>,
 }
 
 impl MemoryAttemptLifecycleRepository {
@@ -321,6 +338,16 @@ impl AttemptLifecycleHarness for MemoryAttemptLifecycleRepository {
             .get(attempt_id)
             .map(|attempt| attempt.state)
             .ok_or_else(|| RepositoryError::NotFound(attempt_id.to_owned()))
+    }
+
+    fn finished_observation(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<FinishedObservation>, RepositoryError> {
+        Ok(self
+            .attempts()?
+            .get(attempt_id)
+            .and_then(|attempt| attempt.finished.clone()))
     }
 }
 
@@ -387,6 +414,11 @@ impl AttemptLifecycleRepository for MemoryAttemptLifecycleRepository {
                 }
             }
         };
+        if disposition == ObservationDisposition::Applied
+            && let AttemptObservation::Finished(finished) = &observation.observation
+        {
+            attempt.finished = Some((**finished).clone());
+        }
         Ok(disposition)
     }
 
@@ -544,6 +576,7 @@ fn memory_attempt(
             expired_at_ms: None,
         }),
         cancellation_reason: None,
+        finished: None,
     })
 }
 

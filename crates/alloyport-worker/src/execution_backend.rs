@@ -245,7 +245,11 @@ impl AscendExecutionBackend {
 
 impl ExecutionBackend for AscendExecutionBackend {
     fn executor_kinds(&self) -> &'static [ExecutionKind] {
-        &[ExecutionKind::AscendFixture]
+        match self.runtime.executor_kind() {
+            ExecutionKind::AscendFixture => &[ExecutionKind::AscendFixture],
+            ExecutionKind::AscendBuild => &[ExecutionKind::AscendBuild],
+            _ => unreachable!("Ascend runtime owns only fixed Ascend execution kinds"),
+        }
     }
 
     fn execute<'a>(&'a self, request: BackendExecutionRequest<'a>) -> BackendExecutionFuture<'a> {

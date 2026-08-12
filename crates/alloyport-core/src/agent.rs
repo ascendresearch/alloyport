@@ -236,6 +236,7 @@ pub enum ToolOperationStatus {
     AwaitingPermission,
     Authorized,
     Dispatching,
+    Running,
     Ambiguous,
     Reconciling,
     RejectedAsInvalid,
@@ -259,6 +260,16 @@ impl ToolOperationStatus {
             Self::Authorized => matches!(next, Self::Dispatching | Self::Cancelled),
             Self::Dispatching => matches!(
                 next,
+                Self::Running
+                    | Self::Ambiguous
+                    | Self::Succeeded
+                    | Self::CandidateFailed
+                    | Self::InfraFailed
+                    | Self::TimedOut
+                    | Self::Cancelled
+            ),
+            Self::Running => matches!(
+                next,
                 Self::Ambiguous
                     | Self::Succeeded
                     | Self::CandidateFailed
@@ -269,7 +280,8 @@ impl ToolOperationStatus {
             Self::Ambiguous => matches!(next, Self::Reconciling),
             Self::Reconciling => matches!(
                 next,
-                Self::Succeeded
+                Self::Running
+                    | Self::Succeeded
                     | Self::CandidateFailed
                     | Self::InfraFailed
                     | Self::TimedOut

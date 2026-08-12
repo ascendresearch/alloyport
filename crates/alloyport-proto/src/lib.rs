@@ -43,7 +43,7 @@ pub mod interaction_v1 {
 }
 
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 4;
+pub const PROTOCOL_MINOR: u32 = 5;
 /// Maximum encoded worker-to-server control frame accepted by the service.
 pub const MAX_WORKER_TO_SERVER_MESSAGE_BYTES: usize = 128 * 1024;
 /// Maximum encoded server-to-worker control frame accepted by the worker.
@@ -148,7 +148,7 @@ pub fn validate_worker_hello(hello: &v1::WorkerHello) -> Result<(), ValidationEr
     if hello
         .features
         .iter()
-        .any(|feature| feature == "ascend-fixture-v1")
+        .any(|feature| matches!(feature.as_str(), "ascend-fixture-v1" | "ascend-build-v1"))
     {
         if v1::Backend::try_from(capabilities.backend).unwrap_or(v1::Backend::Unspecified)
             != v1::Backend::Ascend

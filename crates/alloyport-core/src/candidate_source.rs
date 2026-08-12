@@ -193,6 +193,26 @@ impl CandidateSourceManifest {
     }
 
     #[must_use]
+    pub const fn task_id(&self) -> &TaskId {
+        &self.task_id
+    }
+
+    #[must_use]
+    pub const fn migration_spec_digest(&self) -> Sha256Digest {
+        self.migration_spec_digest
+    }
+
+    #[must_use]
+    pub const fn generation_strategy(&self) -> GenerationStrategy {
+        self.generation_strategy
+    }
+
+    #[must_use]
+    pub const fn source_bundle_digest(&self) -> Sha256Digest {
+        self.source_bundle_digest
+    }
+
+    #[must_use]
     pub fn public_symbol(&self) -> &str {
         &self.public_symbol
     }

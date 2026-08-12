@@ -3,16 +3,20 @@ use crate::materialization::{CandidateMaterialization, CandidateMaterializationE
 use alloyport_artifacts::{ArtifactStore, InMemoryArtifactStore};
 use alloyport_core::{
     AgentEpisodeRecord, AgentLoopAdvance, AgentLoopPolicy, AgentLoopRunner, AgentLoopRuntimeSpec,
-    AgentToolGateway, DurableEpisodeState, EpisodeId, EpisodeRepository, EpisodeSpec,
-    EpisodeStatus, GatewayToolCall, GatewayTurn, GatewayTurnExchange, InMemoryEpisodeRepository,
-    ModelGatewayOutcome, NoAgentRuntimeFault, NormalizedStopReason, ScriptedFakeModelGateway,
+    AgentToolGateway, ArtifactDescriptor, AscendBuildAttemptFuture, AscendBuildAttemptObservation,
+    AscendBuildAttemptPort, AscendBuildEnvironment, AscendBuildTerminal, AssignmentContract,
+    AttemptOutcome, DurableEpisodeState, EpisodeId, EpisodeRepository, EpisodeSpec, EpisodeStatus,
+    GatewayToolCall, GatewayTurn, GatewayTurnExchange, InMemoryEpisodeRepository, ModelGateway,
+    ModelGatewayError, ModelGatewayFuture, ModelGatewayOutcome, ModelTurnRequest, NetworkPolicy,
+    NoAgentRuntimeFault, NormalizedStopReason, ResourceContract, ScriptedFakeModelGateway,
     ScriptedGatewayStep, SearchRunId, Sha256Digest, TaskId, ToolGatewayError, ToolInvocation,
     ToolOperationId, ToolOperationStatus,
 };
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::error::Error;
 use std::io::Read;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::digest_bytes(label.as_bytes())
@@ -86,11 +90,107 @@ fn execute(
         status,
         result_digest,
         ..
-    } = gateway.execute(request).expect("tool execution")
+    } = complete_immediate(gateway.execute(request)).expect("tool execution")
     else {
         panic!("local candidate tools must be determinate");
     };
     (status, result_digest)
+}
+
+fn build_config() -> Result<CandidateBuildToolConfig, Box<dyn Error>> {
+    Ok(CandidateBuildToolConfig::new(
+        ArtifactDescriptor {
+            digest: digest("pinned-build-image"),
+            size_bytes: 1,
+            media_type: "application/vnd.oci.image.manifest.v1+json".to_owned(),
+        },
+        30_000,
+        ResourceContract {
+            cpu_millis: 2_000,
+            memory_bytes: 1024 * 1024 * 1024,
+            disk_bytes: 256 * 1024 * 1024,
+            process_count: 64,
+            output_bytes: 1024 * 1024,
+            device_count: 1,
+            network: NetworkPolicy::Disabled,
+        },
+    )?)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FakeBuildStep {
+    Pending,
+    Finished {
+        outcome: AttemptOutcome,
+        build_completed: bool,
+    },
+}
+
+#[derive(Debug)]
+struct FakeBuildAttemptPort {
+    steps: VecDeque<FakeBuildStep>,
+    assignments: Arc<Mutex<Vec<AssignmentContract>>>,
+}
+
+impl FakeBuildAttemptPort {
+    fn new(
+        steps: impl IntoIterator<Item = FakeBuildStep>,
+        assignments: Arc<Mutex<Vec<AssignmentContract>>>,
+    ) -> Self {
+        Self {
+            steps: steps.into_iter().collect(),
+            assignments,
+        }
+    }
+
+    fn invoke(&mut self, assignment: &AssignmentContract) -> AscendBuildAttemptObservation {
+        self.assignments
+            .lock()
+            .expect("assignment log")
+            .push(assignment.clone());
+        match self.steps.pop_front().expect("scripted build step") {
+            FakeBuildStep::Pending => AscendBuildAttemptObservation::Pending {
+                diagnostic_digest: digest("build-pending"),
+            },
+            FakeBuildStep::Finished {
+                outcome,
+                build_completed,
+            } => AscendBuildAttemptObservation::Finished(Box::new(AscendBuildTerminal {
+                assignment_id: assignment.assignment_id.clone(),
+                attempt_id: assignment.attempt_id.clone(),
+                outcome,
+                exit_code: Some(i32::from(outcome != AttemptOutcome::Succeeded)),
+                elapsed_ms: 12,
+                detail: "bounded fake compiler result".to_owned(),
+                build_completed,
+                environment: AscendBuildEnvironment {
+                    architecture: "Ascend950PR".to_owned(),
+                    cann_version: "9.1.0-beta.1".to_owned(),
+                    driver_version: "25.7.rc1.6".to_owned(),
+                    firmware_version: "9.0.0.105.229".to_owned(),
+                },
+                worker_receipt: None,
+                stdout: None,
+                stderr: None,
+            })),
+        }
+    }
+}
+
+impl AscendBuildAttemptPort for FakeBuildAttemptPort {
+    fn dispatch<'a>(
+        &'a mut self,
+        assignment: &'a AssignmentContract,
+    ) -> AscendBuildAttemptFuture<'a> {
+        Box::pin(async move { Ok(self.invoke(assignment)) })
+    }
+
+    fn reconcile<'a>(
+        &'a mut self,
+        assignment: &'a AssignmentContract,
+    ) -> AscendBuildAttemptFuture<'a> {
+        Box::pin(async move { Ok(self.invoke(assignment)) })
+    }
 }
 
 #[test]
@@ -130,7 +230,7 @@ fn candidate_submission_is_create_only_idempotent_and_source_gate_is_independent
         "gate-bad",
     );
     assert!(matches!(
-        foreign_gateway.execute(&gate),
+        complete_immediate(foreign_gateway.execute(&gate)),
         Err(ToolGatewayError::Adapter(message))
             if message.contains("does not belong to this migration context")
     ));
@@ -143,6 +243,178 @@ fn candidate_submission_is_create_only_idempotent_and_source_gate_is_independent
             .as_array()
             .is_some_and(|items| !items.is_empty())
     );
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn ascend_build_requires_the_exact_source_receipt_and_reconciles_one_stable_assignment()
+-> Result<(), Box<dyn Error>> {
+    let artifacts: Arc<dyn ArtifactStore> = Arc::new(InMemoryArtifactStore::new(16 * 1024 * 1024));
+    let workspace = tempfile::tempdir()?;
+    let assignments = Arc::new(Mutex::new(Vec::new()));
+    let attempts = FakeBuildAttemptPort::new(
+        [
+            FakeBuildStep::Pending,
+            FakeBuildStep::Finished {
+                outcome: AttemptOutcome::CandidateFailed,
+                build_completed: false,
+            },
+        ],
+        Arc::clone(&assignments),
+    );
+    let config = CandidateToolConfig::new(
+        TaskId::try_from("task-candidate-tools")?,
+        &migration_spec(),
+        alloyport_core::GenerationStrategy::DirectAscendC,
+    );
+    let mut gateway = CandidateToolGateway::new(config, artifacts.clone(), workspace.path())?
+        .with_ascend_build(build_config()?, Box::new(attempts));
+    let (_, result_digest) = execute(
+        &mut gateway,
+        &invocation(
+            SUBMIT_CANDIDATE_BUNDLE_TOOL,
+            &bundle(true, None),
+            "build-submit",
+        ),
+    );
+    let result = read_json(artifacts.as_ref(), result_digest);
+    let candidate_id = result["candidate_id"].as_str().expect("candidate ID");
+    let manifest_digest: Sha256Digest =
+        serde_json::from_value(result["manifest"]["digest"].clone())?;
+    let (_, source_receipt_digest) = execute(
+        &mut gateway,
+        &invocation(
+            REQUEST_SOURCE_GATE_TOOL,
+            &json!({"manifest_digest":manifest_digest}),
+            "build-source-gate",
+        ),
+    );
+    let invalid_build = invocation(
+        REQUEST_ASCEND_BUILD_TOOL,
+        &json!({
+            "manifest_digest":manifest_digest,
+            "source_gate_receipt_digest":digest("not-the-source-receipt")
+        }),
+        "build-invalid-receipt",
+    );
+    assert!(complete_immediate(gateway.execute(&invalid_build)).is_err());
+    assert!(assignments.lock().expect("assignment log").is_empty());
+
+    let (_, child_result_digest) = execute(
+        &mut gateway,
+        &invocation(
+            SUBMIT_CANDIDATE_BUNDLE_TOOL,
+            &bundle(true, Some(candidate_id)),
+            "build-foreign-submit",
+        ),
+    );
+    let child_result = read_json(artifacts.as_ref(), child_result_digest);
+    let child_manifest: Sha256Digest =
+        serde_json::from_value(child_result["manifest"]["digest"].clone())?;
+    let (_, foreign_source_receipt) = execute(
+        &mut gateway,
+        &invocation(
+            REQUEST_SOURCE_GATE_TOOL,
+            &json!({"manifest_digest":child_manifest}),
+            "build-foreign-source-gate",
+        ),
+    );
+    let foreign_build = invocation(
+        REQUEST_ASCEND_BUILD_TOOL,
+        &json!({
+            "manifest_digest":manifest_digest,
+            "source_gate_receipt_digest":foreign_source_receipt
+        }),
+        "build-foreign-receipt",
+    );
+    assert!(matches!(
+        complete_immediate(gateway.execute(&foreign_build)),
+        Err(ToolGatewayError::Adapter(message)) if message.contains("SourceGateReceiptMismatch")
+    ));
+    assert!(assignments.lock().expect("assignment log").is_empty());
+
+    let (_, failing_result_digest) = execute(
+        &mut gateway,
+        &invocation(
+            SUBMIT_CANDIDATE_BUNDLE_TOOL,
+            &bundle(false, None),
+            "build-failing-submit",
+        ),
+    );
+    let failing_result = read_json(artifacts.as_ref(), failing_result_digest);
+    let failing_manifest: Sha256Digest =
+        serde_json::from_value(failing_result["manifest"]["digest"].clone())?;
+    let (_, failing_source_receipt) = execute(
+        &mut gateway,
+        &invocation(
+            REQUEST_SOURCE_GATE_TOOL,
+            &json!({"manifest_digest":failing_manifest}),
+            "build-failing-source-gate",
+        ),
+    );
+    let failing_build = invocation(
+        REQUEST_ASCEND_BUILD_TOOL,
+        &json!({
+            "manifest_digest":failing_manifest,
+            "source_gate_receipt_digest":failing_source_receipt
+        }),
+        "build-failing-receipt",
+    );
+    assert!(matches!(
+        complete_immediate(gateway.execute(&failing_build)),
+        Err(ToolGatewayError::Adapter(message)) if message.contains("SourceGateDidNotPass")
+    ));
+    assert!(assignments.lock().expect("assignment log").is_empty());
+
+    let build = invocation(
+        REQUEST_ASCEND_BUILD_TOOL,
+        &json!({
+            "manifest_digest":manifest_digest,
+            "source_gate_receipt_digest":source_receipt_digest
+        }),
+        "build-valid",
+    );
+    assert!(matches!(
+        complete_immediate(gateway.execute(&build))?,
+        alloyport_core::ToolGatewayOutcome::Pending { .. }
+    ));
+    let alloyport_core::ToolGatewayOutcome::Completed {
+        status,
+        result_digest: build_receipt_digest,
+        satisfies_subtask,
+        ..
+    } = complete_immediate(gateway.reconcile(&build))?
+    else {
+        panic!("terminal fake build observation expected");
+    };
+    assert_eq!(status, ToolOperationStatus::CandidateFailed);
+    assert!(!satisfies_subtask);
+    assert_eq!(
+        read_json(artifacts.as_ref(), build_receipt_digest)["passed"],
+        false
+    );
+
+    let assignments = assignments.lock().expect("assignment log");
+    assert_eq!(assignments.len(), 2);
+    assert_eq!(assignments[0], assignments[1]);
+    assert_eq!(
+        assignments[0].execution.executor_kind,
+        alloyport_core::ExecutionKind::AscendBuild
+    );
+    assert_eq!(assignments[0].execution.argv, ["build-v1"]);
+    assert!(assignments[0].execution.environment.is_empty());
+    assert_eq!(
+        assignments[0]
+            .execution
+            .limits
+            .as_ref()
+            .expect("limits")
+            .network,
+        NetworkPolicy::Disabled
+    );
+    let build_bundle = read_json(artifacts.as_ref(), assignments[0].execution.bundle.digest);
+    assert_eq!(build_bundle["files"].as_array().map(Vec::len), Some(4));
     Ok(())
 }
 
@@ -238,6 +510,76 @@ fn runtime_state() -> Result<DurableEpisodeState, Box<dyn Error>> {
         model_profile_digest: digest("profile"),
         request_budget_digest: digest("request-budget"),
     })?)
+}
+
+fn build_runtime_state() -> Result<DurableEpisodeState, Box<dyn Error>> {
+    let episode = AgentEpisodeRecord::new(EpisodeSpec {
+        id: EpisodeId::try_from("episode-real-build-gate")?,
+        task_id: TaskId::try_from("task-candidate-tools")?,
+        search_run_id: SearchRunId::try_from("search-real-build-gate")?,
+        parent_candidate_id: None,
+        subtask_contract_digest: digest("subtask"),
+        context_projection_digest: digest("context"),
+        input_artifact_root_digest: digest("input-root"),
+        runtime_model_alias: "configured-model".to_owned(),
+        resolved_model_digest: digest("resolved-model"),
+        prompt_revision: "fixture-v1".to_owned(),
+        tool_catalog_digest: digest("tools"),
+        loop_policy_digest: digest("policy"),
+        data_boundary_policy_digest: digest("boundary"),
+        budget_snapshot_digest: digest("budget"),
+    })?;
+    Ok(DurableEpisodeState::new(AgentLoopRuntimeSpec {
+        episode,
+        policy: AgentLoopPolicy {
+            max_model_turns: 8,
+            max_model_attempts: 8,
+            max_ambiguous_model_attempts: 1,
+            max_tool_calls_per_turn: 1,
+            max_total_tool_operations: 6,
+            max_stop_feedback_turns: 0,
+        },
+        initial_input_digest: digest("initial-input"),
+        resolved_model_digest: digest("resolved-model"),
+        deployment_digest: digest("deployment"),
+        model_profile_digest: digest("profile"),
+        request_budget_digest: digest("request-budget"),
+    })?)
+}
+
+#[derive(Debug)]
+struct OrderedModelGateway {
+    turns: VecDeque<GatewayTurnExchange>,
+    next_turn_index: u32,
+}
+
+impl OrderedModelGateway {
+    fn new(turns: impl IntoIterator<Item = GatewayTurnExchange>) -> Self {
+        Self {
+            turns: turns.into_iter().collect(),
+            next_turn_index: 1,
+        }
+    }
+}
+
+impl ModelGateway for OrderedModelGateway {
+    fn invoke<'a>(&'a mut self, request: &'a ModelTurnRequest) -> ModelGatewayFuture<'a> {
+        Box::pin(async move {
+            if request.turn_index != self.next_turn_index {
+                return Err(ModelGatewayError::UnexpectedRequest {
+                    expected_turn_index: self.next_turn_index,
+                    actual_turn_index: request.turn_index,
+                });
+            }
+            let exchange = self
+                .turns
+                .pop_front()
+                .ok_or(ModelGatewayError::ScriptExhausted)?;
+            exchange.turn.validate()?;
+            self.next_turn_index += 1;
+            Ok(ModelGatewayOutcome::Turn(exchange))
+        })
+    }
 }
 
 #[test]
@@ -387,6 +729,9 @@ fn same_episode_consumes_real_source_failure_and_submits_a_correction() -> Resul
     assert_eq!(state.tool_operation_count(), 4);
     Ok(())
 }
+
+#[path = "build_episode_tests.rs"]
+mod build_episode_tests;
 
 fn complete_immediate<F: std::future::Future>(future: F) -> F::Output {
     use std::task::{Context, Poll, Waker};

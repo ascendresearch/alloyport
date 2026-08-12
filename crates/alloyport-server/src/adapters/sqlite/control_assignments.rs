@@ -7,8 +7,8 @@ use super::control_records::{
 use super::control_repository::SqliteControlRepository;
 use crate::storage::{
     AssignmentContract, AssignmentDeliveryPreparation, AssignmentReadRepository, AssignmentRecord,
-    AssignmentWriteRepository, AttemptState, ReassignmentRecord, RepositoryError,
-    StoreAssignmentOutcome,
+    AssignmentWriteRepository, AttemptObservation, AttemptState, FinishedObservation,
+    ReassignmentRecord, RepositoryError, StoreAssignmentOutcome,
 };
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
@@ -181,6 +181,36 @@ impl AssignmentReadRepository for SqliteControlRepository {
             .optional()
             .map_err(RepositoryError::from)
             .and_then(Option::transpose)
+    }
+
+    fn finished_observation(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<FinishedObservation>, RepositoryError> {
+        let database = self.connection()?;
+        let state = database
+            .query_row(
+                "SELECT state FROM assignments WHERE attempt_id = ?1",
+                [attempt_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if state != Some(AttemptState::Finished as i64) {
+            return Ok(None);
+        }
+        let mut statement = database.prepare(
+            "SELECT observation_json FROM attempt_observations
+             WHERE attempt_id = ?1 ORDER BY observation_id DESC",
+        )?;
+        let rows = statement.query_map([attempt_id], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            if let AttemptObservation::Finished(finished) = serde_json::from_str(&row?)? {
+                return Ok(Some(*finished));
+            }
+        }
+        Err(RepositoryError::Corrupt(format!(
+            "finished attempt {attempt_id} has no terminal observation"
+        )))
     }
 
     fn preparing_assignments(

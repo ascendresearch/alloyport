@@ -2,9 +2,9 @@
 
 use super::{
     AssignmentContract, AssignmentDeliveryPreparation, AssignmentRecord, AttemptState,
-    CancellationRecord, ConnectionRegistration, LeaseRecord, ObservationDisposition,
-    ObservedAttempt, ReassignmentRecord, ServerOutboxFrame, StoreAssignmentOutcome,
-    WorkerRegistration,
+    CancellationRecord, ConnectionRegistration, FinishedObservation, LeaseRecord,
+    ObservationDisposition, ObservedAttempt, ReassignmentRecord, ServerOutboxFrame,
+    StoreAssignmentOutcome, WorkerRegistration,
 };
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -93,6 +93,11 @@ pub trait WorkerConnectionRepository: Debug + Send + Sync {
 #[allow(clippy::missing_errors_doc)]
 pub trait AssignmentReadRepository: Debug + Send + Sync {
     fn assignment(&self, attempt_id: &str) -> Result<Option<AssignmentRecord>, RepositoryError>;
+
+    fn finished_observation(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<FinishedObservation>, RepositoryError>;
 
     fn preparing_assignments(&self, limit: usize)
     -> Result<Vec<AssignmentRecord>, RepositoryError>;

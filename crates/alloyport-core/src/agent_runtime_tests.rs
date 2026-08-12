@@ -51,6 +51,10 @@ immediate_async_test!(
     ambiguous_tool_outcome_resumes_through_explicit_reconciliation_case
 );
 immediate_async_test!(
+    pending_remote_tool_reconciles_without_becoming_ambiguous,
+    pending_remote_tool_reconciles_without_becoming_ambiguous_case
+);
+immediate_async_test!(
     cancellation_without_ambiguous_effect_reaches_cancelled,
     cancellation_without_ambiguous_effect_reaches_cancelled_case
 );
@@ -560,6 +564,82 @@ async fn ambiguous_tool_outcome_resumes_through_explicit_reconciliation_case()
         .await?;
     assert_eq!(tools.invocation_count(), 2);
     assert_eq!(tools.invocation_ids()[0], tools.invocation_ids()[1]);
+    assert_eq!(
+        repository.load(&episode_id)?.state.tool_statuses(),
+        vec![ToolOperationStatus::Succeeded]
+    );
+    Ok(())
+}
+
+async fn pending_remote_tool_reconciles_without_becoming_ambiguous_case()
+-> Result<(), Box<dyn Error>> {
+    let episode_id = EpisodeId::try_from("episode-runtime-1")?;
+    let mut repository = InMemoryEpisodeRepository::default();
+    repository.create(state_with_policy(policy())?)?;
+    let mut models = ScriptedFakeModelGateway::new([ScriptedGatewayStep {
+        expected_turn_index: 1,
+        expected_input_digest: digest("initial-input"),
+        outcome: ModelGatewayOutcome::Turn(exchange(
+            "pending-tool",
+            tool_turn("call-1", "submit_candidate_bundle", "candidate-1"),
+        )),
+    }]);
+    let mut tools = ScriptedFakeToolGateway::new(
+        descriptors(),
+        [
+            ScriptedToolStep {
+                action: ToolGatewayAction::Execute,
+                expected_tool_name: "submit_candidate_bundle".to_owned(),
+                outcome: ToolGatewayOutcome::Pending {
+                    diagnostic_digest: digest("remote-attempt-dispatched"),
+                },
+            },
+            ScriptedToolStep {
+                action: ToolGatewayAction::Reconcile,
+                expected_tool_name: "submit_candidate_bundle".to_owned(),
+                outcome: ToolGatewayOutcome::Pending {
+                    diagnostic_digest: digest("remote-attempt-running"),
+                },
+            },
+            ScriptedToolStep {
+                action: ToolGatewayAction::Reconcile,
+                expected_tool_name: "submit_candidate_bundle".to_owned(),
+                outcome: completed(ToolOperationStatus::Succeeded, "remote-result", false),
+            },
+        ],
+    );
+    let runner = AgentLoopRunner::new(episode_id.clone());
+    for _ in 0..5 {
+        runner
+            .advance(
+                &mut repository,
+                &mut models,
+                &mut tools,
+                &mut NoAgentRuntimeFault,
+            )
+            .await?;
+    }
+    assert_eq!(
+        repository.load(&episode_id)?.state.tool_statuses(),
+        vec![ToolOperationStatus::Running]
+    );
+    for _ in 0..2 {
+        runner
+            .advance(
+                &mut repository,
+                &mut models,
+                &mut tools,
+                &mut NoAgentRuntimeFault,
+            )
+            .await?;
+    }
+    assert_eq!(tools.invocation_count(), 3);
+    assert!(
+        tools
+            .invocation_ids()
+            .windows(2)
+            .all(|ids| ids[0] == ids[1])
+    );
     assert_eq!(
         repository.load(&episode_id)?.state.tool_statuses(),
         vec![ToolOperationStatus::Succeeded]

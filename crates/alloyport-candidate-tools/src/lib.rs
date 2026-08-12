@@ -1,8 +1,12 @@
 //! Candidate submission, immutable materialization, and independent Source Gate tools.
 
+mod build_tool;
 mod gateway;
 mod materialization;
 
+pub use build_tool::{
+    CandidateBuildToolConfig, CandidateBuildToolConfigError, REQUEST_ASCEND_BUILD_TOOL,
+};
 pub use gateway::{
     CandidateToolConfig, CandidateToolGateway, REQUEST_SOURCE_GATE_TOOL,
     SUBMIT_CANDIDATE_BUNDLE_TOOL,

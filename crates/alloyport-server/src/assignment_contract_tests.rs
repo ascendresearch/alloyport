@@ -4,9 +4,10 @@ use crate::adapters::sqlite::SqliteControlRepository;
 use crate::storage::{
     ArtifactIdentity, AssignmentContract, AssignmentDeliveryPreparation, AssignmentReadRepository,
     AssignmentRecord, AssignmentWriteRepository, AttemptLifecycleRepository, AttemptState,
-    ConnectionRegistration, ExecutionContract, LeaseRecord, ReassignmentRecord, RepositoryError,
-    ServerFrameKind, ServerOutboxFrame, ServerOutboxRepository, StoreAssignmentOutcome,
-    WorkerCapabilities, WorkerConnectionRepository, WorkerRegistration,
+    ConnectionRegistration, ExecutionContract, FinishedObservation, LeaseRecord,
+    ReassignmentRecord, RepositoryError, ServerFrameKind, ServerOutboxFrame,
+    ServerOutboxRepository, StoreAssignmentOutcome, WorkerCapabilities, WorkerConnectionRepository,
+    WorkerRegistration,
 };
 use alloyport_core::{AssignmentId, AttemptId, CandidateId, ExecutionKind, TaskId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -252,6 +253,13 @@ impl MemoryAssignmentRepository {
 impl AssignmentReadRepository for MemoryAssignmentRepository {
     fn assignment(&self, attempt_id: &str) -> Result<Option<AssignmentRecord>, RepositoryError> {
         Ok(self.state()?.assignments.get(attempt_id).cloned())
+    }
+
+    fn finished_observation(
+        &self,
+        _attempt_id: &str,
+    ) -> Result<Option<FinishedObservation>, RepositoryError> {
+        Ok(None)
     }
 
     fn preparing_assignments(

@@ -154,7 +154,7 @@ research report and complete Design 0025 now precede provider refactoring or Sou
 1. [x] Implement and test Design 0024 domain contracts.
 2. [x] Add the reduction extension intake fixture and frozen expected public behavior.
 3. [x] Implement source/build inspection for that fixture.
-4. [ ] Build the durable iterative candidate loop, then connect it to the existing worker substrate.
+4. [x] Build the durable iterative candidate loop, then connect it to the existing worker substrate.
    - [x] Define the provider-neutral, untrusted authoring request/source-bundle domain contract.
    - [x] Materialize the proposed `generated/` tree create-only from immutable file Artifacts and
      independently reread its exact file set, sizes, and digests.
@@ -174,9 +174,10 @@ research report and complete Design 0025 now precede provider refactoring or Sou
    - [x] Connect iterative candidate submission to CAS-backed create-only materialization and
      implement the independent Source Gate over the exact materialized tree, including one
      same-episode failure/correction turn.
-   - [ ] Only after the Source Gate passes, dispatch an Ascend build attempt; this is the only
-     active item.
-5. Add the independent differential oracle and calibration battery.
+   - [x] Only after the Source Gate passes, dispatch one bounded, independently receipted Ascend
+     build attempt and return compiler failure to the same Episode.
+5. Add the independent differential oracle and calibration battery. This is now the only active
+   item.
 6. Produce the first complete release and evidence bundle.
 7. Add two-stage optimization and value-backed memory.
 8. Attempt a second specimen before expanding platform scope.

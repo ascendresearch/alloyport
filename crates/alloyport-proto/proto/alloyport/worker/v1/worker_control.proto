@@ -173,6 +173,7 @@ enum ExecutorKind {
   // Policy-bound fixed Ascend fixture. Host device nodes, driver mounts, CANN environment, and the
   // selected device are derived exclusively from worker-local policy.
   EXECUTOR_KIND_ASCEND_FIXTURE = 5;
+  EXECUTOR_KIND_ASCEND_BUILD = 6;
 }
 
 message EnvironmentVariable {

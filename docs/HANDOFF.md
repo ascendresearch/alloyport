@@ -1034,7 +1034,7 @@ redirect/proxy/retry/decompression disabled, explicit TLS/timeouts, bounded stre
 typed dispatch certainty. The default `deepseek-v4-pro` remains configuration only. Deterministic
 tests prove the real Agent loop calls the SDK without network access.
 
-The fifth slice is also complete. `alloyport-candidate-tools` now implements the iterative
+The fifth slice is also complete. `alloyport-candidate-tools` implements the iterative
 `submit_candidate_bundle` and `request_source_gate` adapters without depending on any provider or
 HTTP implementation. Submission binds controller-owned task/spec/strategy facts around the
 untrusted source bundle, ingests each file and the manifest into CAS, derives a task-scoped content
@@ -1045,14 +1045,27 @@ structural Source Gate checks exact Artifact identity, UTF-8 source, forbidden f
 fallbacks, Ascend C kernel structure, preserved host entry point/launch, build references, and
 complete input/output component mapping. Its immutable receipt is the verified model-visible tool
 result. A deterministic real-tool Agent Episode test consumes a failing receipt identity, submits a
-child correction, consumes a passing receipt, and succeeds only after stop review. Build,
-Correctness, live provider validation, API, scheduler, UI, and generalized execution remain absent.
+child correction, consumes a passing receipt, and succeeds only after stop review. Correctness,
+live provider validation, API, scheduler, UI, and generalized execution remain absent.
+
+The sixth slice is complete under [Design 0026](design/0026-ascend-build-gate-connection.md). The
+generic Agent tool lifecycle now distinguishes a healthy remote `Running` operation from an
+ambiguous dispatch and reconciles it with the same logical operation identity. A Source-Gate-passing
+candidate can request one controller-authored build bundle and stable `AscendBuild` assignment;
+the tool rereads the exact published Source Gate receipt Artifact and rejects missing, failing,
+foreign, or byte-mismatched evidence before dispatch. The server adapter uses the existing durable
+worker-control repositories and CAS receipts, while the worker retains an independent, fixed
+`ascend-build-v1` policy with no shell, network, caller-selected image, mounts, environment, or
+limits. Its trusted runner invokes CMake through argument arrays and requires a build-complete
+marker before success. A deterministic full Episode proves compiler failure, model-visible
+feedback, child-candidate submission, a second stable build attempt, and final Build Gate success;
+it makes no Correctness or Performance claim.
 
 ## Suggested first task for the next Codex session
 
-The next action is the sixth accepted implementation slice:
+The next action is the first bounded correctness slice from product-plan item 5:
 
-> Connect a Source-Gate-passing immutable candidate to one bounded Ascend build attempt through the
-> existing worker substrate. Preserve independent build authority and feed structured build failure
-> back into the same Episode. Do not yet add Correctness/Performance gates, live provider
-> validation, API, scheduler, UI, retention policy, or generalized executor.
+> Design the independent differential-oracle contract and its mutation calibration battery for the
+> reduction specimen, then connect one Build-Gate-passing candidate to it. Do not yet add
+> performance optimization, release automation, live provider validation, API, scheduler, UI,
+> retention policy, or generalized execution.

@@ -6,6 +6,7 @@ pub mod artifact_download;
 pub mod artifact_input;
 pub mod artifact_upload;
 pub mod ascend;
+pub mod ascend_build;
 pub mod ascend_runtime;
 pub mod ascend_smi;
 pub mod ascend_supervisor;
@@ -39,6 +40,7 @@ mod worker_delivery;
 mod worker_state;
 use worker_state::WorkerPersistence;
 
+use alloyport_core::ASCEND_BUILD_FEATURE;
 use alloyport_core::AcceleratorDevice;
 use alloyport_proto::v1::{AcceleratorDevice as WireDevice, Backend, WorkerHello};
 use alloyport_proto::{ValidationError, validate_worker_hello};
@@ -177,10 +179,13 @@ impl From<AttemptStoreError> for WorkerError {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AdmissionPolicy {
     allow_shell: bool,
-    allow_cuda_fixture: bool,
-    allow_ascend_fixture: bool,
+    allowed_fixed_executors: u8,
     exclusive_executor: Option<alloyport_core::ExecutionKind>,
 }
+
+const ALLOW_CUDA_FIXTURE: u8 = 1;
+const ALLOW_ASCEND_FIXTURE: u8 = 2;
+const ALLOW_ASCEND_BUILD: u8 = 4;
 
 impl AdmissionPolicy {
     /// Returns a policy that permits the explicitly policy-gated shell executor.
@@ -193,21 +198,36 @@ impl AdmissionPolicy {
     /// Returns a policy that permits the dedicated, locally constrained CUDA fixture executor.
     #[must_use]
     pub const fn allowing_cuda_fixture(mut self) -> Self {
-        self.allow_cuda_fixture = true;
+        self.allowed_fixed_executors |= ALLOW_CUDA_FIXTURE;
         self
     }
 
     /// Returns a policy that permits the dedicated, locally constrained Ascend fixture executor.
     #[must_use]
     pub const fn allowing_ascend_fixture(mut self) -> Self {
-        self.allow_ascend_fixture = true;
+        self.allowed_fixed_executors |= ALLOW_ASCEND_FIXTURE;
+        self
+    }
+
+    /// Returns a policy that permits the policy-bound Ascend candidate build executor.
+    #[must_use]
+    pub const fn allowing_ascend_build(mut self) -> Self {
+        self.allowed_fixed_executors |= ALLOW_ASCEND_BUILD;
+        self
+    }
+
+    /// Returns a policy that permits only the policy-bound Ascend build executor.
+    #[must_use]
+    pub const fn ascend_build_only(mut self) -> Self {
+        self.allowed_fixed_executors |= ALLOW_ASCEND_BUILD;
+        self.exclusive_executor = Some(alloyport_core::ExecutionKind::AscendBuild);
         self
     }
 
     /// Returns a policy that permits only the locally constrained CUDA fixture executor.
     #[must_use]
     pub const fn cuda_fixture_only(mut self) -> Self {
-        self.allow_cuda_fixture = true;
+        self.allowed_fixed_executors |= ALLOW_CUDA_FIXTURE;
         self.exclusive_executor = Some(alloyport_core::ExecutionKind::CudaFixture);
         self
     }
@@ -215,7 +235,7 @@ impl AdmissionPolicy {
     /// Returns a policy that permits only the locally constrained Ascend fixture executor.
     #[must_use]
     pub const fn ascend_fixture_only(mut self) -> Self {
-        self.allow_ascend_fixture = true;
+        self.allowed_fixed_executors |= ALLOW_ASCEND_FIXTURE;
         self.exclusive_executor = Some(alloyport_core::ExecutionKind::AscendFixture);
         self
     }
@@ -456,20 +476,33 @@ impl OutboundWorker {
                 "Ascend runtime device identity is not advertised by worker capabilities".into(),
             ));
         }
-        if !self
-            .hello
-            .features
-            .iter()
-            .any(|feature| feature == ASCEND_FIXTURE_FEATURE)
-        {
-            self.hello.features.push(ASCEND_FIXTURE_FEATURE.into());
+        let build_runtime = match runtime.executor_kind() {
+            alloyport_core::ExecutionKind::AscendFixture => false,
+            alloyport_core::ExecutionKind::AscendBuild => true,
+            _ => {
+                return Err(WorkerError::Execution(
+                    "Ascend runtime exposes an unsupported executor kind".into(),
+                ));
+            }
+        };
+        let feature = if build_runtime {
+            ASCEND_BUILD_FEATURE
+        } else {
+            ASCEND_FIXTURE_FEATURE
+        };
+        if !self.hello.features.iter().any(|item| item == feature) {
+            self.hello.features.push(feature.into());
         }
         let state = Arc::get_mut(&mut self.state).ok_or_else(|| {
             WorkerError::Execution(
                 "Ascend runtime must be attached before sharing the worker state".into(),
             )
         })?;
-        state.policy = state.policy.ascend_fixture_only();
+        state.policy = if build_runtime {
+            state.policy.ascend_build_only()
+        } else {
+            state.policy.ascend_fixture_only()
+        };
         self.with_execution_backend(Arc::new(AscendExecutionBackend::new(runtime)))
     }
 

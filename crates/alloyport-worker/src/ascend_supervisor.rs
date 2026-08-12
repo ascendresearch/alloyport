@@ -3,6 +3,7 @@
 mod engine;
 
 use crate::ascend::{AscendContractError, AscendFixturePolicy};
+use crate::ascend_build::{AscendBuildContractError, AscendBuildPolicy};
 use crate::backend_error::BackendError;
 use crate::container_outcome::{
     ContainerTermination as Termination, FixtureOutcomePolicy, classify_fixture_outcome,
@@ -27,27 +28,67 @@ const OUTCOME_POLICY: FixtureOutcomePolicy = FixtureOutcomePolicy {
     nonzero_detail: "Ascend fixture returned a nonzero exit code",
     missing_marker_detail: "Ascend fixture exited zero without its verification marker",
 };
+const BUILD_OUTCOME_POLICY: FixtureOutcomePolicy = FixtureOutcomePolicy {
+    fixture_id: alloyport_core::ASCEND_BUILD_FEATURE,
+    exited_detail: "Ascend build exited",
+    nonzero_detail: "Ascend compiler or linker returned a nonzero exit code",
+    missing_marker_detail: "Ascend build exited zero without its trusted completion marker",
+};
+
+#[derive(Clone, Debug)]
+enum AscendSupervisorPolicy {
+    Fixture(Arc<AscendFixturePolicy>),
+    Build(Arc<AscendBuildPolicy>),
+}
 
 #[derive(Clone, Debug)]
 pub struct AscendContainerSupervisor {
-    policy: Arc<AscendFixturePolicy>,
+    policy: AscendSupervisorPolicy,
     artifacts: Arc<dyn ArtifactStore>,
 }
 
 impl AscendContainerSupervisor {
     #[must_use]
     pub const fn new(policy: Arc<AscendFixturePolicy>, artifacts: Arc<dyn ArtifactStore>) -> Self {
-        Self { policy, artifacts }
+        Self {
+            policy: AscendSupervisorPolicy::Fixture(policy),
+            artifacts,
+        }
+    }
+
+    #[must_use]
+    pub const fn new_build(
+        policy: Arc<AscendBuildPolicy>,
+        artifacts: Arc<dyn ArtifactStore>,
+    ) -> Self {
+        Self {
+            policy: AscendSupervisorPolicy::Build(policy),
+            artifacts,
+        }
     }
 
     #[must_use]
     pub fn device(&self) -> &alloyport_core::AcceleratorDevice {
-        self.policy.device()
+        match &self.policy {
+            AscendSupervisorPolicy::Fixture(policy) => policy.device(),
+            AscendSupervisorPolicy::Build(policy) => policy.device(),
+        }
     }
 
     #[must_use]
     pub fn environment(&self) -> &crate::ascend::AscendEnvironmentFacts {
-        self.policy.environment()
+        match &self.policy {
+            AscendSupervisorPolicy::Fixture(policy) => policy.environment(),
+            AscendSupervisorPolicy::Build(policy) => policy.environment(),
+        }
+    }
+
+    #[must_use]
+    pub const fn executor_kind(&self) -> alloyport_core::ExecutionKind {
+        match self.policy {
+            AscendSupervisorPolicy::Fixture(_) => alloyport_core::ExecutionKind::AscendFixture,
+            AscendSupervisorPolicy::Build(_) => alloyport_core::ExecutionKind::AscendBuild,
+        }
     }
 
     /// Reconciles a stable attempt container and returns bounded terminal data.
@@ -97,11 +138,24 @@ impl AscendContainerSupervisor {
     where
         F: FnMut(ContainerLogChunk) + Send,
     {
-        let sandbox = self
-            .policy
-            .materialize_bundle(assignment, self.artifacts.as_ref())?;
-        let source_digest = sandbox.source_digest().to_owned();
-        let plan = self.policy.docker_create_plan(assignment, &sandbox)?;
+        let (source_digest, plan, outcome_policy) = match &self.policy {
+            AscendSupervisorPolicy::Fixture(policy) => {
+                let sandbox = policy.materialize_bundle(assignment, self.artifacts.as_ref())?;
+                (
+                    sandbox.source_digest().to_owned(),
+                    policy.docker_create_plan(assignment, &sandbox)?,
+                    OUTCOME_POLICY,
+                )
+            }
+            AscendSupervisorPolicy::Build(policy) => {
+                let sandbox = policy.materialize_bundle(assignment, self.artifacts.as_ref())?;
+                (
+                    sandbox.bundle_digest().to_string(),
+                    policy.docker_create_plan(assignment, &sandbox)?,
+                    BUILD_OUTCOME_POLICY,
+                )
+            }
+        };
         let identity = ContainerIdentity {
             name: plan.container_name.clone(),
             attempt_id: assignment.attempt_id.to_string(),
@@ -159,7 +213,7 @@ impl AscendContainerSupervisor {
                 termination,
                 enforce_output_limit(logs, output_limit),
                 assignment.execution.timeout_ms,
-                OUTCOME_POLICY,
+                outcome_policy,
             ),
             facts: AscendExecutionFacts {
                 container_name: identity.name,
@@ -179,6 +233,7 @@ impl AscendContainerSupervisor {
 #[derive(Debug)]
 pub enum AscendSupervisorError {
     Contract(AscendContractError),
+    BuildContract(AscendBuildContractError),
     Engine(ContainerEngineError),
     Invariant(String),
     ImageMismatch { expected: String, actual: String },
@@ -188,6 +243,12 @@ pub enum AscendSupervisorError {
 impl From<AscendContractError> for AscendSupervisorError {
     fn from(error: AscendContractError) -> Self {
         Self::Contract(error)
+    }
+}
+
+impl From<AscendBuildContractError> for AscendSupervisorError {
+    fn from(error: AscendBuildContractError) -> Self {
+        Self::BuildContract(error)
     }
 }
 
@@ -210,6 +271,7 @@ impl std::fmt::Display for AscendSupervisorError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Contract(error) => std::fmt::Display::fmt(error, formatter),
+            Self::BuildContract(error) => std::fmt::Display::fmt(error, formatter),
             Self::Engine(error) => write!(formatter, "Ascend container engine error: {error}"),
             Self::Invariant(detail) => write!(
                 formatter,
@@ -235,6 +297,7 @@ impl std::error::Error for AscendSupervisorError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Contract(error) => Some(error),
+            Self::BuildContract(error) => Some(error),
             Self::Engine(error) => Some(error),
             Self::Invariant(_) | Self::ImageMismatch { .. } | Self::IdentityConflict(_) => None,
         }
@@ -253,6 +316,15 @@ impl From<AscendSupervisorError> for BackendError {
                 | AscendContractError::Bundle(_)
                 | AscendContractError::Json(_) => Self::integrity(detail),
                 AscendContractError::Io(_) => Self::retryable(detail),
+            },
+            AscendSupervisorError::BuildContract(error) => match error {
+                AscendBuildContractError::InvalidPolicy(_)
+                | AscendBuildContractError::Assignment(_) => Self::policy(detail),
+                AscendBuildContractError::Artifact(_)
+                | AscendBuildContractError::Bundle(_)
+                | AscendBuildContractError::UnsafePath
+                | AscendBuildContractError::Json(_) => Self::integrity(detail),
+                AscendBuildContractError::Io(_) => Self::retryable(detail),
             },
             AscendSupervisorError::Engine(error) => Self::from(error),
             AscendSupervisorError::Invariant(_) => Self::terminal(detail),
