@@ -10,6 +10,7 @@ use alloyport_artifacts::upload::{
     ArtifactMetadataStore, ArtifactUploadRepository, BeginUpload, UploadError, UploadSession,
 };
 use alloyport_artifacts::{ArtifactIdentity, ArtifactStore, Sha256Digest};
+use alloyport_proto::ARTIFACT_DOWNLOAD_CHUNK_BYTES;
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactService;
 use alloyport_proto::artifact_v1::{
     self, BeginUploadRequest, DownloadChunk, DownloadRequest, FinalizeUploadRequest,
@@ -27,7 +28,6 @@ use tonic::transport::server::{TcpConnectInfo, TlsConnectInfo};
 use tonic::{Extensions, Request, Response, Status, Streaming};
 
 const MAX_UPLOAD_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
-const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Resolves authenticated ownership and authorizes reads without trusting request body fields.
 #[tonic::async_trait]
@@ -376,7 +376,7 @@ fn send_reader(
     mut offset: u64,
     sender: &mpsc::Sender<Result<DownloadChunk, Status>>,
 ) -> Result<(), Status> {
-    let mut buffer = vec![0_u8; DOWNLOAD_CHUNK_BYTES];
+    let mut buffer = vec![0_u8; ARTIFACT_DOWNLOAD_CHUNK_BYTES];
     loop {
         let read = reader
             .read(&mut buffer)

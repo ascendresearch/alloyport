@@ -44,6 +44,23 @@ pub mod interaction_v1 {
 
 pub const PROTOCOL_MAJOR: u32 = 1;
 pub const PROTOCOL_MINOR: u32 = 4;
+/// Maximum encoded worker-to-server control frame accepted by the service.
+pub const MAX_WORKER_TO_SERVER_MESSAGE_BYTES: usize = 128 * 1024;
+/// Maximum encoded server-to-worker control frame accepted by the worker.
+pub const MAX_SERVER_TO_WORKER_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum raw best-effort output preview carried by one control frame.
+pub const MAX_OUTPUT_PREVIEW_CHUNK_BYTES: usize = 64 * 1024;
+/// Maximum encoded Interaction request accepted by the service.
+pub const MAX_INTERACTION_REQUEST_MESSAGE_BYTES: usize = 64 * 1024;
+/// Maximum encoded canonical Interaction event, including worst-case JSON text escaping.
+pub const MAX_INTERACTION_EVENT_MESSAGE_BYTES: usize = 512 * 1024;
+/// Fixed byte count read into one Artifact download response.
+pub const ARTIFACT_DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
+/// Conservative framing allowance added to bounded Protobuf byte payloads.
+pub const PROTOBUF_MESSAGE_OVERHEAD_BYTES: usize = 64 * 1024;
+/// Maximum encoded Artifact download response accepted by a worker.
+pub const MAX_ARTIFACT_DOWNLOAD_MESSAGE_BYTES: usize =
+    ARTIFACT_DOWNLOAD_CHUNK_BYTES + PROTOBUF_MESSAGE_OVERHEAD_BYTES;
 
 /// Why an incoming wire message cannot enter the `AlloyPort` domain.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,6 +87,23 @@ impl Display for ValidationError {
 }
 
 impl Error for ValidationError {}
+
+/// Validates bounded payload invariants for one worker-to-server control frame.
+///
+/// # Errors
+///
+/// Returns [`ValidationError`] when a best-effort output preview exceeds the wire contract.
+pub fn validate_worker_frame(frame: &v1::WorkerToServer) -> Result<(), ValidationError> {
+    if let Some(v1::worker_to_server::Message::OutputChunk(output)) = frame.message.as_ref()
+        && output.payload.len() > MAX_OUTPUT_PREVIEW_CHUNK_BYTES
+    {
+        return Err(ValidationError::new(
+            "output_chunk.payload",
+            "exceeds the per-frame preview limit",
+        ));
+    }
+    Ok(())
+}
 
 /// Validates identity, protocol and scheduling capability in the first worker message.
 ///
@@ -482,6 +516,37 @@ mod tests {
                 .expect_err("impossible utilization must fail")
                 .field(),
             "heartbeat.devices.utilization_percent"
+        );
+    }
+
+    #[test]
+    fn worker_output_preview_has_a_protocol_level_chunk_limit() {
+        let mut frame = v1::WorkerToServer {
+            sequence: 2,
+            acknowledges_server_through: 1,
+            message_id: String::new(),
+            message: Some(v1::worker_to_server::Message::OutputChunk(
+                v1::OutputChunk {
+                    attempt_id: "attempt-1".to_owned(),
+                    stream: v1::OutputStream::Stdout.into(),
+                    byte_offset: 0,
+                    payload: vec![0; MAX_OUTPUT_PREVIEW_CHUNK_BYTES],
+                    display_sanitized: false,
+                },
+            )),
+        };
+        assert_eq!(validate_worker_frame(&frame), Ok(()));
+
+        let Some(v1::worker_to_server::Message::OutputChunk(output)) = frame.message.as_mut()
+        else {
+            panic!("fixture carries output");
+        };
+        output.payload.push(0);
+        assert_eq!(
+            validate_worker_frame(&frame)
+                .expect_err("oversized preview must fail")
+                .field(),
+            "output_chunk.payload"
         );
     }
 }

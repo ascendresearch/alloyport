@@ -73,6 +73,14 @@ not considered compatible merely because it implements the Rust trait.
    revocation between chunks leaves only the already-authorized prefix committed. Artifact/run
    visibility stays in the owning access policy rather than generic authentication middleware;
    explicit local contexts are limited to tests and in-process adapters.
+10. **Internal gRPC message envelopes — implemented.** Shared protocol constants bound worker-to-
+    server frames at 128 KiB, server-to-worker frames at 4 MiB, Interaction requests at 64 KiB,
+    canonical Interaction events at 512 KiB, and Artifact download messages at 128 KiB. The server
+    and outbound worker configure tonic from the same constants instead of framework defaults.
+    Best-effort output preview payloads have a stricter 64 KiB protocol limit; shared execution
+    coordination splits larger backend observations without gaps, while the server validates the
+    invariant before persistence. Artifact upload decoding and client encoding remain derived from
+    the operator-configured upload chunk limit plus conservative Protobuf framing allowance.
 
 ## Non-goals
 

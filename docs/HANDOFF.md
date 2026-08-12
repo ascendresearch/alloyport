@@ -359,6 +359,13 @@ shared, while Artifact references and Interaction run grants remain service-owne
 decisions. Control revalidates per inbound frame, Artifact per committed upload chunk, and
 Interaction throughout replay/live delivery.
 
+The internal gRPC transports no longer inherit implicit framework message defaults. Shared
+`alloyport-proto` constants bound Control request/response frames, Interaction requests/events, and
+Artifact download responses on both production endpoints. Backend-neutral worker coordination
+splits output previews into at most 64 KiB payloads with continuous offsets, and the server rejects
+an oversized preview before canonical persistence. Artifact upload envelopes remain derived from
+the configured chunk size so operators can tune transfer throughput without widening Control.
+
 At the application boundary, mutable upload staging/session/finalization depends on
 `ArtifactUploadRepository`, published-object references and visibility depend on
 `ArtifactMetadataStore`, and immutable content depends on `ArtifactStore`. The SQLite metadata and

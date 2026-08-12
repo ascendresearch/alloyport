@@ -15,6 +15,8 @@ impl WorkerControlService {
         connection_id: &str,
         frame: WorkerToServer,
     ) -> Result<bool, Status> {
+        alloyport_proto::validate_worker_frame(&frame)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
         if let Some(worker_to_server::Message::Heartbeat(heartbeat)) = frame.message.as_ref() {
             alloyport_proto::validate_heartbeat(heartbeat)
                 .map_err(|error| Status::invalid_argument(error.to_string()))?;

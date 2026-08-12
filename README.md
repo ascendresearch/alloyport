@@ -126,7 +126,9 @@ plaintext. Remote worker control binds the verified certificate to `WorkerHello.
 preserves stable Artifact and run ownership, while revocation fails closed. Control, Artifact, and
 Interaction share one authenticated request context but keep authorization at each service edge;
 long-lived Control and Interaction streams revalidate during delivery, and Artifact upload
-revalidates before every committed chunk. The current slices prove
+revalidates before every committed chunk. Internal gRPC message sizes are explicit protocol
+contracts; oversized backend previews are split into bounded control frames, while large durable
+results remain Artifacts. The current slices prove
 registration, heartbeat, durable assignment admission, server/worker restart reconciliation,
 finished-result replay, cancellation ordering, server-side lease expiry, enrolled Artifact transfer,
 authorized event replay/subscription, and one fixed CUDA fixture on an explicitly configured Docker

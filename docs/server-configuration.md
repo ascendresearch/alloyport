@@ -33,6 +33,12 @@ The `artifact` object accepts `root`, `max_bytes`, `max_chunk_bytes`, `total_quo
 `owner_quota_bytes`. All byte limits must be positive. Unknown root, Artifact, and TLS fields are
 rejected so misspelled safety settings cannot silently fall back to defaults.
 
+`artifact.max_chunk_bytes` also determines the Artifact upload gRPC encoding/decoding envelope,
+with a conservative Protobuf framing allowance. Control and Interaction message limits are fixed
+protocol contracts rather than deployment tuning knobs: worker previews are split into at most
+64 KiB payloads, and both endpoints configure tonic with the shared protocol limits. Large durable
+results belong in the Artifact service, not control or Interaction messages.
+
 ## Environment overrides
 
 Existing deployments can override individual values with:

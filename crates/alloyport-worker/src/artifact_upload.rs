@@ -2,6 +2,7 @@
 
 use crate::executor::{ArtifactPublicationError, ArtifactPublisher, ArtifactReferenceIntent};
 use alloyport_artifacts::{ArtifactStore, ArtifactStoreError, Sha256Digest};
+use alloyport_proto::PROTOBUF_MESSAGE_OVERHEAD_BYTES;
 use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient;
 use alloyport_proto::artifact_v1::{
     ArtifactIdentity, BeginUploadRequest, FinalizeUploadRequest, UploadChunk, UploadSession,
@@ -120,7 +121,10 @@ impl RemoteArtifactPublisher {
             return Ok(());
         }
         let channel = self.endpoint.clone().connect().await?;
-        let mut client = ArtifactServiceClient::new(channel);
+        let mut client = ArtifactServiceClient::new(channel).max_encoding_message_size(
+            self.chunk_bytes
+                .saturating_add(PROTOBUF_MESSAGE_OVERHEAD_BYTES),
+        );
         for reference in references {
             self.publish_one(&mut client, reference).await?;
         }

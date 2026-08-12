@@ -153,6 +153,8 @@ canonical Interaction events, wire messages, and durable audit/evidence as separ
   authenticated gRPC request context and streaming revocation behavior.
 - [x] Control, Artifact, and Interaction share one authenticated request context without hiding
   service-specific streaming revalidation or resource authorization.
+- [x] Internal gRPC services use explicit shared message envelopes; output previews are bounded and
+  split in backend-neutral worker coordination, while Artifact upload limits remain configurable.
 - [x] Strict schema-1 server configuration, explicit locator precedence, file-relative paths, and a
   shared serving/identity-administration command boundary introduced.
 

@@ -12,14 +12,13 @@ use crate::interaction_service::{EnrolledInteractionAccessPolicy, InteractionSer
 use crate::storage::SystemClock;
 use alloyport_artifacts::upload::UploadQuotas;
 use alloyport_artifacts::{FilesystemArtifactStore, SqliteUploadStore};
+use alloyport_proto::PROTOBUF_MESSAGE_OVERHEAD_BYTES;
 use std::error::Error;
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tonic::transport::{Certificate, Identity, ServerTlsConfig};
-
-const PROTOBUF_CHUNK_OVERHEAD_BYTES: usize = 64 * 1024;
 
 pub(super) struct ServerApplication {
     pub(super) address: SocketAddr,
@@ -110,7 +109,7 @@ fn assemble_artifact(
         uploads,
         max_decoding_message_bytes: config
             .max_chunk_bytes
-            .saturating_add(PROTOBUF_CHUNK_OVERHEAD_BYTES),
+            .saturating_add(PROTOBUF_MESSAGE_OVERHEAD_BYTES),
     })
 }
 

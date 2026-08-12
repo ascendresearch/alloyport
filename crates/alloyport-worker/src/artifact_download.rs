@@ -3,6 +3,7 @@
 use crate::artifact_input::{ArtifactInputError, ArtifactInputFuture, ArtifactInputProvider};
 use crate::journal::StoredArtifact;
 use alloyport_artifacts::{ArtifactStore, IngestRequest, Sha256Digest};
+use alloyport_proto::MAX_ARTIFACT_DOWNLOAD_MESSAGE_BYTES;
 use alloyport_proto::artifact_v1::DownloadRequest;
 use alloyport_proto::artifact_v1::artifact_service_client::ArtifactServiceClient;
 use std::error::Error;
@@ -77,7 +78,8 @@ impl RemoteArtifactDownloader {
         }
 
         let channel = self.endpoint.clone().connect().await?;
-        let mut client = ArtifactServiceClient::new(channel);
+        let mut client = ArtifactServiceClient::new(channel)
+            .max_decoding_message_size(MAX_ARTIFACT_DOWNLOAD_MESSAGE_BYTES);
         let mut stream = client
             .download(Request::new(DownloadRequest {
                 digest: artifact.digest.to_string(),

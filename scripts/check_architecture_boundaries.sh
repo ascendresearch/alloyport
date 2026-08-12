@@ -484,6 +484,21 @@ if direct_identity_resolution=$(rg -n 'resolve_identity\(' \
     crates/alloyport-server/src/interaction_service); then
     violations+=("service adapter bypassed shared authenticated request context: ${direct_identity_resolution}")
 fi
+if ! rg -q '^pub const MAX_WORKER_TO_SERVER_MESSAGE_BYTES' crates/alloyport-proto/src/lib.rs \
+    || ! rg -q '^pub const MAX_INTERACTION_EVENT_MESSAGE_BYTES' crates/alloyport-proto/src/lib.rs \
+    || ! rg -q '^pub fn validate_worker_frame' crates/alloyport-proto/src/lib.rs \
+    || ! rg -q 'max_decoding_message_size\(MAX_WORKER_TO_SERVER_MESSAGE_BYTES\)' \
+        crates/alloyport-server/src/application/runtime.rs \
+    || ! rg -q 'max_encoding_message_size\(MAX_INTERACTION_EVENT_MESSAGE_BYTES\)' \
+        crates/alloyport-server/src/application/runtime.rs \
+    || ! rg -q 'max_encoding_message_size\(MAX_WORKER_TO_SERVER_MESSAGE_BYTES\)' \
+        crates/alloyport-worker/src/control_session.rs \
+    || ! rg -q 'bounded_preview_chunks' \
+        crates/alloyport-worker/src/execution_coordination.rs \
+    || ! rg -q 'validate_worker_frame\(&frame\)' \
+        crates/alloyport-server/src/observation_ingress.rs; then
+    violations+=("internal gRPC adapters no longer share explicit message envelopes and bounded preview validation")
+fi
 
 if ((${#violations[@]} != 0)); then
     printf 'Architecture boundary check failed:\n' >&2

@@ -5,6 +5,11 @@ use crate::storage::RepositoryError;
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::interaction_v1::interaction_service_server::InteractionServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
+use alloyport_proto::{
+    MAX_ARTIFACT_DOWNLOAD_MESSAGE_BYTES, MAX_INTERACTION_EVENT_MESSAGE_BYTES,
+    MAX_INTERACTION_REQUEST_MESSAGE_BYTES, MAX_SERVER_TO_WORKER_MESSAGE_BYTES,
+    MAX_WORKER_TO_SERVER_MESSAGE_BYTES,
+};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use tokio::sync::watch;
@@ -92,12 +97,21 @@ fn spawn_tasks(
     let server_shutdown = shutdown_receiver.clone();
     tasks.spawn(async move {
         let result = server
-            .add_service(WorkerControlServer::new(grpc_control))
+            .add_service(
+                WorkerControlServer::new(grpc_control)
+                    .max_decoding_message_size(MAX_WORKER_TO_SERVER_MESSAGE_BYTES)
+                    .max_encoding_message_size(MAX_SERVER_TO_WORKER_MESSAGE_BYTES),
+            )
             .add_service(
                 ArtifactServiceServer::new(artifact)
-                    .max_decoding_message_size(artifact_max_decoding_message_bytes),
+                    .max_decoding_message_size(artifact_max_decoding_message_bytes)
+                    .max_encoding_message_size(MAX_ARTIFACT_DOWNLOAD_MESSAGE_BYTES),
             )
-            .add_service(InteractionServiceServer::new(interaction))
+            .add_service(
+                InteractionServiceServer::new(interaction)
+                    .max_decoding_message_size(MAX_INTERACTION_REQUEST_MESSAGE_BYTES)
+                    .max_encoding_message_size(MAX_INTERACTION_EVENT_MESSAGE_BYTES),
+            )
             .serve_with_shutdown(address, wait_for_shutdown(server_shutdown))
             .await
             .map_err(TaskError::Transport);

@@ -8,6 +8,7 @@ use crate::executor::{
     ArtifactPublisher, CancellationToken, ExecutionObservation, ExecutionStream,
 };
 use crate::journal::LocalAttemptPhase;
+use alloyport_proto::MAX_OUTPUT_PREVIEW_CHUNK_BYTES;
 use alloyport_proto::v1::{OutputChunk, OutputStream, WorkerToServer, worker_to_server};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -98,23 +99,26 @@ impl OutboundWorker {
                 attempt_id,
                 observation: ExecutionObservation::Output(chunk),
             } => {
-                Self::send_ephemeral(
-                    outbound,
-                    next_worker_sequence,
-                    acknowledged,
-                    worker_to_server::Message::OutputChunk(OutputChunk {
-                        attempt_id,
-                        stream: match chunk.stream {
-                            ExecutionStream::Stdout => OutputStream::Stdout,
-                            ExecutionStream::Stderr => OutputStream::Stderr,
-                        }
-                        .into(),
-                        byte_offset: chunk.byte_offset,
-                        display_sanitized: std::str::from_utf8(&chunk.bytes).is_err(),
-                        payload: chunk.bytes,
-                    }),
-                )
-                .await
+                for (relative_offset, payload) in bounded_preview_chunks(&chunk.bytes) {
+                    Self::send_ephemeral(
+                        outbound,
+                        next_worker_sequence,
+                        acknowledged,
+                        worker_to_server::Message::OutputChunk(OutputChunk {
+                            attempt_id: attempt_id.clone(),
+                            stream: match chunk.stream {
+                                ExecutionStream::Stdout => OutputStream::Stdout,
+                                ExecutionStream::Stderr => OutputStream::Stderr,
+                            }
+                            .into(),
+                            byte_offset: chunk.byte_offset.saturating_add(relative_offset),
+                            display_sanitized: std::str::from_utf8(payload).is_err(),
+                            payload: payload.to_vec(),
+                        }),
+                    )
+                    .await?;
+                }
+                Ok(())
             }
             ExecutionUpdate::Completed { attempt_id, result } => {
                 result.map_err(|error| {
@@ -172,6 +176,28 @@ impl OutboundWorker {
     }
 }
 
+fn bounded_preview_chunks(bytes: &[u8]) -> impl Iterator<Item = (u64, &[u8])> {
+    let valid_text = std::str::from_utf8(bytes).ok();
+    let mut offset = 0_usize;
+    std::iter::from_fn(move || {
+        if offset >= bytes.len() {
+            return None;
+        }
+        let mut end = offset
+            .saturating_add(MAX_OUTPUT_PREVIEW_CHUNK_BYTES)
+            .min(bytes.len());
+        if let Some(text) = valid_text {
+            while end > offset && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+        }
+        let relative_offset = u64::try_from(offset).unwrap_or(u64::MAX);
+        let payload = &bytes[offset..end];
+        offset = end;
+        Some((relative_offset, payload))
+    })
+}
+
 async fn run_registered_execution(
     backend: &dyn ExecutionBackend,
     state: &WorkerState,
@@ -199,4 +225,46 @@ async fn run_registered_execution(
             observer,
         })
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_previews_are_split_without_gaps_at_the_wire_limit() {
+        let bytes = vec![7; MAX_OUTPUT_PREVIEW_CHUNK_BYTES * 2 + 1];
+        let chunks = bounded_preview_chunks(&bytes).collect::<Vec<_>>();
+
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].0, 0);
+        assert_eq!(chunks[0].1.len(), MAX_OUTPUT_PREVIEW_CHUNK_BYTES);
+        assert_eq!(
+            chunks[1].0,
+            u64::try_from(MAX_OUTPUT_PREVIEW_CHUNK_BYTES).expect("wire limit fits u64")
+        );
+        assert_eq!(chunks[1].1.len(), MAX_OUTPUT_PREVIEW_CHUNK_BYTES);
+        assert_eq!(
+            chunks[2].0,
+            u64::try_from(MAX_OUTPUT_PREVIEW_CHUNK_BYTES * 2).expect("wire limit fits u64")
+        );
+        assert_eq!(chunks[2].1, &[7]);
+    }
+
+    #[test]
+    fn valid_utf8_preview_is_not_split_inside_a_character() {
+        let mut bytes = vec![b'a'; MAX_OUTPUT_PREVIEW_CHUNK_BYTES - 1];
+        bytes.extend_from_slice("€".as_bytes());
+
+        let chunks = bounded_preview_chunks(&bytes).collect::<Vec<_>>();
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].1.len(), MAX_OUTPUT_PREVIEW_CHUNK_BYTES - 1);
+        assert_eq!(
+            chunks[1].0,
+            u64::try_from(MAX_OUTPUT_PREVIEW_CHUNK_BYTES - 1).expect("wire limit fits u64")
+        );
+        assert!(std::str::from_utf8(chunks[0].1).is_ok());
+        assert_eq!(std::str::from_utf8(chunks[1].1), Ok("€"));
+    }
 }

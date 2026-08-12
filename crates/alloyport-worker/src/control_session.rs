@@ -9,6 +9,7 @@ use alloyport_proto::v1::{
     DeviceLease as WireDeviceLease, DeviceObservation as WireDeviceObservation, Heartbeat,
     ServerToWorker, WorkerHealth, WorkerToServer, server_to_worker, worker_to_server,
 };
+use alloyport_proto::{MAX_SERVER_TO_WORKER_MESSAGE_BYTES, MAX_WORKER_TO_SERVER_MESSAGE_BYTES};
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -57,7 +58,9 @@ impl OutboundWorker {
 
     async fn run_control_session(&self) -> Result<(), WorkerError> {
         let channel = self.endpoint.clone().connect().await?;
-        let mut client = WorkerControlClient::new(channel);
+        let mut client = WorkerControlClient::new(channel)
+            .max_encoding_message_size(MAX_WORKER_TO_SERVER_MESSAGE_BYTES)
+            .max_decoding_message_size(MAX_SERVER_TO_WORKER_MESSAGE_BYTES);
         let (outbound, receiver) = mpsc::channel(64);
         let mut execution_updates = self.execution_updates.subscribe();
 
