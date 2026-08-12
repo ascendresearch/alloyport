@@ -4,7 +4,7 @@
 > bootstrap. A standalone local Docker image ID is an accepted immutable identity, and server/TLS,
 > worker identity, journal, and backend policy now live in one worker configuration file.
 
-- Status: Accepted; fixed runtime and direct device gate implemented, outbound gate pending
+- Status: Accepted; fixed runtime and outbound gate implemented
 - Date: 2026-08-11
 - Scope: fixed Ascend executor identity, device inventory and telemetry, local device-node policy,
   and worker-durable device leases

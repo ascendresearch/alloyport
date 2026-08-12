@@ -1,6 +1,6 @@
 //! One schema-validated configuration file for an outbound accelerator worker.
 
-use super::{AscendWorkerConfig, CudaWorkerConfig};
+use super::backend_config::{AscendWorkerConfig, CudaWorkerConfig};
 use alloyport_proto::v1::{Backend, WorkerCapabilities, WorkerHello};
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use serde::Deserialize;
@@ -13,7 +13,7 @@ use tonic::transport::{Certificate, ClientTlsConfig, Endpoint, Identity};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct WorkerFileConfig {
+pub(crate) struct WorkerFileConfig {
     schema_version: u16,
     server: ServerConfig,
     worker: WorkerIdentityConfig,

@@ -94,6 +94,18 @@ async fn reconciliation_recovers_restart_residue_without_blocking_on_another_att
     assert_eq!(second.recovered, 0);
     assert_eq!(second.failures.len(), 1);
     assert_eq!(service.interaction_events("task-fake-attempt")?.len(), 1);
+
+    let (shutdown, receiver) = tokio::sync::watch::channel(false);
+    let reaper_service = service.clone();
+    let reaper_receiver = receiver.clone();
+    let reaper =
+        tokio::spawn(async move { reaper_service.run_lease_reaper_until(reaper_receiver).await });
+    let reconciler =
+        tokio::spawn(async move { service.run_preparation_reconciler_until(receiver).await });
+    tokio::task::yield_now().await;
+    shutdown.send(true)?;
+    tokio::time::timeout(std::time::Duration::from_secs(1), reaper).await???;
+    tokio::time::timeout(std::time::Duration::from_secs(1), reconciler).await???;
     Ok(())
 }
 

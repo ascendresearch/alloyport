@@ -6,6 +6,8 @@ For a new development session, start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
 The completed architecture remediation baseline is tracked in
 [`docs/ARCHITECTURE_REMEDIATION.md`](docs/ARCHITECTURE_REMEDIATION.md).
+The active incremental architecture work is tracked in
+[`docs/ARCHITECTURE_EVOLUTION_PLAN.md`](docs/ARCHITECTURE_EVOLUTION_PLAN.md).
 
 The project treats migration as evidence-backed engineering, not source-to-source translation.
 A successful delivery includes the implementation, its supported domain, correctness and
@@ -103,7 +105,8 @@ is rooted at `ALLOYPORT_ARTIFACT_ROOT` (default
 `ALLOYPORT_ARTIFACT_TOTAL_QUOTA_BYTES` and `ALLOYPORT_ARTIFACT_OWNER_QUOTA_BYTES` configure
 transactional stored-plus-reserved quotas. Certificate enrollment state uses
 `ALLOYPORT_IDENTITY_DATABASE` or defaults to `alloyport-artifacts/identities.sqlite3`. Enroll and
-manage identities before starting a remote server:
+manage identities before starting a remote server. `ALLOYPORT_SHUTDOWN_TIMEOUT_SECONDS` sets the
+positive bounded drain window and defaults to 10 seconds:
 
 ```bash
 cargo run -p alloyport-server -- identity enroll WORKER_ID client.pem

@@ -16,6 +16,67 @@ while IFS= read -r file; do
     fi
 done < <(rg --files crates -g '*.rs')
 
+worker_main=crates/alloyport-worker/src/main.rs
+worker_main_lines=$(wc -l < "$worker_main")
+if ((worker_main_lines > 20)); then
+    violations+=("worker binary entry point has $worker_main_lines lines (limit 20); process wiring belongs in application/")
+fi
+if worker_main_responsibility=$(rg -n \
+    'WorkerFileConfig|BackendPolicy|FilesystemArtifactStore|DockerCliEngine|NvidiaSmi|NpuSmi|run_session|serde' \
+    "$worker_main"); then
+    violations+=("worker configuration, adapter assembly, or runtime lifecycle escaped into main.rs: ${worker_main_responsibility}")
+fi
+if ! rg -q '^pub async fn run_from_args\(' \
+    crates/alloyport-worker/src/application/mod.rs; then
+    violations+=("worker application composition entry point is missing")
+fi
+if config_runtime_coupling=$(rg -n \
+    'OutboundWorker|FilesystemArtifactStore|DockerCliEngine|NvidiaSmi|NpuSmi|run_session' \
+    crates/alloyport-worker/src/application/config.rs \
+    crates/alloyport-worker/src/application/backend_config.rs); then
+    violations+=("worker configuration modules gained runtime or concrete adapter wiring: ${config_runtime_coupling}")
+fi
+if lifecycle_backend_coupling=$(rg -n \
+    'BackendPolicy|FilesystemArtifactStore|DockerCliEngine|NvidiaSmi|NpuSmi|Cuda|Ascend' \
+    crates/alloyport-worker/src/application/runtime.rs); then
+    violations+=("worker process lifecycle gained backend-specific composition: ${lifecycle_backend_coupling}")
+fi
+
+server_main=crates/alloyport-server/src/main.rs
+server_main_lines=$(wc -l < "$server_main")
+if ((server_main_lines > 20)); then
+    violations+=("server binary entry point has $server_main_lines lines (limit 20); process wiring belongs in application/")
+fi
+if server_main_responsibility=$(rg -n \
+    'Sqlite|FilesystemArtifactStore|Server::builder|run_lease_reaper|run_preparation_reconciler|std::env|abort\(' \
+    "$server_main"); then
+    violations+=("server configuration, adapter assembly, or task lifecycle escaped into main.rs: ${server_main_responsibility}")
+fi
+if ! rg -q '^pub async fn run_from_args\(' \
+    crates/alloyport-server/src/application/mod.rs; then
+    violations+=("server application composition entry point is missing")
+fi
+if server_config_coupling=$(rg -n \
+    'Sqlite|FilesystemArtifactStore|WorkerControlService|Server::builder|run_lease_reaper' \
+    crates/alloyport-server/src/application/config.rs); then
+    violations+=("server process configuration gained concrete adapter or service assembly: ${server_config_coupling}")
+fi
+if server_runtime_coupling=$(rg -n \
+    'Sqlite|FilesystemArtifactStore|std::env|IdentityRegistry|certificate_fingerprint' \
+    crates/alloyport-server/src/application/runtime.rs); then
+    violations+=("server task lifecycle gained configuration, identity administration, or storage assembly: ${server_runtime_coupling}")
+fi
+if server_assembly_environment=$(rg -n 'std::env|env::args|env::var' \
+    crates/alloyport-server/src/application/assembly.rs); then
+    violations+=("server concrete assembly started reading process environment directly: ${server_assembly_environment}")
+fi
+if ! rg -q 'serve_with_shutdown' crates/alloyport-server/src/application/runtime.rs \
+    || ! rg -q 'tokio::time::timeout' crates/alloyport-server/src/application/runtime.rs \
+    || ! rg -q 'run_lease_reaper_until' crates/alloyport-server/src/application/runtime.rs \
+    || ! rg -q 'run_preparation_reconciler_until' crates/alloyport-server/src/application/runtime.rs; then
+    violations+=("server runtime does not retain graceful listener shutdown and bounded cooperative task drain")
+fi
+
 server_application_files=(
     crates/alloyport-server/src/artifact.rs
     crates/alloyport-server/src/assignment_coordinator.rs

@@ -140,13 +140,36 @@ impl WorkerControlService {
     ///
     /// Returns the first repository failure that prevents a trustworthy reconciliation pass.
     pub async fn run_preparation_reconciler(&self) -> Result<(), RepositoryError> {
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        let result = self.run_preparation_reconciler_until(receiver).await;
+        drop(shutdown);
+        result
+    }
+
+    /// Reconciles periodically until the process supervisor requests shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first repository failure that prevents a trustworthy reconciliation pass.
+    pub async fn run_preparation_reconciler_until(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), RepositoryError> {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(
             PREPARATION_RECONCILE_INTERVAL_MS,
         ));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            interval.tick().await;
-            let _report = self.reconcile_preparing_assignments().await?;
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        return Ok(());
+                    }
+                }
+                _ = interval.tick() => {
+                    let _report = self.reconcile_preparing_assignments().await?;
+                }
+            }
         }
     }
 }

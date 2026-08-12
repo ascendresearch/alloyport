@@ -1,6 +1,7 @@
 //! Server-side worker sessions backed by a crash-durable control repository.
 
 pub mod adapters;
+pub mod application;
 pub mod artifact;
 mod assignment_coordinator;
 mod assignment_delivery;
@@ -57,7 +58,7 @@ use storage::{
     ServerOutboxFrame, ServerOutboxRepository, StoreAssignmentOutcome, SystemClock,
     WorkerConnectionRepository,
 };
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 use tonic::Status;
 
 const HEARTBEAT_INTERVAL_MS: u64 = 5_000;
@@ -455,17 +456,40 @@ impl WorkerControlService {
     ///
     /// Returns the first repository error instead of silently stopping lease expiry.
     pub async fn run_lease_reaper(&self) -> Result<(), RepositoryError> {
+        let (shutdown, receiver) = watch::channel(false);
+        let result = self.run_lease_reaper_until(receiver).await;
+        drop(shutdown);
+        result
+    }
+
+    /// Runs lease expiry until the process supervisor requests shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first repository error instead of silently stopping lease expiry.
+    pub async fn run_lease_reaper_until(
+        &self,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> Result<(), RepositoryError> {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_millis(LEASE_REAPER_INTERVAL_MS));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            interval.tick().await;
-            let repository = self.repositories.attempts.clone();
-            let now_ms = self.clock.now_unix_ms();
-            self.persistence
-                .run(move || repository.expire_leases(now_ms))
-                .await
-                .map_err(RepositoryError::from)??;
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        return Ok(());
+                    }
+                }
+                _ = interval.tick() => {
+                    let repository = self.repositories.attempts.clone();
+                    let now_ms = self.clock.now_unix_ms();
+                    self.persistence
+                        .run(move || repository.expire_leases(now_ms))
+                        .await
+                        .map_err(RepositoryError::from)??;
+                }
+            }
         }
     }
 }

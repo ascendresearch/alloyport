@@ -50,6 +50,14 @@ Read these documents before changing architecture or implementation:
 16. [`design/0021-fixed-ascend-worker-contract.md`](design/0021-fixed-ascend-worker-contract.md)
     for fixed Ascend identity, device-node policy, dynamic health/occupancy, and worker-durable device
     leases.
+17. [`design/0022-standalone-worker-configuration-and-device-selection.md`](design/0022-standalone-worker-configuration-and-device-selection.md)
+    for the unified worker file, registry-optional image identity, and shared GPU/NPU selection and
+    device-guard rules.
+
+For structural work, also read
+[`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
+incremental composition-root, port, API, configuration, and lifecycle plan. It does not reopen the
+completed broad remediation baseline.
 
 Design documents state intended behavior. Tests and code state what this revision actually implements.
 
@@ -352,6 +360,7 @@ non-loopback bind address. Remote mode requires:
 - `ALLOYPORT_TLS_CERT`
 - `ALLOYPORT_TLS_KEY`
 - `ALLOYPORT_TLS_CLIENT_CA`
+- `ALLOYPORT_SHUTDOWN_TIMEOUT_SECONDS` (default 10) for cooperative listener/background-task drain
 
 Artifact storage configuration is:
 
@@ -716,6 +725,22 @@ cargo run -p alloyport-worker -- --config /absolute/path/to/worker.json
 
 Startup validates connection policy, backend probe, image policy, and device eligibility before the
 control session. There is no public scheduling API in the binary yet.
+
+The worker process entry is now deliberately thin. `application/config.rs` owns the unified
+connection/identity schema, `application/backend_config.rs` owns CUDA/Ascend local policy schemas,
+`application/assembly.rs` selects and wires concrete probes, stores, transport clients, supervisors,
+and runtimes, while `application/runtime.rs` owns reconnect and shutdown behavior. Architecture CI
+prevents those responsibilities from returning to `main.rs` or leaking concrete runtime adapters
+into configuration and lifecycle modules.
+
+That server slice is now implemented as well. `alloyport-server` has separate process configuration,
+offline identity administration, concrete service assembly, and runtime supervision modules. The
+gRPC listener, lease reaper, and assignment-preparation reconciler share a cooperative shutdown
+signal; Ctrl-C or any unexpected task exit stops the others and drains them within
+`ALLOYPORT_SHUTDOWN_TIMEOUT_SECONDS` (default 10) before abort is used as a last-resort bound.
+Architecture CI keeps environment parsing out of assembly, concrete storage out of configuration,
+and process supervision out of the six-line binary entry point. The next structural slice is
+versioned server-file configuration and high-value Port contract suites.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 

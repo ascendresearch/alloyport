@@ -28,7 +28,7 @@ stable identifier.
 | 0018 | [Fixed CUDA container execution contract](0018-fixed-cuda-container-contract.md) | Accepted; contract slice implemented |
 | 0019 | [Authorized interaction replay and subscription](0019-authorized-interaction-replay-and-subscription.md) | Accepted; implemented |
 | 0020 | [Worker supervisor placement and per-attempt isolation](0020-worker-supervisor-placement-and-attempt-isolation.md) | Accepted |
-| 0021 | [Fixed Ascend worker execution contract](0021-fixed-ascend-worker-contract.md) | Accepted; direct device gate passed, outbound gate pending |
+| 0021 | [Fixed Ascend worker execution contract](0021-fixed-ascend-worker-contract.md) | Accepted; fixed runtime and outbound gate implemented |
 | 0022 | [Standalone worker configuration and shared device selection](0022-standalone-worker-configuration-and-device-selection.md) | Accepted; first implementation slice complete |
 
 ## Convention
