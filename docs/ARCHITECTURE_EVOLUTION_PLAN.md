@@ -149,9 +149,10 @@ canonical Interaction events, wire messages, and durable audit/evidence as separ
   device/environment facts, and hardware gates.
 - [x] Control, Interaction, Artifact, and identity domain failures share one audited gRPC status
   policy with contract tests for stable transport codes.
-- [ ] Remaining high-value Port contract suites implemented in the order recorded in
-  `PORT_CONTRACTS.md`, beginning with authenticated gRPC request context.
-- [ ] Common gRPC identity context/middleware established without hiding streaming revalidation.
+- [x] The high-value Port contract inventory recorded in `PORT_CONTRACTS.md` is implemented through
+  authenticated gRPC request context and streaming revocation behavior.
+- [x] Control, Artifact, and Interaction share one authenticated request context without hiding
+  service-specific streaming revalidation or resource authorization.
 - [x] Strict schema-1 server configuration, explicit locator precedence, file-relative paths, and a
   shared serving/identity-administration command boundary introduced.
 

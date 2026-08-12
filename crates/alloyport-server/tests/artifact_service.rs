@@ -9,11 +9,13 @@ use alloyport_proto::artifact_v1::{
 };
 use alloyport_server::ManualClock;
 use alloyport_server::artifact::{ArtifactAccessPolicy, ArtifactServiceImpl};
+use alloyport_server::identity::AuthenticatedRequestContext;
 use alloyport_worker::artifact_download::RemoteArtifactDownloader;
 use alloyport_worker::journal::StoredArtifact;
 use std::error::Error;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
@@ -129,6 +131,87 @@ async fn upload_resumes_across_streams_then_downloads_in_chunks() -> Result<(), 
     Ok(())
 }
 
+#[tokio::test]
+async fn upload_revalidates_identity_before_each_committed_chunk() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let uploads = Arc::new(SqliteUploadStore::open_with_quotas(
+        directory.path().join("uploads.sqlite3"),
+        directory.path().join("uploads"),
+        1_024,
+        8,
+        UploadQuotas {
+            total_bytes: 2,
+            per_owner_bytes: 2,
+        },
+    )?);
+    let artifacts = Arc::new(FilesystemArtifactStore::open(
+        directory.path().join("cas"),
+        1_024,
+    )?);
+    let service = ArtifactServiceImpl::new(
+        uploads,
+        artifacts,
+        Arc::new(ExpiringAccessPolicy::default()),
+        Arc::new(ManualClock::new(1_000)),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (shutdown_send, shutdown_receive) = oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        Server::builder()
+            .add_service(ArtifactServiceServer::new(service))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_receive.await;
+            })
+            .await
+    });
+
+    let mut client = ArtifactServiceClient::connect(format!("http://{address}")).await?;
+    let session =
+        client
+            .begin_upload(authorized(BeginUploadRequest {
+                upload_key: "revoked-mid-stream".to_owned(),
+                expected_digest:
+                    "sha256:fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603"
+                        .to_owned(),
+                expected_size_bytes: 2,
+                media_type: "text/plain".to_owned(),
+                ttl_ms: 60_000,
+            }))
+            .await?
+            .into_inner();
+
+    let error = client
+        .upload(authorized(tokio_stream::iter([
+            UploadChunk {
+                upload_id: session.upload_id.clone(),
+                offset: 0,
+                data: b"a".to_vec(),
+            },
+            UploadChunk {
+                upload_id: session.upload_id.clone(),
+                offset: 1,
+                data: b"b".to_vec(),
+            },
+        ])))
+        .await
+        .expect_err("revocation before the second chunk must terminate the stream");
+    assert_eq!(error.code(), Code::Unauthenticated);
+
+    let status = client
+        .get_upload(authorized(GetUploadRequest {
+            upload_id: session.upload_id,
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(status.committed_offset, 1);
+    assert_eq!(status.state, i32::from(UploadState::Open));
+
+    let _ = shutdown_send.send(());
+    server_task.await??;
+    Ok(())
+}
+
 async fn assert_worker_download(
     endpoint: Endpoint,
     directory: &std::path::Path,
@@ -191,15 +274,16 @@ struct TestAccessPolicy;
 
 #[tonic::async_trait]
 impl ArtifactAccessPolicy for TestAccessPolicy {
-    async fn resolve_owner(
+    async fn authenticate(
         &self,
         metadata: &MetadataMap,
         _extensions: &Extensions,
-    ) -> Result<String, Status> {
-        Ok(metadata
+    ) -> Result<AuthenticatedRequestContext, Status> {
+        let owner_id = metadata
             .get("x-test-owner")
             .and_then(|value| value.to_str().ok())
-            .map_or_else(|| "worker-1".into(), str::to_owned))
+            .map_or_else(|| "worker-1".into(), str::to_owned);
+        Ok(AuthenticatedRequestContext::local(owner_id))
     }
 
     async fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
@@ -212,5 +296,39 @@ impl ArtifactAccessPolicy for TestAccessPolicy {
         } else {
             Err(Status::permission_denied("artifact is not authorized"))
         }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ExpiringAccessPolicy {
+    revalidations: AtomicUsize,
+}
+
+#[tonic::async_trait]
+impl ArtifactAccessPolicy for ExpiringAccessPolicy {
+    async fn authenticate(
+        &self,
+        _metadata: &MetadataMap,
+        _extensions: &Extensions,
+    ) -> Result<AuthenticatedRequestContext, Status> {
+        Ok(AuthenticatedRequestContext::local("worker-1"))
+    }
+
+    async fn revalidate(&self, _context: &AuthenticatedRequestContext) -> Result<(), Status> {
+        if self.revalidations.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(())
+        } else {
+            Err(Status::unauthenticated("credential revoked"))
+        }
+    }
+
+    async fn authorize_download(
+        &self,
+        _owner_id: &str,
+        _digest: Sha256Digest,
+    ) -> Result<(), Status> {
+        Err(Status::permission_denied(
+            "download is outside this fixture",
+        ))
     }
 }

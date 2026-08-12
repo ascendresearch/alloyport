@@ -330,9 +330,12 @@ The server library also implements a separate `ArtifactServiceImpl` adapter:
   a bounded 64 KiB buffer;
 - blocking SQLite and bounded filesystem metadata work runs outside Tokio async workers behind the
   server-wide eight-permit persistence executor;
-- an injectable `ArtifactAccessPolicy` receives both RPC metadata and transport extensions, derives
-  the session owner, and authorizes digest reads, so no request-body owner or client filesystem path
-  is trusted; the extensions expose tonic's verified TLS peer-certificate information.
+- an injectable `ArtifactAccessPolicy` receives both RPC metadata and transport extensions, returns
+  the shared authenticated request context, and authorizes digest reads, so no request-body owner or
+  client filesystem path is trusted; the extensions expose tonic's verified TLS peer-certificate
+  information;
+- client-streaming upload revalidates the retained credential before committing every chunk, so
+  rotation or revocation cannot authorize bytes received later on an already-open stream.
 
 The access-policy contracts are asynchronous, so identity-registry and reference checks cannot
 accidentally execute synchronously on an RPC task. The server binary registers this service
@@ -348,6 +351,13 @@ Remote `WorkerControlService` uses the same registry. The verified certificate m
 `WorkerHello.worker_id`, and every later frame revalidates the original fingerprint so a rotated or
 revoked connection is terminated on its next heartbeat or lifecycle message. Plaintext loopback
 worker control remains an explicit development bypass.
+
+Control, Artifact, and Interaction now retain the same `AuthenticatedRequestContext`: a stable
+logical owner plus an optional verified connection identity. Explicit local contexts support tests
+and in-process adapters; enrolled remote policies require the verified identity. Authentication is
+shared, while Artifact references and Interaction run grants remain service-owned authorization
+decisions. Control revalidates per inbound frame, Artifact per committed upload chunk, and
+Interaction throughout replay/live delivery.
 
 At the application boundary, mutable upload staging/session/finalization depends on
 `ArtifactUploadRepository`, published-object references and visibility depend on
@@ -780,8 +790,10 @@ outcome classifier with backend-specific typed policy constants. Their create pl
 checks, environment facts, receipts, and hardware gates remain deliberately separate. gRPC adapter
 status policy is now centralized too: Control repository, Interaction, Artifact, and certificate
 identity errors have one audited domain-category-to-`tonic::Code` mapping with table-driven tests,
-and duplicate service-local mappings were removed without changing existing codes. Consistent
-authenticated request context and streaming revalidation are the next gRPC slice.
+and duplicate service-local mappings were removed without changing existing codes. The following
+gRPC slice is complete too: Control, Artifact, and Interaction share one authenticated request
+context, with transport-specific revocation checks kept visible. Artifact upload now revalidates
+before every committed chunk, covered by a test that revokes access between two chunks.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 

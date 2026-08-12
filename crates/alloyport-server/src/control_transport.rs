@@ -33,7 +33,7 @@ impl WorkerControl for WorkerControlService {
         request: Request<Streaming<WorkerToServer>>,
     ) -> Result<Response<Self::OpenControlStreamStream>, Status> {
         let authenticated_identity = match self.identity_resolver.as_ref() {
-            Some(resolver) => Some(resolver.resolve_identity(request.extensions()).await?),
+            Some(resolver) => Some(resolver.resolve_context(request.extensions()).await?),
             None => None,
         };
         let mut inbound = request.into_inner();
@@ -61,16 +61,16 @@ impl WorkerControl for WorkerControlService {
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         if authenticated_identity
             .as_ref()
-            .is_some_and(|identity| identity.owner_id != hello.worker_id)
+            .is_some_and(|context| context.owner_id() != hello.worker_id)
         {
             return Err(Status::permission_denied(
                 "worker hello identity does not match the enrolled client certificate",
             ));
         }
-        if let Some(identity) = authenticated_identity.as_ref()
+        if let Some(context) = authenticated_identity.as_ref()
             && let Some(resolver) = self.identity_resolver.as_ref()
         {
-            resolver.revalidate(identity).await?;
+            resolver.revalidate_context(context).await?;
         }
 
         let worker_id = hello.worker_id.clone();

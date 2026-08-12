@@ -11,6 +11,7 @@ use alloyport_proto::v1::{
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use alloyport_server::artifact::{ArtifactAccessPolicy, ArtifactServiceImpl};
+use alloyport_server::identity::AuthenticatedRequestContext;
 use alloyport_server::{AssignmentState, EnqueueOutcome, ManualClock, WorkerControlService};
 use alloyport_worker::artifact_download::RemoteArtifactDownloader;
 use alloyport_worker::artifact_upload::RemoteArtifactPublisher;
@@ -1246,12 +1247,12 @@ impl FixedArtifactOwner {
 
 #[tonic::async_trait]
 impl ArtifactAccessPolicy for FixedArtifactOwner {
-    async fn resolve_owner(
+    async fn authenticate(
         &self,
         _metadata: &tonic::metadata::MetadataMap,
         _extensions: &Extensions,
-    ) -> Result<String, Status> {
-        Ok(self.owner_id.clone())
+    ) -> Result<AuthenticatedRequestContext, Status> {
+        Ok(AuthenticatedRequestContext::local(self.owner_id.clone()))
     }
 
     async fn authorize_download(

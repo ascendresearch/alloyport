@@ -1,7 +1,7 @@
 //! Identity resolution and durable run-access authorization policy.
 
 use crate::grpc_status::interaction_status;
-use crate::identity::{ConnectionIdentityResolver, ResolvedConnectionIdentity};
+use crate::identity::{AuthenticatedRequestContext, ConnectionIdentityResolver};
 use crate::interaction::InteractionStore;
 use crate::persistence::ServerPersistence;
 use std::fmt::Debug;
@@ -9,27 +9,8 @@ use std::sync::Arc;
 use tonic::metadata::MetadataMap;
 use tonic::{Extensions, Status};
 
-/// Authorization retained for the lifetime of a replay or subscription request.
-#[derive(Clone, Debug)]
-pub struct RunAuthorization {
-    owner_id: String,
-    identity: Option<ResolvedConnectionIdentity>,
-}
-
-impl RunAuthorization {
-    #[must_use]
-    pub fn local(owner_id: impl Into<String>) -> Self {
-        Self {
-            owner_id: owner_id.into(),
-            identity: None,
-        }
-    }
-
-    #[must_use]
-    pub fn owner_id(&self) -> &str {
-        &self.owner_id
-    }
-}
+/// Authentication state retained for run authorization and stream revalidation.
+pub type RunAuthorization = AuthenticatedRequestContext;
 
 /// Resolves request identity and checks run visibility without trusting request body ownership.
 #[tonic::async_trait]
@@ -103,12 +84,9 @@ impl InteractionAccessPolicy for EnrolledInteractionAccessPolicy {
         extensions: &Extensions,
         run_id: &str,
     ) -> Result<RunAuthorization, Status> {
-        let identity = self.identities.resolve_identity(extensions).await?;
-        self.authorize_owner(&identity.owner_id, run_id).await?;
-        Ok(RunAuthorization {
-            owner_id: identity.owner_id.clone(),
-            identity: Some(identity),
-        })
+        let context = self.identities.resolve_context(extensions).await?;
+        self.authorize_owner(context.owner_id(), run_id).await?;
+        Ok(context)
     }
 
     async fn revalidate(
@@ -116,11 +94,7 @@ impl InteractionAccessPolicy for EnrolledInteractionAccessPolicy {
         authorization: &RunAuthorization,
         run_id: &str,
     ) -> Result<(), Status> {
-        let identity = authorization
-            .identity
-            .as_ref()
-            .ok_or_else(|| Status::unauthenticated("verified interaction identity is missing"))?;
-        self.identities.revalidate(identity).await?;
-        self.authorize_owner(&authorization.owner_id, run_id).await
+        self.identities.revalidate_context(authorization).await?;
+        self.authorize_owner(authorization.owner_id(), run_id).await
     }
 }

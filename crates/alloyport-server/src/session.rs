@@ -1,8 +1,8 @@
 //! Worker connection registration, replay, stream consumption, and disconnect handling.
 
 use super::{
-    ATTEMPT_LEASE_MS, ConnectionRegistration, HEARTBEAT_INTERVAL_MS, OUTBOX_ORPHAN_RETENTION_MS,
-    Ordering, PROTOCOL_MAJOR, PROTOCOL_MINOR, RepositoryError, ResolvedConnectionIdentity,
+    ATTEMPT_LEASE_MS, AuthenticatedRequestContext, ConnectionRegistration, HEARTBEAT_INTERVAL_MS,
+    OUTBOX_ORPHAN_RETENTION_MS, Ordering, PROTOCOL_MAJOR, PROTOCOL_MINOR, RepositoryError,
     ServerToWorker, ServerWelcome, Status, WorkerControlService, WorkerHello, WorkerRecord,
     WorkerToServer, hello_to_registration, mpsc, repository_status, server_to_worker,
 };
@@ -116,16 +116,16 @@ impl WorkerControlService {
         self,
         worker_id: String,
         connection_id: String,
-        authenticated_identity: Option<ResolvedConnectionIdentity>,
+        authenticated_identity: Option<AuthenticatedRequestContext>,
         mut inbound: Streaming<WorkerToServer>,
         outbound: mpsc::Sender<Result<ServerToWorker, Status>>,
     ) {
         loop {
             match inbound.next().await {
                 Some(Ok(frame)) => {
-                    if let Some(identity) = authenticated_identity.as_ref()
+                    if let Some(context) = authenticated_identity.as_ref()
                         && let Some(resolver) = self.identity_resolver.as_ref()
-                        && let Err(status) = resolver.revalidate(identity).await
+                        && let Err(status) = resolver.revalidate_context(context).await
                     {
                         let _ = outbound.send(Err(status)).await;
                         break;

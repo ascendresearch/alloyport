@@ -132,6 +132,43 @@ pub struct ResolvedConnectionIdentity {
     pub fingerprint: Sha256Digest,
 }
 
+/// Authenticated principal retained for the lifetime of one gRPC request or stream.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedRequestContext {
+    owner_id: String,
+    identity: Option<ResolvedConnectionIdentity>,
+}
+
+impl AuthenticatedRequestContext {
+    /// Creates an explicitly trusted local context for tests and in-process adapters.
+    #[must_use]
+    pub fn local(owner_id: impl Into<String>) -> Self {
+        Self {
+            owner_id: owner_id.into(),
+            identity: None,
+        }
+    }
+
+    /// Creates a context backed by a verified transport credential.
+    #[must_use]
+    pub fn verified(identity: ResolvedConnectionIdentity) -> Self {
+        Self {
+            owner_id: identity.owner_id.clone(),
+            identity: Some(identity),
+        }
+    }
+
+    #[must_use]
+    pub fn owner_id(&self) -> &str {
+        &self.owner_id
+    }
+
+    #[must_use]
+    pub fn connection_identity(&self) -> Option<&ResolvedConnectionIdentity> {
+        self.identity.as_ref()
+    }
+}
+
 /// Resolves one authenticated transport connection to a stable logical owner.
 #[tonic::async_trait]
 pub trait ConnectionIdentityResolver: Debug + Send + Sync {
@@ -152,15 +189,44 @@ pub trait ConnectionIdentityResolver: Debug + Send + Sync {
     /// Returns a gRPC status after replacement, revocation, or registry failure.
     async fn revalidate(&self, identity: &ResolvedConnectionIdentity) -> Result<(), Status>;
 
+    /// Resolves a transport credential into request-lifetime authentication state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same status classifications as [`Self::resolve_identity`].
+    async fn resolve_context(
+        &self,
+        extensions: &Extensions,
+    ) -> Result<AuthenticatedRequestContext, Status> {
+        self.resolve_identity(extensions)
+            .await
+            .map(AuthenticatedRequestContext::verified)
+    }
+
+    /// Revalidates the verified credential retained by a request context.
+    ///
+    /// # Errors
+    ///
+    /// Returns unauthenticated for a local context or the status from [`Self::revalidate`].
+    async fn revalidate_context(
+        &self,
+        context: &AuthenticatedRequestContext,
+    ) -> Result<(), Status> {
+        let identity = context
+            .connection_identity()
+            .ok_or_else(|| Status::unauthenticated("verified connection identity is missing"))?;
+        self.revalidate(identity).await
+    }
+
     /// Resolves only the stable owner for request/response services.
     ///
     /// # Errors
     ///
     /// Returns the same status classifications as [`Self::resolve_identity`].
     async fn resolve_owner(&self, extensions: &Extensions) -> Result<String, Status> {
-        self.resolve_identity(extensions)
+        self.resolve_context(extensions)
             .await
-            .map(|identity| identity.owner_id)
+            .map(|context| context.owner_id().to_owned())
     }
 }
 

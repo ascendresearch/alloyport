@@ -461,6 +461,29 @@ if duplicated_grpc_status=$(rg -n \
     crates/alloyport-server/src/interaction_service.rs); then
     violations+=("service adapter duplicated shared gRPC status mapping: ${duplicated_grpc_status}")
 fi
+if ! rg -q '^pub struct AuthenticatedRequestContext' \
+    crates/alloyport-server/src/identity.rs \
+    || ! rg -q 'resolve_context\(request\.extensions\(\)\)' \
+        crates/alloyport-server/src/control_transport.rs \
+    || ! rg -q 'self\.access\.revalidate\(&context\)' \
+        crates/alloyport-server/src/artifact.rs \
+    || ! rg -q '^pub type RunAuthorization = AuthenticatedRequestContext;' \
+        crates/alloyport-server/src/interaction_service/access.rs; then
+    violations+=("Control, Artifact, and Interaction no longer retain one authenticated request context with explicit stream revalidation")
+fi
+if duplicate_request_context=$(rg -n \
+    '^pub struct (AuthenticatedRequestContext|RunAuthorization)' \
+    crates/alloyport-server/src/artifact.rs \
+    crates/alloyport-server/src/control_transport.rs \
+    crates/alloyport-server/src/interaction_service); then
+    violations+=("service adapter duplicated authenticated request context: ${duplicate_request_context}")
+fi
+if direct_identity_resolution=$(rg -n 'resolve_identity\(' \
+    crates/alloyport-server/src/artifact.rs \
+    crates/alloyport-server/src/control_transport.rs \
+    crates/alloyport-server/src/interaction_service); then
+    violations+=("service adapter bypassed shared authenticated request context: ${direct_identity_resolution}")
+fi
 
 if ((${#violations[@]} != 0)); then
     printf 'Architecture boundary check failed:\n' >&2

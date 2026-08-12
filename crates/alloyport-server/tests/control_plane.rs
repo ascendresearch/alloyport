@@ -9,6 +9,7 @@ use alloyport_proto::v1::{
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use alloyport_server::adapters::sqlite::SqliteControlRepository;
 use alloyport_server::artifact::{ArtifactAccessPolicy, ArtifactServiceImpl};
+use alloyport_server::identity::AuthenticatedRequestContext;
 use alloyport_server::interaction::InteractionRunAccessStore;
 use alloyport_server::{
     AssignmentState, CancelOutcome, EnqueueOutcome, ManualClock, WorkerControlService,
@@ -765,12 +766,12 @@ struct FixedArtifactOwner;
 
 #[tonic::async_trait]
 impl ArtifactAccessPolicy for FixedArtifactOwner {
-    async fn resolve_owner(
+    async fn authenticate(
         &self,
         _metadata: &tonic::metadata::MetadataMap,
         _extensions: &Extensions,
-    ) -> Result<String, Status> {
-        Ok("cuda-1".into())
+    ) -> Result<AuthenticatedRequestContext, Status> {
+        Ok(AuthenticatedRequestContext::local("cuda-1"))
     }
 
     async fn authorize_download(

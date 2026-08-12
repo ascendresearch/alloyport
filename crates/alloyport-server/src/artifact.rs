@@ -1,7 +1,9 @@
 //! Artifact gRPC edge over durable upload sessions and the filesystem CAS.
 
 use crate::grpc_status::upload_status;
-use crate::identity::ConnectionIdentityResolver;
+use crate::identity::{
+    AuthenticatedRequestContext, ConnectionIdentityResolver, ResolvedConnectionIdentity,
+};
 use crate::persistence::ServerPersistence;
 use crate::storage::Clock;
 use alloyport_artifacts::upload::{
@@ -30,16 +32,27 @@ const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 /// Resolves authenticated ownership and authorizes reads without trusting request body fields.
 #[tonic::async_trait]
 pub trait ArtifactAccessPolicy: Debug + Send + Sync {
-    /// Resolves the authenticated principal that owns upload sessions.
+    /// Authenticates the principal that owns upload sessions and artifact grants.
     ///
     /// # Errors
     ///
     /// Returns a gRPC status when authenticated request context is absent or invalid.
-    async fn resolve_owner(
+    async fn authenticate(
         &self,
         metadata: &MetadataMap,
         extensions: &Extensions,
-    ) -> Result<String, Status>;
+    ) -> Result<AuthenticatedRequestContext, Status>;
+
+    /// Revalidates credentials retained by a live client stream.
+    ///
+    /// Policies without a revocable credential registry may keep the default behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns a gRPC status when the credential is no longer active.
+    async fn revalidate(&self, _context: &AuthenticatedRequestContext) -> Result<(), Status> {
+        Ok(())
+    }
 
     /// Checks whether an authenticated principal may read an artifact.
     ///
@@ -64,11 +77,11 @@ impl MtlsArtifactAccessPolicy {
 
 #[tonic::async_trait]
 impl ArtifactAccessPolicy for MtlsArtifactAccessPolicy {
-    async fn resolve_owner(
+    async fn authenticate(
         &self,
         _metadata: &MetadataMap,
         extensions: &Extensions,
-    ) -> Result<String, Status> {
+    ) -> Result<AuthenticatedRequestContext, Status> {
         let connection = extensions
             .get::<TlsConnectInfo<TcpConnectInfo>>()
             .ok_or_else(|| Status::unauthenticated("artifact RPC requires mutual TLS"))?;
@@ -78,9 +91,12 @@ impl ArtifactAccessPolicy for MtlsArtifactAccessPolicy {
         let leaf = certificates.first().ok_or_else(|| {
             Status::unauthenticated("artifact RPC client certificate chain is empty")
         })?;
-        Ok(format!(
-            "mtls:{}",
-            Sha256Digest::digest_bytes(leaf.as_ref())
+        let fingerprint = Sha256Digest::digest_bytes(leaf.as_ref());
+        Ok(AuthenticatedRequestContext::verified(
+            ResolvedConnectionIdentity {
+                owner_id: format!("mtls:{fingerprint}"),
+                fingerprint,
+            },
         ))
     }
 
@@ -114,12 +130,16 @@ impl EnrolledArtifactAccessPolicy {
 
 #[tonic::async_trait]
 impl ArtifactAccessPolicy for EnrolledArtifactAccessPolicy {
-    async fn resolve_owner(
+    async fn authenticate(
         &self,
         _metadata: &MetadataMap,
         extensions: &Extensions,
-    ) -> Result<String, Status> {
-        self.identities.resolve_owner(extensions).await
+    ) -> Result<AuthenticatedRequestContext, Status> {
+        self.identities.resolve_context(extensions).await
+    }
+
+    async fn revalidate(&self, context: &AuthenticatedRequestContext) -> Result<(), Status> {
+        self.identities.revalidate_context(context).await
     }
 
     async fn authorize_download(&self, owner_id: &str, digest: Sha256Digest) -> Result<(), Status> {
@@ -168,9 +188,12 @@ impl ArtifactServiceImpl {
         }
     }
 
-    async fn owner<T>(&self, request: &Request<T>) -> Result<String, Status> {
+    async fn authenticate<T>(
+        &self,
+        request: &Request<T>,
+    ) -> Result<AuthenticatedRequestContext, Status> {
         self.access
-            .resolve_owner(request.metadata(), request.extensions())
+            .authenticate(request.metadata(), request.extensions())
             .await
     }
 }
@@ -184,7 +207,8 @@ impl ArtifactService for ArtifactServiceImpl {
         &self,
         request: Request<BeginUploadRequest>,
     ) -> Result<Response<artifact_v1::UploadSession>, Status> {
-        let owner_id = self.owner(&request).await?;
+        let context = self.authenticate(&request).await?;
+        let owner_id = context.owner_id().to_owned();
         let request = request.into_inner();
         if request.ttl_ms == 0 || request.ttl_ms > MAX_UPLOAD_TTL_MS {
             return Err(Status::invalid_argument("upload TTL is outside policy"));
@@ -209,7 +233,8 @@ impl ArtifactService for ArtifactServiceImpl {
         &self,
         request: Request<GetUploadRequest>,
     ) -> Result<Response<artifact_v1::UploadSession>, Status> {
-        let owner_id = self.owner(&request).await?;
+        let context = self.authenticate(&request).await?;
+        let owner_id = context.owner_id().to_owned();
         let upload_id = request.into_inner().upload_id;
         let uploads = Arc::clone(&self.uploads);
         let session = run_blocking(move || uploads.status(&owner_id, &upload_id)).await?;
@@ -220,10 +245,12 @@ impl ArtifactService for ArtifactServiceImpl {
         &self,
         request: Request<Streaming<UploadChunk>>,
     ) -> Result<Response<artifact_v1::UploadSession>, Status> {
-        let owner_id = self.owner(&request).await?;
+        let context = self.authenticate(&request).await?;
+        let owner_id = context.owner_id().to_owned();
         let mut inbound = request.into_inner();
         let mut upload_id: Option<String> = None;
         while let Some(chunk) = inbound.next().await.transpose()? {
+            self.access.revalidate(&context).await?;
             if chunk.upload_id.is_empty() {
                 return Err(Status::invalid_argument("upload ID is missing"));
             }
@@ -255,7 +282,8 @@ impl ArtifactService for ArtifactServiceImpl {
         &self,
         request: Request<FinalizeUploadRequest>,
     ) -> Result<Response<artifact_v1::ArtifactIdentity>, Status> {
-        let owner_id = self.owner(&request).await?;
+        let context = self.authenticate(&request).await?;
+        let owner_id = context.owner_id().to_owned();
         let upload_id = request.into_inner().upload_id;
         let uploads = Arc::clone(&self.uploads);
         let artifacts = Arc::clone(&self.artifacts);
@@ -271,7 +299,8 @@ impl ArtifactService for ArtifactServiceImpl {
         &self,
         request: Request<DownloadRequest>,
     ) -> Result<Response<Self::DownloadStream>, Status> {
-        let owner_id = self.owner(&request).await?;
+        let context = self.authenticate(&request).await?;
+        let owner_id = context.owner_id().to_owned();
         let request = request.into_inner();
         let digest = parse_digest(&request.digest)?;
         self.access.authorize_download(&owner_id, digest).await?;

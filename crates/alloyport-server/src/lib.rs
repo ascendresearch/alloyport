@@ -46,7 +46,7 @@ use control_transport::{
     expected_worker_message_id, hello_to_registration, worker_event,
 };
 use grpc_status::{interaction_status, repository_status, upload_status};
-use identity::{ConnectionIdentityResolver, ResolvedConnectionIdentity};
+use identity::{AuthenticatedRequestContext, ConnectionIdentityResolver};
 use interaction::{
     AppendOutcome, InteractionError, InteractionHub, InteractionStore, RunGrantOutcome,
     RunRevokeOutcome,

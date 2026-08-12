@@ -64,10 +64,15 @@ not considered compatible merely because it implements the Rust trait.
    conflict, resource exhaustion, failed-precondition, integrity/data-loss, and internal classes;
    service adapters retain request validation and use-case orchestration rather than duplicating
    mappings.
-9. **Authenticated gRPC request context — next.** Resolve and revalidate enrolled connection
-   identity consistently for Control, Artifact, and Interaction without trusting body ownership or
-   moving run/Artifact authorization into middleware. Streaming revocation and transport-specific
-   lifecycle behavior remain explicit contracts.
+9. **Authenticated gRPC request context — implemented.** `AuthenticatedRequestContext` carries one
+   stable logical owner plus the optional verified connection identity needed for later revocation
+   checks. Control, Artifact, and Interaction resolve that common context without trusting body
+   ownership. Streaming behavior remains explicit at each service boundary: Control revalidates
+   before every inbound frame, Interaction revalidates credential and run grant during delivery,
+   and Artifact revalidates before committing every upload chunk. A loopback test proves that
+   revocation between chunks leaves only the already-authorized prefix committed. Artifact/run
+   visibility stays in the owning access policy rather than generic authentication middleware;
+   explicit local contexts are limited to tests and in-process adapters.
 
 ## Non-goals
 
