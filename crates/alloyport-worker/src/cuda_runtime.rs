@@ -1,10 +1,13 @@
 //! Durable Artifact and journal boundary around supervised CUDA execution.
 
 use crate::WorkerState;
+use crate::backend_error::BackendError;
 use crate::cuda_supervisor::{
     ContainerLogChunk, ContainerLogStream, CudaContainerEngine, CudaContainerSupervisor,
     CudaExecutionFacts,
 };
+use crate::device::{DeviceLifecycleManager, DeviceStatusError};
+use crate::device_guard::{CleanupIntent, DeviceGuard, DeviceGuardError};
 use crate::executor::{
     ArtifactPublisher, ExecutionChunk, ExecutionObservation, ExecutionRun, ExecutionRuntimeError,
     ExecutionStream, ExecutorInput, ExecutorResult, RECEIPT_MEDIA_TYPE, STDERR_MEDIA_TYPE,
@@ -13,7 +16,7 @@ use crate::executor::{
 };
 use crate::journal::{LocalAttemptPhase, StoredArtifact, StoredFinished};
 use alloyport_artifacts::ArtifactStore;
-use alloyport_core::Sha256Digest;
+use alloyport_core::{AttemptId, DeviceLease, DeviceObservation, Sha256Digest};
 use alloyport_events::{Event, ProducerEvent};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -57,10 +60,12 @@ impl CudaEnvironmentFacts {
 
 pub struct CudaExecutionRuntime {
     worker_id: String,
+    device_id: String,
     artifacts: Arc<dyn ArtifactStore>,
     supervisor: Arc<CudaContainerSupervisor>,
     engine: Arc<dyn CudaContainerEngine>,
     environment: CudaEnvironmentFacts,
+    device_manager: Arc<dyn DeviceLifecycleManager>,
     active_attempts: Arc<Mutex<BTreeSet<String>>>,
 }
 
@@ -69,9 +74,11 @@ impl Debug for CudaExecutionRuntime {
         formatter
             .debug_struct("CudaExecutionRuntime")
             .field("worker_id", &self.worker_id)
+            .field("device_id", &self.device_id)
             .field("supervisor", &self.supervisor)
             .field("engine", &self.engine)
             .field("environment", &self.environment)
+            .field("device_manager", &self.device_manager)
             .finish_non_exhaustive()
     }
 }
@@ -88,6 +95,7 @@ impl CudaExecutionRuntime {
         supervisor: Arc<CudaContainerSupervisor>,
         engine: Arc<dyn CudaContainerEngine>,
         environment: CudaEnvironmentFacts,
+        device_manager: Arc<dyn DeviceLifecycleManager>,
     ) -> Result<Self, ExecutionRuntimeError> {
         let worker_id = worker_id.into();
         if worker_id.trim().is_empty() {
@@ -95,12 +103,20 @@ impl CudaExecutionRuntime {
                 "worker identity is empty",
             ));
         }
+        let device_id = supervisor.device_id().to_owned();
+        if device_id.trim().is_empty() {
+            return Err(ExecutionRuntimeError::InvalidConfiguration(
+                "CUDA device identity is empty",
+            ));
+        }
         Ok(Self {
             worker_id,
+            device_id,
             artifacts,
             supervisor,
             engine,
             environment,
+            device_manager,
             active_attempts: Arc::new(Mutex::new(BTreeSet::new())),
         })
     }
@@ -188,11 +204,14 @@ impl CudaExecutionRuntime {
             .attempt_async(attempt_id.to_owned())
             .await?
             .ok_or_else(|| ExecutionRuntimeError::MissingAttempt(attempt_id.into()))?;
+        let typed_attempt_id = AttemptId::try_from(attempt_id).map_err(|error| {
+            ExecutionRuntimeError::Backend(BackendError::integrity(error.to_string()))
+        })?;
         if attempt.phase == LocalAttemptPhase::Finished {
             let finished = attempt
                 .finished
                 .ok_or_else(|| ExecutionRuntimeError::MissingTerminalData(attempt_id.into()))?;
-            self.remove_after_commit(attempt_id).await?;
+            self.cleanup_after_commit(state, typed_attempt_id).await?;
             return Ok(ExecutionRun {
                 reference_intents: terminal_reference_intents(attempt_id, &finished),
                 finished,
@@ -201,7 +220,9 @@ impl CudaExecutionRuntime {
             });
         }
 
-        state.mark_running_async(attempt_id.to_owned()).await?;
+        let (lease, pre_observation) = self
+            .prepare_attempt(state, attempt_id, typed_attempt_id.clone(), attempt.phase)
+            .await?;
         observer(ExecutionObservation::Started);
         let input = ExecutorInput::from(&attempt.assignment);
         let mut events = vec![producer_event(
@@ -237,8 +258,18 @@ impl CudaExecutionRuntime {
                 &mut events,
             );
         }
+        let post_observation = observe_exact(self.device_manager.as_ref(), &self.device_id).await?;
+        let cleanup_intent = CleanupIntent::from_observation(&post_observation);
         let persisted = self
-            .persist(&input, execution.result, &execution.facts)
+            .persist(
+                &input,
+                execution.result,
+                &execution.facts,
+                &pre_observation,
+                &post_observation,
+                &lease,
+                cleanup_intent,
+            )
             .await?;
         let references = terminal_reference_intents(attempt_id, &persisted.finished);
         if let Some(publisher) = publisher {
@@ -248,7 +279,7 @@ impl CudaExecutionRuntime {
             .mark_finished_async(attempt_id.to_owned(), persisted.finished.clone())
             .await?;
         append_terminal_events(&self.worker_id, &input, &persisted, &mut events);
-        self.remove_after_commit(attempt_id).await?;
+        self.cleanup_after_commit(state, typed_attempt_id).await?;
         Ok(ExecutionRun {
             finished: persisted.finished,
             events,
@@ -257,11 +288,54 @@ impl CudaExecutionRuntime {
         })
     }
 
+    async fn prepare_attempt(
+        &self,
+        state: &WorkerState,
+        attempt_id: &str,
+        typed_attempt_id: AttemptId,
+        phase: LocalAttemptPhase,
+    ) -> Result<(DeviceLease, DeviceObservation), ExecutionRuntimeError> {
+        if phase == LocalAttemptPhase::Accepted {
+            let preflight = DeviceGuard::acquire_and_preflight(
+                state,
+                typed_attempt_id.clone(),
+                &self.device_id,
+                self.device_manager.as_ref(),
+            )
+            .await
+            .map_err(runtime_guard_error)?;
+            let lease = active_lease(state, &typed_attempt_id).await?;
+            state.mark_running_async(attempt_id.to_owned()).await?;
+            return Ok((lease, preflight.observation));
+        }
+        debug_assert_eq!(phase, LocalAttemptPhase::Running);
+        let lease = active_lease(state, &typed_attempt_id).await?;
+        let observation = state
+            .device_preflight_async(typed_attempt_id)
+            .await?
+            .ok_or_else(|| {
+                ExecutionRuntimeError::Backend(BackendError::integrity(format!(
+                    "running attempt {attempt_id} lacks durable CUDA preflight evidence"
+                )))
+            })?;
+        if observation.device_id != self.device_id || lease.device_id != self.device_id {
+            return Err(ExecutionRuntimeError::Backend(BackendError::integrity(
+                format!("running attempt {attempt_id} has CUDA evidence for a different device"),
+            )));
+        }
+        Ok((lease, observation))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn persist(
         &self,
         input: &ExecutorInput,
         result: ExecutorResult,
         facts: &CudaExecutionFacts,
+        pre_observation: &DeviceObservation,
+        post_observation: &DeviceObservation,
+        lease: &DeviceLease,
+        cleanup_intent: CleanupIntent,
     ) -> Result<CudaPersistedExecution, ExecutionRuntimeError> {
         let outcome = result.outcome;
         let exit_code = result.exit_code;
@@ -280,7 +354,7 @@ impl CudaExecutionRuntime {
         )
         .await?;
         let receipt = serde_json::to_vec(&CudaRunReceipt {
-            schema_version: 1,
+            schema_version: 3,
             worker_id: &self.worker_id,
             assignment_id: &input.assignment_id,
             attempt_id: &input.attempt_id,
@@ -288,10 +362,15 @@ impl CudaExecutionRuntime {
             candidate_id: &input.candidate_id,
             bundle_digest: &facts.bundle_digest,
             source_digest: &facts.source_digest,
-            image_manifest_digest: &facts.image_manifest_digest,
+            image_digest: &facts.image_digest,
+            image_media_type: &facts.image_media_type,
             resolved_image_id: &facts.image_id,
             device_id: &facts.device_id,
             environment: &self.environment,
+            lease,
+            pre_observation,
+            post_observation,
+            post_commit_cleanup: cleanup_intent,
             outcome: outcome.as_str_name(),
             exit_code,
             elapsed_ms,
@@ -317,12 +396,78 @@ impl CudaExecutionRuntime {
         })
     }
 
-    async fn remove_after_commit(&self, attempt_id: &str) -> Result<(), ExecutionRuntimeError> {
+    async fn cleanup_after_commit(
+        &self,
+        state: &WorkerState,
+        attempt_id: AttemptId,
+    ) -> Result<(), ExecutionRuntimeError> {
         self.engine
             .remove(&format!("alloyport-{attempt_id}"))
             .await
-            .map_err(|error| ExecutionRuntimeError::CleanupAfterCommit(error.to_string()))
+            .map_err(|error| ExecutionRuntimeError::CleanupAfterCommit(error.to_string()))?;
+        if !has_active_lease(state, &attempt_id).await? {
+            return Ok(());
+        }
+        DeviceGuard::cleanup_after_terminal(
+            state,
+            attempt_id,
+            &self.device_id,
+            self.device_manager.as_ref(),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| ExecutionRuntimeError::CleanupAfterCommit(error.to_string()))
     }
+}
+
+async fn observe_exact(
+    manager: &dyn DeviceLifecycleManager,
+    device_id: &str,
+) -> Result<DeviceObservation, ExecutionRuntimeError> {
+    let observation = manager
+        .observe_device(device_id)
+        .await
+        .map_err(|error| ExecutionRuntimeError::Backend(error.into()))?;
+    if observation.device_id != device_id {
+        return Err(ExecutionRuntimeError::Backend(BackendError::from(
+            DeviceStatusError::InvalidResponse(format!(
+                "device probe returned {} while observing {device_id}",
+                observation.device_id
+            )),
+        )));
+    }
+    Ok(observation)
+}
+
+async fn active_lease(
+    state: &WorkerState,
+    attempt_id: &AttemptId,
+) -> Result<DeviceLease, ExecutionRuntimeError> {
+    state
+        .active_device_leases_async()
+        .await?
+        .into_iter()
+        .find(|lease| lease.attempt_id == *attempt_id)
+        .ok_or_else(|| {
+            ExecutionRuntimeError::Backend(BackendError::integrity(format!(
+                "attempt {attempt_id} lost its durable CUDA device lease"
+            )))
+        })
+}
+
+async fn has_active_lease(
+    state: &WorkerState,
+    attempt_id: &AttemptId,
+) -> Result<bool, ExecutionRuntimeError> {
+    Ok(state
+        .active_device_leases_async()
+        .await?
+        .iter()
+        .any(|lease| lease.attempt_id == *attempt_id))
+}
+
+fn runtime_guard_error(error: DeviceGuardError) -> ExecutionRuntimeError {
+    ExecutionRuntimeError::Backend(BackendError::from(error))
 }
 
 fn execution_chunk(chunk: ContainerLogChunk) -> ExecutionChunk {
@@ -410,10 +555,15 @@ struct CudaRunReceipt<'a> {
     candidate_id: &'a str,
     bundle_digest: &'a str,
     source_digest: &'a str,
-    image_manifest_digest: &'a str,
+    image_digest: &'a str,
+    image_media_type: &'a str,
     resolved_image_id: &'a str,
     device_id: &'a str,
     environment: &'a CudaEnvironmentFacts,
+    lease: &'a DeviceLease,
+    pre_observation: &'a DeviceObservation,
+    post_observation: &'a DeviceObservation,
+    post_commit_cleanup: CleanupIntent,
     outcome: &'a str,
     exit_code: Option<i32>,
     elapsed_ms: u64,

@@ -63,6 +63,14 @@ message WorkerCapabilities {
   string driver_version = 5;
   string toolkit_version = 6;
   string container_runtime = 7;
+  repeated AcceleratorDevice devices = 8;
+}
+
+message AcceleratorDevice {
+  string device_id = 1;
+  string product_name = 2;
+  string serial_number = 3;
+  string firmware_version = 4;
 }
 
 enum Backend {
@@ -81,6 +89,35 @@ message Heartbeat {
   repeated ActiveAttempt active_attempts = 1;
   uint32 available_slots = 2;
   WorkerHealth health = 3;
+  repeated DeviceObservation devices = 4;
+  repeated DeviceLease device_leases = 5;
+}
+
+message DeviceObservation {
+  string device_id = 1;
+  DeviceHealth health = 2;
+  uint32 process_count = 3;
+  uint32 utilization_percent = 4;
+  uint64 memory_used_bytes = 5;
+  uint64 memory_total_bytes = 6;
+  uint32 temperature_millicelsius = 7;
+  uint64 power_milliwatts = 8;
+  uint64 observed_at_ms = 9;
+  string detail = 10;
+}
+
+enum DeviceHealth {
+  DEVICE_HEALTH_UNSPECIFIED = 0;
+  DEVICE_HEALTH_READY = 1;
+  DEVICE_HEALTH_DEGRADED = 2;
+  DEVICE_HEALTH_UNHEALTHY = 3;
+  DEVICE_HEALTH_RECOVERING = 4;
+}
+
+message DeviceLease {
+  string attempt_id = 1;
+  string device_id = 2;
+  uint64 acquired_at_ms = 3;
 }
 
 enum WorkerHealth {
@@ -133,6 +170,9 @@ enum ExecutorKind {
   // Policy-bound Phase 1 CUDA fixture execution. This is deliberately not a generic container
   // command: the worker must match the fixture, bundle, image, resources, and device locally.
   EXECUTOR_KIND_CUDA_FIXTURE = 4;
+  // Policy-bound fixed Ascend fixture. Host device nodes, driver mounts, CANN environment, and the
+  // selected device are derived exclusively from worker-local policy.
+  EXECUTOR_KIND_ASCEND_FIXTURE = 5;
 }
 
 message EnvironmentVariable {

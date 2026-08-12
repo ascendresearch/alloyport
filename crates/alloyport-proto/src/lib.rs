@@ -1,6 +1,7 @@
 //! Versioned worker-control and artifact protocols plus RPC-boundary validation.
 
 use alloyport_core::Sha256Digest;
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::{Component, Path};
@@ -42,7 +43,7 @@ pub mod interaction_v1 {
 }
 
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 3;
+pub const PROTOCOL_MINOR: u32 = 4;
 
 /// Why an incoming wire message cannot enter the `AlloyPort` domain.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -108,6 +109,142 @@ pub fn validate_worker_hello(hello: &v1::WorkerHello) -> Result<(), ValidationEr
             "hello.capabilities.max_concurrency",
             "must be greater than zero",
         ));
+    }
+    validate_accelerator_devices(capabilities)?;
+    if hello
+        .features
+        .iter()
+        .any(|feature| feature == "ascend-fixture-v1")
+    {
+        if v1::Backend::try_from(capabilities.backend).unwrap_or(v1::Backend::Unspecified)
+            != v1::Backend::Ascend
+        {
+            return Err(ValidationError::new(
+                "hello.features",
+                "ascend-fixture-v1 requires the Ascend backend",
+            ));
+        }
+        if capabilities.devices.len() != capabilities.device_count as usize {
+            return Err(ValidationError::new(
+                "hello.capabilities.devices",
+                "fixed Ascend workers must identify every advertised device",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_accelerator_devices(
+    capabilities: &v1::WorkerCapabilities,
+) -> Result<(), ValidationError> {
+    if !capabilities.devices.is_empty()
+        && capabilities.devices.len() != capabilities.device_count as usize
+    {
+        return Err(ValidationError::new(
+            "hello.capabilities.devices",
+            "must be empty or match device_count",
+        ));
+    }
+    let mut device_ids = BTreeSet::new();
+    let mut serial_numbers = BTreeSet::new();
+    for device in &capabilities.devices {
+        require_text("hello.capabilities.devices.device_id", &device.device_id)?;
+        require_text(
+            "hello.capabilities.devices.product_name",
+            &device.product_name,
+        )?;
+        require_text(
+            "hello.capabilities.devices.serial_number",
+            &device.serial_number,
+        )?;
+        require_text(
+            "hello.capabilities.devices.firmware_version",
+            &device.firmware_version,
+        )?;
+        if !device_ids.insert(device.device_id.as_str()) {
+            return Err(ValidationError::new(
+                "hello.capabilities.devices.device_id",
+                "duplicate",
+            ));
+        }
+        if !serial_numbers.insert(device.serial_number.as_str()) {
+            return Err(ValidationError::new(
+                "hello.capabilities.devices.serial_number",
+                "duplicate",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validates one ephemeral scheduling snapshot before it enters server application code.
+///
+/// # Errors
+///
+/// Returns [`ValidationError`] for unknown health, duplicate identity, impossible counters, or an
+/// invalid durable lease identity.
+pub fn validate_heartbeat(heartbeat: &v1::Heartbeat) -> Result<(), ValidationError> {
+    if v1::WorkerHealth::try_from(heartbeat.health).unwrap_or(v1::WorkerHealth::Unspecified)
+        == v1::WorkerHealth::Unspecified
+    {
+        return Err(ValidationError::new(
+            "heartbeat.health",
+            "unspecified or unknown",
+        ));
+    }
+    let mut observed_devices = BTreeSet::new();
+    for device in &heartbeat.devices {
+        require_text("heartbeat.devices.device_id", &device.device_id)?;
+        if !observed_devices.insert(device.device_id.as_str()) {
+            return Err(ValidationError::new(
+                "heartbeat.devices.device_id",
+                "duplicate",
+            ));
+        }
+        if v1::DeviceHealth::try_from(device.health).unwrap_or(v1::DeviceHealth::Unspecified)
+            == v1::DeviceHealth::Unspecified
+        {
+            return Err(ValidationError::new(
+                "heartbeat.devices.health",
+                "unspecified or unknown",
+            ));
+        }
+        if device.utilization_percent > 100 {
+            return Err(ValidationError::new(
+                "heartbeat.devices.utilization_percent",
+                "must not exceed 100",
+            ));
+        }
+        if device.memory_used_bytes > device.memory_total_bytes {
+            return Err(ValidationError::new(
+                "heartbeat.devices.memory_used_bytes",
+                "must not exceed total memory",
+            ));
+        }
+        if device.detail.len() > 1_024 {
+            return Err(ValidationError::new(
+                "heartbeat.devices.detail",
+                "exceeds 1024 bytes",
+            ));
+        }
+    }
+    let mut leased_attempts = BTreeSet::new();
+    let mut leased_devices = BTreeSet::new();
+    for lease in &heartbeat.device_leases {
+        require_text("heartbeat.device_leases.attempt_id", &lease.attempt_id)?;
+        require_text("heartbeat.device_leases.device_id", &lease.device_id)?;
+        if !leased_attempts.insert(lease.attempt_id.as_str()) {
+            return Err(ValidationError::new(
+                "heartbeat.device_leases.attempt_id",
+                "duplicate",
+            ));
+        }
+        if !leased_devices.insert(lease.device_id.as_str()) {
+            return Err(ValidationError::new(
+                "heartbeat.device_leases.device_id",
+                "duplicate active device lease",
+            ));
+        }
     }
     Ok(())
 }
@@ -193,6 +330,15 @@ fn require_text(field: &'static str, value: &str) -> Result<(), ValidationError>
 mod tests {
     use super::*;
 
+    fn device(device_id: &str, serial_number: &str) -> v1::AcceleratorDevice {
+        v1::AcceleratorDevice {
+            device_id: device_id.to_owned(),
+            product_name: "Ascend950PR".to_owned(),
+            serial_number: serial_number.to_owned(),
+            firmware_version: "9.0.0.105.229".to_owned(),
+        }
+    }
+
     fn artifact(byte: char) -> v1::ArtifactRef {
         v1::ArtifactRef {
             digest: format!("sha256:{}", byte.to_string().repeat(64)),
@@ -264,5 +410,78 @@ mod tests {
 
         let error = validate_assignment(&assignment).expect_err("invalid digest must fail");
         assert_eq!(error.field(), "assignment.execution.bundle");
+    }
+
+    #[test]
+    fn fixed_ascend_hello_requires_complete_unique_device_identity() {
+        let mut hello = v1::WorkerHello {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
+            worker_id: "ascend-1".to_owned(),
+            instance_id: "boot-1".to_owned(),
+            worker_version: "0.1.0".to_owned(),
+            features: vec!["ascend-fixture-v1".to_owned()],
+            capabilities: Some(v1::WorkerCapabilities {
+                backend: v1::Backend::Ascend.into(),
+                architecture: "Ascend950PR".to_owned(),
+                device_count: 2,
+                max_concurrency: 2,
+                driver_version: "25.7.rc1.6".to_owned(),
+                toolkit_version: "9.1.0-beta.1".to_owned(),
+                container_runtime: "docker".to_owned(),
+                devices: vec![device("0", "serial-0"), device("1", "serial-1")],
+            }),
+            active_attempts: Vec::new(),
+        };
+        assert_eq!(validate_worker_hello(&hello), Ok(()));
+
+        hello
+            .capabilities
+            .as_mut()
+            .expect("fixture capabilities")
+            .devices[1]
+            .device_id = "0".to_owned();
+        assert_eq!(
+            validate_worker_hello(&hello)
+                .expect_err("duplicate device identities must fail")
+                .field(),
+            "hello.capabilities.devices.device_id"
+        );
+    }
+
+    #[test]
+    fn heartbeat_keeps_health_occupancy_and_leases_distinct() {
+        let heartbeat = v1::Heartbeat {
+            active_attempts: Vec::new(),
+            available_slots: 0,
+            health: v1::WorkerHealth::Degraded.into(),
+            devices: vec![v1::DeviceObservation {
+                device_id: "0".to_owned(),
+                health: v1::DeviceHealth::Unhealthy.into(),
+                process_count: 0,
+                utilization_percent: 0,
+                memory_used_bytes: 5_249,
+                memory_total_bytes: 131_072,
+                temperature_millicelsius: 65_000,
+                power_milliwatts: 207_600,
+                observed_at_ms: 1_000,
+                detail: "npu-smi reported Alarm".to_owned(),
+            }],
+            device_leases: vec![v1::DeviceLease {
+                attempt_id: "attempt-1".to_owned(),
+                device_id: "0".to_owned(),
+                acquired_at_ms: 900,
+            }],
+        };
+        assert_eq!(validate_heartbeat(&heartbeat), Ok(()));
+
+        let mut impossible = heartbeat;
+        impossible.devices[0].utilization_percent = 101;
+        assert_eq!(
+            validate_heartbeat(&impossible)
+                .expect_err("impossible utilization must fail")
+                .field(),
+            "heartbeat.devices.utilization_percent"
+        );
     }
 }

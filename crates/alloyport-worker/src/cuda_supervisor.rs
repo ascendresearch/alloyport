@@ -30,6 +30,11 @@ impl CudaContainerSupervisor {
         Self { policy, artifacts }
     }
 
+    #[must_use]
+    pub fn device_id(&self) -> &str {
+        self.policy.device_id()
+    }
+
     /// Reconciles one admitted attempt with its stable container and returns bounded terminal data.
     ///
     /// # Errors
@@ -146,7 +151,8 @@ impl CudaContainerSupervisor {
                 container_name: identity.name,
                 bundle_digest: identity.bundle_digest,
                 source_digest,
-                image_manifest_digest: identity.image_manifest_digest,
+                image_digest: identity.image_manifest_digest,
+                image_media_type: assignment.execution.image.media_type.clone(),
                 image_id: identity.image_id,
                 device_id: plan.device_id,
             },

@@ -424,6 +424,7 @@ fn orphaned_server_frames_are_retained_until_the_policy_cutoff() -> Result<(), B
                 driver_version: "test".to_owned(),
                 toolkit_version: "test".to_owned(),
                 container_runtime: "test".to_owned(),
+                devices: Vec::new(),
             },
         },
         &ConnectionRegistration {
@@ -492,6 +493,7 @@ fn prepare_test_assignment(
                     driver_version: "test".into(),
                     toolkit_version: "test".into(),
                     container_runtime: "test".into(),
+                    devices: Vec::new(),
                 },
             },
             &ConnectionRegistration {

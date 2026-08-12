@@ -1,5 +1,9 @@
 # 0018: Fixed CUDA container execution contract
 
+> Design 0022 revises this document's registry-only image identity, per-backend bootstrap file, and
+> fixed device configuration. Registry manifests and standalone local image IDs are both accepted
+> immutable identities; the worker now uses one configuration file and shared device selection.
+
 - Status: Accepted
 - Date: 2026-08-10
 - Scope: first real CUDA fixture, local admission authority, immutable bundle/image identity,
@@ -114,6 +118,13 @@ if removal fails, the terminal result stays durable and a terminal replay retrie
 rerunning the fixture. Supervisor or publication failures instead leave the attempt `Running` and
 retain the identified container for safe reconciliation.
 
+As revised by Design 0022, `Running` is now preceded by the shared durable `DeviceGuard`: an
+exclusive worker-local device lease is committed before a fresh process/health probe, and immutable
+preflight evidence is persisted before the phase transition. The receipt records the lease and
+pre/post observations. Terminal commit does not release the lease; container removal and a fresh
+`Ready`, process-free observation must both succeed. Recovery-action faults, unknown processes, or
+probe failure retain quarantine across replay.
+
 `OutboundWorker::with_cuda_executor` explicitly attaches this runtime, changes local admission to
 CUDA-fixture-only, verifies worker/runtime identity plus CUDA architecture/driver/toolkit facts, and
 uses the same active-attempt cancellation registry as the fake runtime. Session startup retries
@@ -121,12 +132,13 @@ idempotent cleanup for terminal CUDA attempts without allowing cleanup failure t
 terminal outbox delivery. Before CUDA supervision, an optionally attached remote downloader fetches
 the granted exact bundle into the verified local CAS; retry reuses an already verified object.
 
-The worker binary constructs this stack only when `ALLOYPORT_CUDA_CONFIG` names a strict schema-1
-JSON policy. Unknown fields and partial policies are rejected. The file pins the fixture, bundle,
-manifest, resolved image, one device, absolute non-overlapping sandbox/CAS roots, ceilings, Artifact
-bounds, absolute Docker CLI, and stop grace period. The hello must independently declare CUDA,
-matching nonempty environment facts, one device, concurrency one, and Docker. Absence of the file
-retains default-deny admission. The binary always attaches both the input downloader and terminal
+As revised by Design 0022, the worker binary constructs this stack from one strict schema-1 JSON
+configuration. Unknown fields and partial policies are rejected. It pins the fixture, bundle, image
+artifact and resolved local image ID, local device-selection policy, absolute non-overlapping
+sandbox/CAS roots, ceilings, Artifact bounds, absolute Docker and `nvidia-smi` paths, and stop grace
+period. The same file produces matching CUDA hello environment facts, concurrency one, and Docker
+capability. Absence of the file retains default-deny admission. The binary always attaches both the
+input downloader and terminal
 publisher over its authenticated controller endpoint; there is no binary mode that executes CUDA but
 reports unauthoritative digest strings without publication. The log follower enforces early
 output-limit termination and forwards bounded best-effort chunks with independent stdout/stderr

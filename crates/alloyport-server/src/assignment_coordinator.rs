@@ -39,7 +39,7 @@ impl WorkerControlService {
                     &prepared_contract,
                     now_ms,
                 )?;
-                service.grant_cuda_assignment_input(
+                service.grant_fixed_fixture_assignment_input(
                     &prepared_worker_id,
                     &prepared_contract,
                     now_ms,
@@ -159,7 +159,7 @@ impl WorkerControlService {
                     service.clock.now_unix_ms(),
                 )?;
                 validate_assignment(&contract_to_assignment(&reassignment.assignment.contract))?;
-                service.grant_cuda_assignment_input(
+                service.grant_fixed_fixture_assignment_input(
                     &prepared_worker_id,
                     &reassignment.assignment.contract,
                     service.clock.now_unix_ms(),
@@ -196,18 +196,20 @@ impl WorkerControlService {
         Ok(EnqueueOutcome::Sent)
     }
 
-    pub(super) fn grant_cuda_assignment_input(
+    pub(super) fn grant_fixed_fixture_assignment_input(
         &self,
         worker_id: &str,
         contract: &AssignmentContract,
         now_ms: u64,
     ) -> Result<(), EnqueueError> {
-        if contract.execution.executor_kind != ExecutionKind::CudaFixture {
-            return Ok(());
-        }
+        let purpose = match contract.execution.executor_kind {
+            ExecutionKind::CudaFixture => "CUDA fixture input bundle",
+            ExecutionKind::AscendFixture => "Ascend fixture input bundle",
+            _ => return Ok(()),
+        };
         let uploads = self.artifact_metadata.as_ref().ok_or_else(|| {
             EnqueueError::Artifact(
-                "CUDA fixture assignments require the Artifact metadata service".into(),
+                "fixed device fixture assignments require the Artifact metadata service".into(),
             )
         })?;
         let digest = contract.execution.bundle.digest;
@@ -229,7 +231,7 @@ impl WorkerControlService {
                 reference_key: format!("input:{}:bundle", contract.attempt_id),
                 digest,
                 kind: ArtifactReferenceKind::AssignmentInput,
-                purpose: "CUDA fixture input bundle".into(),
+                purpose: purpose.into(),
                 now_ms,
                 retained_until_ms: None,
             })

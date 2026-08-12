@@ -1,5 +1,6 @@
 //! Policy-bound contract for the first fixed CUDA container vertical slice.
 
+use crate::container_engine::image_artifact_media_type;
 use crate::journal::{StoredAssignment, StoredLimits};
 use alloyport_artifacts::{ArtifactStore, Sha256Digest};
 use alloyport_core::{ExecutionKind, NetworkPolicy};
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 pub const CUDA_FIXTURE_FEATURE: &str = "cuda-fixture-v1";
 pub const CUDA_FIXTURE_BUNDLE_MEDIA_TYPE: &str = "application/vnd.alloyport.cuda-fixture.v1+json";
-pub const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+pub use crate::container_engine::{OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE};
 pub const VECTOR_ADD_FIXTURE_ID: &str = "cuda-vectoradd-v1";
 
 const SOURCE_FILENAME: &str = "vector_add.cu";
@@ -59,6 +60,7 @@ pub struct CudaFixturePolicy {
     fixture_id: String,
     bundle_digest: Sha256Digest,
     image_manifest_digest: Sha256Digest,
+    image_media_type: &'static str,
     image_reference: String,
     image_id: Sha256Digest,
     device_id: String,
@@ -67,6 +69,11 @@ pub struct CudaFixturePolicy {
 }
 
 impl CudaFixturePolicy {
+    #[must_use]
+    pub fn device_id(&self) -> &str {
+        &self.device_id
+    }
+
     /// Creates a local allowlist for exactly one fixture, bundle, image, and CUDA device.
     ///
     /// # Errors
@@ -90,11 +97,9 @@ impl CudaFixturePolicy {
         if fixture_id.trim().is_empty() {
             return Err(CudaContractError::InvalidPolicy("fixture ID is empty"));
         }
-        if !image_reference.ends_with(&format!("@{image_manifest_digest}")) {
-            return Err(CudaContractError::InvalidPolicy(
-                "image reference is not pinned to the allowed manifest digest",
-            ));
-        }
+        let image_media_type =
+            image_artifact_media_type(&image_reference, image_manifest_digest, image_id)
+                .map_err(CudaContractError::InvalidPolicy)?;
         if device_id.trim().is_empty() || device_id.contains(',') {
             return Err(CudaContractError::InvalidPolicy(
                 "CUDA device identity is empty or contains a separator",
@@ -119,6 +124,7 @@ impl CudaFixturePolicy {
             fixture_id,
             bundle_digest,
             image_manifest_digest,
+            image_media_type,
             image_reference,
             image_id,
             device_id,
@@ -171,7 +177,7 @@ impl CudaFixturePolicy {
         validate_artifact(
             &execution.image,
             self.image_manifest_digest,
-            OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+            self.image_media_type,
             "image",
         )?;
         validate_limits(execution.limits.as_ref(), self.ceilings)?;

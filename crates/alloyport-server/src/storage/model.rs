@@ -2,7 +2,7 @@
 
 use super::RepositoryError;
 use alloyport_core::{
-    ArtifactDescriptor, AssignmentId, AttemptId, AttemptOutcome, RejectionReason,
+    AcceleratorDevice, ArtifactDescriptor, AssignmentId, AttemptId, AttemptOutcome, RejectionReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,8 @@ pub struct WorkerCapabilities {
     pub driver_version: String,
     pub toolkit_version: String,
     pub container_runtime: String,
+    #[serde(default)]
+    pub devices: Vec<AcceleratorDevice>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

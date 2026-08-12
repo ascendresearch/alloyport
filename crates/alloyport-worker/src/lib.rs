@@ -4,32 +4,49 @@ pub mod adapters;
 pub mod artifact_download;
 pub mod artifact_input;
 pub mod artifact_upload;
+pub mod ascend;
+pub mod ascend_runtime;
+pub mod ascend_smi;
+pub mod ascend_supervisor;
 mod attempt_coordinator;
 mod backend_error;
+pub mod container_engine;
 mod control_session;
 pub mod cuda;
 pub mod cuda_docker;
+#[path = "ascend_device_guard.rs"]
+pub mod device_guard;
+pub mod docker_cli {
+    pub use crate::cuda_docker::DockerCliEngine;
+}
 pub mod cuda_runtime;
 pub mod cuda_supervisor;
+pub mod device;
+mod device_command;
 pub mod execution_backend;
 mod execution_coordination;
 pub mod executor;
 pub mod fake_executor;
 pub mod journal;
+pub mod nvidia_smi;
 mod wire_mapping;
 mod worker_delivery;
 mod worker_state;
 use worker_state::WorkerPersistence;
 
-use alloyport_proto::v1::{Backend, WorkerHello};
+use alloyport_core::AcceleratorDevice;
+use alloyport_proto::v1::{AcceleratorDevice as WireDevice, Backend, WorkerHello};
 use alloyport_proto::{ValidationError, validate_worker_hello};
 use artifact_download::RemoteArtifactDownloader;
 use artifact_input::ArtifactInputProvider;
+use ascend::ASCEND_FIXTURE_FEATURE;
+use ascend_runtime::AscendExecutionRuntime;
 use cuda::CUDA_FIXTURE_FEATURE;
 use cuda_runtime::CudaExecutionRuntime;
+use device::DeviceStatusProvider;
 use execution_backend::{
-    BackendError, CudaExecutionBackend, ExecutionBackend, ExecutionBackendRegistry,
-    FakeExecutionBackend,
+    AscendExecutionBackend, BackendError, CudaExecutionBackend, ExecutionBackend,
+    ExecutionBackendRegistry, FakeExecutionBackend,
 };
 use executor::{
     ArtifactPublicationError, ArtifactPublisher, CancellationToken, ExecutionObservation,
@@ -156,7 +173,8 @@ impl From<AttemptStoreError> for WorkerError {
 pub struct AdmissionPolicy {
     allow_shell: bool,
     allow_cuda_fixture: bool,
-    cuda_fixture_only: bool,
+    allow_ascend_fixture: bool,
+    exclusive_executor: Option<alloyport_core::ExecutionKind>,
 }
 
 impl AdmissionPolicy {
@@ -174,11 +192,26 @@ impl AdmissionPolicy {
         self
     }
 
+    /// Returns a policy that permits the dedicated, locally constrained Ascend fixture executor.
+    #[must_use]
+    pub const fn allowing_ascend_fixture(mut self) -> Self {
+        self.allow_ascend_fixture = true;
+        self
+    }
+
     /// Returns a policy that permits only the locally constrained CUDA fixture executor.
     #[must_use]
     pub const fn cuda_fixture_only(mut self) -> Self {
         self.allow_cuda_fixture = true;
-        self.cuda_fixture_only = true;
+        self.exclusive_executor = Some(alloyport_core::ExecutionKind::CudaFixture);
+        self
+    }
+
+    /// Returns a policy that permits only the locally constrained Ascend fixture executor.
+    #[must_use]
+    pub const fn ascend_fixture_only(mut self) -> Self {
+        self.allow_ascend_fixture = true;
+        self.exclusive_executor = Some(alloyport_core::ExecutionKind::AscendFixture);
         self
     }
 }
@@ -207,6 +240,7 @@ pub struct OutboundWorker {
     admission_only: bool,
     artifact_input: Option<Arc<dyn ArtifactInputProvider>>,
     artifact_publisher: Option<Arc<dyn ArtifactPublisher>>,
+    device_status: Option<Arc<dyn DeviceStatusProvider>>,
     execution_updates: broadcast::Sender<ExecutionUpdate>,
 }
 
@@ -290,6 +324,7 @@ impl OutboundWorker {
             admission_only: false,
             artifact_input: None,
             artifact_publisher: None,
+            device_status: None,
             execution_updates,
         })
     }
@@ -370,6 +405,69 @@ impl OutboundWorker {
         self.with_execution_backend(Arc::new(CudaExecutionBackend::new(runtime)))
     }
 
+    /// Attaches the policy-bound Ascend runtime and restricts admission to its executor kind.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for identity, backend, environment, static-device, or composition mismatch.
+    pub fn with_ascend_executor(
+        mut self,
+        runtime: Arc<AscendExecutionRuntime>,
+    ) -> Result<Self, WorkerError> {
+        if runtime.worker_id() != self.hello.worker_id {
+            return Err(WorkerError::Execution(format!(
+                "Ascend runtime identity {} does not match worker {}",
+                runtime.worker_id(),
+                self.hello.worker_id
+            )));
+        }
+        let capabilities = self.hello.capabilities.as_ref().ok_or_else(|| {
+            WorkerError::Execution("Ascend worker capabilities are missing".into())
+        })?;
+        if Backend::try_from(capabilities.backend).unwrap_or(Backend::Unspecified)
+            != Backend::Ascend
+        {
+            return Err(WorkerError::Execution(
+                "Ascend runtime requires Ascend worker capabilities".into(),
+            ));
+        }
+        let environment = runtime.environment();
+        if capabilities.architecture != environment.architecture
+            || capabilities.driver_version != environment.driver_version
+            || capabilities.toolkit_version != environment.cann_version
+        {
+            return Err(WorkerError::Execution(
+                "Ascend runtime environment facts do not match worker capabilities".into(),
+            ));
+        }
+        let device = runtime.device();
+        if !capabilities.devices.iter().any(|advertised| {
+            advertised.device_id == device.device_id
+                && advertised.product_name == device.product_name
+                && advertised.serial_number == device.serial_number
+                && advertised.firmware_version == device.firmware_version
+        }) {
+            return Err(WorkerError::Execution(
+                "Ascend runtime device identity is not advertised by worker capabilities".into(),
+            ));
+        }
+        if !self
+            .hello
+            .features
+            .iter()
+            .any(|feature| feature == ASCEND_FIXTURE_FEATURE)
+        {
+            self.hello.features.push(ASCEND_FIXTURE_FEATURE.into());
+        }
+        let state = Arc::get_mut(&mut self.state).ok_or_else(|| {
+            WorkerError::Execution(
+                "Ascend runtime must be attached before sharing the worker state".into(),
+            )
+        })?;
+        state.policy = state.policy.ascend_fixture_only();
+        self.with_execution_backend(Arc::new(AscendExecutionBackend::new(runtime)))
+    }
+
     /// Registers an execution backend without changing the control-session state machine.
     ///
     /// # Errors
@@ -416,6 +514,37 @@ impl OutboundWorker {
     ) -> Self {
         self.artifact_input = Some(provider);
         self
+    }
+
+    /// Supplies dynamic device observations for bounded heartbeat reporting.
+    #[must_use]
+    pub fn with_device_status_provider(mut self, provider: Arc<dyn DeviceStatusProvider>) -> Self {
+        self.device_status = Some(provider);
+        self
+    }
+
+    /// Registers the exact device discovered and bound by this single-device worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when capabilities are absent or do not describe a single device.
+    pub fn with_bound_device(mut self, device: AcceleratorDevice) -> Result<Self, WorkerError> {
+        let capabilities = self.hello.capabilities.as_mut().ok_or_else(|| {
+            WorkerError::PolicyViolation("worker capabilities are missing".into())
+        })?;
+        if capabilities.device_count != 1 || capabilities.max_concurrency != 1 {
+            return Err(WorkerError::PolicyViolation(
+                "bound accelerator workers require device_count=1 and max_concurrency=1".into(),
+            ));
+        }
+        capabilities.devices = vec![WireDevice {
+            device_id: device.device_id,
+            product_name: device.product_name,
+            serial_number: device.serial_number,
+            firmware_version: device.firmware_version,
+        }];
+        validate_worker_hello(&self.hello).map_err(WorkerError::InvalidHello)?;
+        Ok(self)
     }
 
     /// Enables an explicit control-plane harness mode that admits work without executing it.

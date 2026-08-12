@@ -1,11 +1,14 @@
 //! Unit tests for worker admission, replay, and control semantics.
 
 use super::*;
+use crate::device::{DeviceSnapshot, DeviceSnapshotFuture, DeviceStatusProvider};
 use crate::execution_backend::{
     BackendError, BackendExecutionFuture, BackendExecutionRequest, ExecutionBackend, ExecutionKind,
 };
 use crate::journal::{LocalAttemptPhase, StoredArtifact};
-use alloyport_core::AttemptOutcome;
+use alloyport_core::{
+    AcceleratorDevice, AttemptId, AttemptOutcome, DeviceHealth, DeviceObservation,
+};
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, ExecutionSpec, ExecutorKind as WireExecutorKind, ServerToWorker,
 };
@@ -153,6 +156,120 @@ fn cuda_fixture_executor_requires_explicit_local_policy() {
             .expect("explicit policy allows the typed CUDA executor"),
         AdmissionOutcome::New
     );
+}
+
+#[test]
+fn bound_device_is_registered_in_worker_capabilities() -> Result<(), Box<dyn Error>> {
+    let worker = OutboundWorker::new(
+        Endpoint::from_static("http://127.0.0.1:50051"),
+        worker_hello("worker-1"),
+    )?
+    .with_bound_device(AcceleratorDevice {
+        device_id: "3".into(),
+        product_name: "accelerator".into(),
+        serial_number: "serial-3".into(),
+        firmware_version: "firmware".into(),
+    })?;
+    let devices = &worker
+        .hello
+        .capabilities
+        .as_ref()
+        .expect("capabilities")
+        .devices;
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].device_id, "3");
+    assert_eq!(devices[0].serial_number, "serial-3");
+    Ok(())
+}
+
+#[tokio::test]
+async fn heartbeat_reports_dynamic_health_occupancy_and_durable_device_lease()
+-> Result<(), Box<dyn Error>> {
+    let worker = OutboundWorker::new(
+        Endpoint::from_static("http://127.0.0.1:50051"),
+        worker_hello("worker-1"),
+    )?
+    .with_device_status_provider(Arc::new(FixedDeviceStatus));
+    worker.state.admit(&assignment("true"))?;
+    worker
+        .state
+        .acquire_device_lease(&AttemptId::try_from("attempt-1")?, "3")?;
+
+    let heartbeat = worker.build_heartbeat().await?;
+    alloyport_proto::validate_heartbeat(&heartbeat)?;
+    assert_eq!(
+        heartbeat.health,
+        alloyport_proto::v1::WorkerHealth::Degraded as i32
+    );
+    assert_eq!(heartbeat.available_slots, 0);
+    assert_eq!(heartbeat.devices.len(), 1);
+    assert_eq!(heartbeat.devices[0].process_count, 2);
+    assert_eq!(heartbeat.device_leases.len(), 1);
+    assert_eq!(heartbeat.device_leases[0].attempt_id, "attempt-1");
+    assert_eq!(heartbeat.device_leases[0].device_id, "3");
+    Ok(())
+}
+
+#[tokio::test]
+async fn capacity_counts_distinct_running_attempts_and_terminal_quarantine_leases()
+-> Result<(), Box<dyn Error>> {
+    let mut hello = worker_hello("worker-1");
+    let capabilities = hello.capabilities.as_mut().expect("fixture capabilities");
+    capabilities.device_count = 2;
+    capabilities.max_concurrency = 2;
+    let worker = OutboundWorker::new(Endpoint::from_static("http://127.0.0.1:50051"), hello)?;
+
+    let first = assignment("true");
+    worker.state.admit(&first)?;
+    let first_id = AttemptId::try_from("attempt-1")?;
+    worker.state.acquire_device_lease(&first_id, "3")?;
+    worker.state.mark_finished(
+        first_id.as_str(),
+        &StoredFinished {
+            outcome: AttemptOutcome::InfraError,
+            exit_code: None,
+            elapsed_ms: 1,
+            receipt: None,
+            stdout: None,
+            stderr: None,
+            detail: "device remains quarantined".into(),
+        },
+    )?;
+
+    let mut second = assignment("true");
+    second.assignment_id = "assignment-2".into();
+    second.attempt_id = "attempt-2".into();
+    second.idempotency_key = "task-2:build".into();
+    second.task_id = "task-2".into();
+    second.candidate_id = "candidate-2".into();
+    worker.state.admit(&second)?;
+
+    assert_eq!(worker.available_slots().await?, 0);
+    Ok(())
+}
+
+#[derive(Debug)]
+struct FixedDeviceStatus;
+
+impl DeviceStatusProvider for FixedDeviceStatus {
+    fn snapshot(&self) -> DeviceSnapshotFuture<'_> {
+        Box::pin(async {
+            Ok(DeviceSnapshot {
+                devices: vec![DeviceObservation {
+                    device_id: "3".to_owned(),
+                    health: DeviceHealth::Degraded,
+                    process_count: 2,
+                    utilization_percent: 0,
+                    memory_used_bytes: 5_255,
+                    memory_total_bytes: 131_072,
+                    temperature_millicelsius: 56_000,
+                    power_milliwatts: 191_300,
+                    observed_at_ms: 1_000,
+                    detail: "shared-host occupancy".to_owned(),
+                }],
+            })
+        })
+    }
 }
 
 #[test]
@@ -337,6 +454,7 @@ fn worker_hello(worker_id: &str) -> WorkerHello {
             driver_version: "test".to_owned(),
             toolkit_version: "test".to_owned(),
             container_runtime: "test".to_owned(),
+            devices: Vec::new(),
         }),
         active_attempts: Vec::new(),
     }

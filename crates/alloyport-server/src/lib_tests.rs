@@ -134,7 +134,7 @@ fn terminal_artifacts_must_be_finalized_by_the_reporting_worker() -> Result<(), 
 }
 
 #[tokio::test]
-async fn cuda_assignment_grants_only_a_published_size_matched_input_bundle()
+async fn fixed_device_assignments_grant_only_a_published_size_matched_input_bundle()
 -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let uploads = Arc::new(SqliteUploadStore::open(
@@ -200,6 +200,23 @@ async fn cuda_assignment_grants_only_a_published_size_matched_input_bundle()
         Err(EnqueueError::Artifact(_))
     ));
     let service = WorkerControlService::new().with_artifact_metadata(uploads.clone());
+    let mut ascend_assignment = assignment.clone();
+    ascend_assignment.assignment_id = "assignment-ascend-1".into();
+    ascend_assignment.attempt_id = "attempt-ascend-1".into();
+    ascend_assignment.idempotency_key = "ascend-add-v1".into();
+    ascend_assignment.task_id = "task-ascend-1".into();
+    ascend_assignment.candidate_id = "candidate-ascend-1".into();
+    ascend_assignment
+        .execution
+        .as_mut()
+        .expect("fixture execution")
+        .executor_kind = WireExecutorKind::AscendFixture.into();
+    ascend_assignment
+        .execution
+        .as_mut()
+        .expect("fixture execution")
+        .argv = vec!["ascend-add-v1".into()];
+    ascend_assignment.required_features = vec!["ascend-fixture-v1".into()];
     assert_eq!(
         service.enqueue_assignment("cuda-1", assignment).await?,
         EnqueueOutcome::Pending
@@ -207,6 +224,18 @@ async fn cuda_assignment_grants_only_a_published_size_matched_input_bundle()
     let reference = uploads.reference("cuda-1", "input:attempt-1:bundle")?;
     assert_eq!(reference.digest, digest);
     assert_eq!(reference.kind, ArtifactReferenceKind::AssignmentInput);
+    assert_eq!(
+        service
+            .enqueue_assignment("ascend-1", ascend_assignment)
+            .await?,
+        EnqueueOutcome::Pending
+    );
+    let ascend_reference = uploads.reference("ascend-1", "input:attempt-ascend-1:bundle")?;
+    assert_eq!(ascend_reference.digest, digest);
+    assert_eq!(
+        ascend_reference.kind,
+        ArtifactReferenceKind::AssignmentInput
+    );
     Ok(())
 }
 

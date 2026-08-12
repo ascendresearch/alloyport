@@ -5,11 +5,12 @@ use super::{
 };
 use crate::adapters::sqlite::SqliteAttemptStore;
 use crate::journal::{
-    AttemptStore, LocalAttemptPhase, LocalAttemptRecord, StoreAdmissionOutcome, StoredFinished,
+    AttemptStore, DeviceLeaseOutcome, DevicePreflightOutcome, DeviceReleaseOutcome,
+    LocalAttemptPhase, LocalAttemptRecord, StoreAdmissionOutcome, StoredFinished,
     WorkerOutboxMessage, WorkerOutboxPayload,
 };
 use crate::wire_mapping::{assignment_to_stored, lifecycle_identity, now_unix_ms};
-use alloyport_core::ExecutionKind;
+use alloyport_core::{AttemptId, DeviceLease, DeviceObservation, ExecutionKind};
 use alloyport_proto::v1::{Assignment, AttemptPhase};
 use alloyport_proto::{v1::ActiveAttempt, validate_assignment};
 use std::path::Path;
@@ -97,10 +98,14 @@ impl WorkerState {
         if let Some(execution) = assignment.execution.as_ref() {
             let executor = ExecutionKind::try_from(execution.executor_kind)
                 .map_err(|error| WorkerError::Protocol(error.to_string()))?;
-            if self.policy.cuda_fixture_only && executor != ExecutionKind::CudaFixture {
-                return Err(WorkerError::PolicyViolation(
-                    "only the CUDA fixture executor is enabled".to_owned(),
-                ));
+            if let Some(only) = self
+                .policy
+                .exclusive_executor
+                .filter(|only| executor != *only)
+            {
+                return Err(WorkerError::PolicyViolation(format!(
+                    "only the {only:?} executor is enabled"
+                )));
             }
             if executor == ExecutionKind::Shell && !self.policy.allow_shell {
                 return Err(WorkerError::PolicyViolation(
@@ -110,6 +115,11 @@ impl WorkerState {
             if executor == ExecutionKind::CudaFixture && !self.policy.allow_cuda_fixture {
                 return Err(WorkerError::PolicyViolation(
                     "CUDA fixture executor is disabled".to_owned(),
+                ));
+            }
+            if executor == ExecutionKind::AscendFixture && !self.policy.allow_ascend_fixture {
+                return Err(WorkerError::PolicyViolation(
+                    "Ascend fixture executor is disabled".to_owned(),
                 ));
             }
         }
@@ -230,6 +240,74 @@ impl WorkerState {
             .map(|attempt| attempt.and_then(|record| record.finished))
     }
 
+    /// Durably claims one worker-local accelerator for an existing non-terminal attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown/terminal attempt, a conflicting replay, or a busy device.
+    pub fn acquire_device_lease(
+        &self,
+        attempt_id: &AttemptId,
+        device_id: &str,
+    ) -> Result<DeviceLeaseOutcome, WorkerError> {
+        self.store
+            .acquire_device_lease(attempt_id, device_id, now_unix_ms())
+            .map_err(WorkerError::from)
+    }
+
+    /// Explicitly releases a durable device lease after backend health/reset handling.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown lease or a journal failure.
+    pub fn release_device_lease(
+        &self,
+        attempt_id: &AttemptId,
+    ) -> Result<DeviceReleaseOutcome, WorkerError> {
+        self.store
+            .release_device_lease(attempt_id, now_unix_ms())
+            .map_err(WorkerError::from)
+    }
+
+    /// Returns all unreleased worker-local device leases.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the durable journal cannot be read.
+    pub fn active_device_leases(&self) -> Result<Vec<DeviceLease>, WorkerError> {
+        self.store.active_device_leases().map_err(WorkerError::from)
+    }
+
+    /// Persists immutable device state observed after leasing and before execution starts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown attempt, missing lease, invalid phase, conflicting device,
+    /// conflicting replay evidence, or journal failure.
+    pub fn record_device_preflight(
+        &self,
+        attempt_id: &AttemptId,
+        observation: &DeviceObservation,
+    ) -> Result<DevicePreflightOutcome, WorkerError> {
+        self.store
+            .record_device_preflight(attempt_id, observation)
+            .map_err(WorkerError::from)
+    }
+
+    /// Returns immutable device state recorded before an attempt entered `Running`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the durable journal cannot be read or decoded.
+    pub fn device_preflight(
+        &self,
+        attempt_id: &AttemptId,
+    ) -> Result<Option<DeviceObservation>, WorkerError> {
+        self.store
+            .device_preflight(attempt_id)
+            .map_err(WorkerError::from)
+    }
+
     pub(super) fn attempt(
         &self,
         attempt_id: &str,
@@ -256,18 +334,6 @@ impl WorkerState {
             .collect()
     }
 
-    pub(super) fn attempt_count(&self) -> Result<usize, WorkerError> {
-        self.store
-            .attempts()
-            .map(|attempts| {
-                attempts
-                    .iter()
-                    .filter(|attempt| attempt.phase != LocalAttemptPhase::Finished)
-                    .count()
-            })
-            .map_err(WorkerError::from)
-    }
-
     async fn blocking<T, F>(&self, operation: F) -> Result<T, WorkerError>
     where
         T: Send + 'static,
@@ -286,6 +352,40 @@ impl WorkerState {
 
     pub(crate) async fn mark_running_async(&self, attempt_id: String) -> Result<(), WorkerError> {
         self.blocking(move |state| state.mark_running(&attempt_id))
+            .await
+    }
+
+    pub(crate) async fn acquire_device_lease_async(
+        &self,
+        attempt_id: AttemptId,
+        device_id: String,
+    ) -> Result<DeviceLeaseOutcome, WorkerError> {
+        self.blocking(move |state| state.acquire_device_lease(&attempt_id, &device_id))
+            .await
+    }
+
+    pub(crate) async fn release_device_lease_async(
+        &self,
+        attempt_id: AttemptId,
+    ) -> Result<DeviceReleaseOutcome, WorkerError> {
+        self.blocking(move |state| state.release_device_lease(&attempt_id))
+            .await
+    }
+
+    pub(crate) async fn record_device_preflight_async(
+        &self,
+        attempt_id: AttemptId,
+        observation: DeviceObservation,
+    ) -> Result<DevicePreflightOutcome, WorkerError> {
+        self.blocking(move |state| state.record_device_preflight(&attempt_id, &observation))
+            .await
+    }
+
+    pub(crate) async fn device_preflight_async(
+        &self,
+        attempt_id: AttemptId,
+    ) -> Result<Option<DeviceObservation>, WorkerError> {
+        self.blocking(move |state| state.device_preflight(&attempt_id))
             .await
     }
 
@@ -346,12 +446,12 @@ impl WorkerState {
         self.blocking(|state| state.active_attempts()).await
     }
 
-    pub(crate) async fn attempt_count_async(&self) -> Result<usize, WorkerError> {
-        self.blocking(|state| state.attempt_count()).await
-    }
-
     pub(crate) async fn attempts_async(&self) -> Result<Vec<LocalAttemptRecord>, WorkerError> {
         self.blocking(|state| state.store.attempts().map_err(WorkerError::from))
             .await
+    }
+
+    pub(crate) async fn active_device_leases_async(&self) -> Result<Vec<DeviceLease>, WorkerError> {
+        self.blocking(|state| state.active_device_leases()).await
     }
 }

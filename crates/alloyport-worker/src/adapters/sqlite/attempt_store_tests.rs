@@ -2,10 +2,14 @@
 
 use super::SqliteAttemptStore;
 use crate::journal::{
-    AttemptLifecycleStore, StoreAdmissionOutcome, StoredArtifact, StoredAssignment,
-    StoredExecution, WorkerOutboxMessage, WorkerOutboxPayload, WorkerOutboxStore,
+    AttemptLifecycleStore, DeviceLeaseOutcome, DeviceLeaseStore, DevicePreflightOutcome,
+    DeviceReleaseOutcome, StoreAdmissionOutcome, StoredArtifact, StoredAssignment, StoredExecution,
+    StoredFinished, WorkerOutboxMessage, WorkerOutboxPayload, WorkerOutboxStore,
 };
-use alloyport_core::{AssignmentId, AttemptId, CandidateId, ExecutionKind, TaskId};
+use alloyport_core::{
+    AssignmentId, AttemptId, AttemptOutcome, CandidateId, DeviceHealth, DeviceObservation,
+    ExecutionKind, TaskId,
+};
 use std::error::Error;
 
 #[test]
@@ -76,6 +80,108 @@ fn admission_and_lifecycle_transitions_atomically_create_outbox_messages()
     store.mark_running("attempt-1", 1_003)?;
     assert_eq!(store.outbox_len()?, 2);
     Ok(())
+}
+
+#[test]
+fn device_lease_is_exclusive_explicit_and_survives_reopen() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("worker.sqlite3");
+    let first_id = AttemptId::try_from("attempt-1")?;
+    let second_id = AttemptId::try_from("attempt-2")?;
+    {
+        let store = SqliteAttemptStore::open(&database)?;
+        let first = stored_assignment();
+        let mut second = first.clone();
+        second.assignment_id = AssignmentId::try_from("assignment-2")?;
+        second.attempt_id = second_id.clone();
+        store.admit(&first, 1_000)?;
+        store.admit(&second, 1_001)?;
+
+        assert_eq!(
+            store.acquire_device_lease(&first_id, "3", 1_002)?,
+            DeviceLeaseOutcome::Acquired
+        );
+        assert_eq!(
+            store.acquire_device_lease(&first_id, "3", 1_003)?,
+            DeviceLeaseOutcome::Duplicate
+        );
+        assert!(matches!(
+            store.acquire_device_lease(&second_id, "3", 1_004),
+            Err(crate::journal::AttemptStoreError::DeviceAlreadyLeased { .. })
+        ));
+        let preflight = device_preflight(1_004);
+        assert_eq!(
+            store.record_device_preflight(&first_id, &preflight)?,
+            DevicePreflightOutcome::Recorded
+        );
+        assert_eq!(
+            store.record_device_preflight(&first_id, &preflight)?,
+            DevicePreflightOutcome::Duplicate
+        );
+        assert_eq!(store.device_preflight(&first_id)?, Some(preflight.clone()));
+        assert!(matches!(
+            store.record_device_preflight(&first_id, &device_preflight(1_005)),
+            Err(crate::journal::AttemptStoreError::ConflictingDevicePreflight(attempt))
+                if attempt == "attempt-1"
+        ));
+        store.mark_finished(
+            first_id.as_str(),
+            &StoredFinished {
+                outcome: AttemptOutcome::InfraError,
+                exit_code: None,
+                elapsed_ms: 5,
+                receipt: None,
+                stdout: None,
+                stderr: None,
+                detail: "device requires post-crash health inspection".to_owned(),
+            },
+            1_005,
+        )?;
+        assert_eq!(
+            store.active_device_leases()?.len(),
+            1,
+            "terminal state must not release a device before health/reset cleanup"
+        );
+    }
+
+    let reopened = SqliteAttemptStore::open(&database)?;
+    let leases = reopened.active_device_leases()?;
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].attempt_id, first_id);
+    assert_eq!(leases[0].device_id, "3");
+    assert_eq!(
+        reopened.device_preflight(&leases[0].attempt_id)?,
+        Some(device_preflight(1_004))
+    );
+    assert_eq!(
+        reopened.release_device_lease(&leases[0].attempt_id, 1_006)?,
+        DeviceReleaseOutcome::Released
+    );
+    assert_eq!(
+        reopened.release_device_lease(&leases[0].attempt_id, 1_007)?,
+        DeviceReleaseOutcome::AlreadyReleased
+    );
+    assert!(reopened.active_device_leases()?.is_empty());
+    assert!(matches!(
+        reopened.acquire_device_lease(&leases[0].attempt_id, "3", 1_008),
+        Err(crate::journal::AttemptStoreError::InvalidTransition { .. })
+    ));
+    Ok(())
+}
+
+fn device_preflight(observed_at_ms: u64) -> DeviceObservation {
+    DeviceObservation {
+        device_id: "3".into(),
+        health: DeviceHealth::Ready,
+        process_count: 0,
+        utilization_percent: 0,
+        memory_used_bytes: 1024,
+        memory_total_bytes: 1024 * 1024,
+        temperature_millicelsius: 50_000,
+        power_milliwatts: 100_000,
+        observed_at_ms,
+        detail: String::new(),
+    }
 }
 
 fn accepted_message(attempt_id: &str) -> WorkerOutboxMessage {

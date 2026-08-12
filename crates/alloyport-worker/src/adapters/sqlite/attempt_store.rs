@@ -1,5 +1,6 @@
 //! `SQLite` implementation of the worker attempt journal.
 
+mod device_lease;
 mod lifecycle;
 mod outbox;
 
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY
 );
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
 CREATE TABLE IF NOT EXISTS journal_metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -47,6 +49,19 @@ CREATE TABLE IF NOT EXISTS worker_outbox_deliveries (
 );
 CREATE INDEX IF NOT EXISTS worker_outbox_delivery_message
     ON worker_outbox_deliveries(message_id, delivered_at_ms);
+CREATE TABLE IF NOT EXISTS device_leases (
+    attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id),
+    device_id TEXT NOT NULL,
+    acquired_at_ms INTEGER NOT NULL,
+    released_at_ms INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS active_device_lease
+    ON device_leases(device_id) WHERE released_at_ms IS NULL;
+CREATE TABLE IF NOT EXISTS device_preflights (
+    attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id),
+    observation_json TEXT NOT NULL
+);
+INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);
 COMMIT;
 ";
 

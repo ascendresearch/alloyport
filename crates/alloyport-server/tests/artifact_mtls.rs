@@ -408,6 +408,8 @@ async fn assert_rotated_worker_stream_closes(
                 active_attempts: Vec::new(),
                 available_slots: 1,
                 health: WorkerHealth::Ready.into(),
+                devices: Vec::new(),
+                device_leases: Vec::new(),
             })),
         })
         .await?;
@@ -436,6 +438,7 @@ fn worker_hello(worker_id: &str) -> WorkerHello {
             driver_version: "test".to_owned(),
             toolkit_version: "test".to_owned(),
             container_runtime: "test".to_owned(),
+            devices: Vec::new(),
         }),
         active_attempts: Vec::new(),
     }

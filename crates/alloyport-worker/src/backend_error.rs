@@ -142,13 +142,15 @@ impl From<WorkerError> for BackendError {
             WorkerError::AttemptStore(error) => {
                 let detail = error.to_string();
                 match error {
-                    AttemptStoreError::Storage(_) | AttemptStoreError::LockPoisoned => {
-                        Self::retryable(detail)
-                    }
+                    AttemptStoreError::Storage(_)
+                    | AttemptStoreError::LockPoisoned
+                    | AttemptStoreError::DeviceAlreadyLeased { .. } => Self::retryable(detail),
                     AttemptStoreError::ConflictingAttempt(_)
                     | AttemptStoreError::ConflictingFinished(_)
                     | AttemptStoreError::ConflictingOutboxMessage(_)
                     | AttemptStoreError::WorkerIdentityMismatch { .. }
+                    | AttemptStoreError::ConflictingDeviceLease { .. }
+                    | AttemptStoreError::ConflictingDevicePreflight(_)
                     | AttemptStoreError::Corrupt(_) => Self::integrity(detail),
                     AttemptStoreError::Encoding(_)
                     | AttemptStoreError::NotFound(_)

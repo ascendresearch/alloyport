@@ -76,24 +76,28 @@ python3 /data/projects/ascend-factory/harness/test_event_protocol.py --fixture \
   | cargo run -q -p alloyport-cli -- render-events
 ```
 
-The first worker-control slice can be exercised locally without device hardware:
+Start the server locally, then run a configured GPU or NPU worker:
 
 ```bash
 # terminal 1; plaintext is intentionally restricted to loopback
 cargo run -p alloyport-server
 
-# terminal 2
-ALLOYPORT_WORKER_ID=cuda-dev \
-ALLOYPORT_BACKEND=cuda \
-cargo run -p alloyport-worker
+# terminal 2; first copy the relevant example and replace every placeholder
+cargo run -p alloyport-worker -- --config /absolute/path/to/worker.json
 ```
 
+The worker's single JSON configuration carries its server connection, TLS paths, worker ID, journal,
+backend environment, local image identity, device-selection policy, and execution limits. Loopback
+HTTP may omit TLS; remote workers must provide the TLS block and remote plaintext endpoints are
+rejected. See [worker configuration](docs/worker-configuration.md) and the checked-in
+[CUDA](docs/cuda-worker-config.example.json) and
+[Ascend](docs/ascend-worker-config.example.json) examples.
+
 Remote server mode requires `ALLOYPORT_TLS_CERT`, `ALLOYPORT_TLS_KEY`, and
-`ALLOYPORT_TLS_CLIENT_CA`. A remote worker requires its certificate/key plus
-`ALLOYPORT_TLS_SERVER_CA` and `ALLOYPORT_TLS_SERVER_NAME`; remote plaintext endpoints are rejected.
+`ALLOYPORT_TLS_CLIENT_CA`.
 The server database is selected with `ALLOYPORT_DATABASE` and defaults to
-`alloyport-control.sqlite3`; the worker journal uses `ALLOYPORT_WORKER_DATABASE` and defaults to
-`alloyport-worker.sqlite3`. Artifact state is rooted at `ALLOYPORT_ARTIFACT_ROOT` (default
+`alloyport-control.sqlite3`; the worker journal path is explicit in `worker.journal`. Artifact state
+is rooted at `ALLOYPORT_ARTIFACT_ROOT` (default
 `alloyport-artifacts`); `ALLOYPORT_ARTIFACT_MAX_BYTES` and
 `ALLOYPORT_ARTIFACT_MAX_CHUNK_BYTES` set positive byte limits;
 `ALLOYPORT_ARTIFACT_TOTAL_QUOTA_BYTES` and `ALLOYPORT_ARTIFACT_OWNER_QUOTA_BYTES` configure
@@ -113,7 +117,26 @@ preserves stable Artifact and run ownership, while revocation fails closed. The 
 registration, heartbeat, durable assignment admission, server/worker restart reconciliation,
 finished-result replay, cancellation ordering, server-side lease expiry, enrolled Artifact transfer,
 authorized event replay/subscription, and one fixed CUDA fixture on an explicitly configured Docker
-worker. There is no external scheduling API or Ascend execution contract yet.
+worker. Protocol minor 4 and the worker now implement the fixed Ascend contract: static and dynamic
+device facts, an exact startup-checked device-node policy, crash-durable leases and preflight
+evidence, bounded shell-free `npu-smi`, verified bundle materialization, argv-only Docker
+reconciliation, Artifact-gated independent receipts, and fail-closed post-terminal quarantine. The
+production path remains default-deny and requires an explicit worker configuration. A pinned image
+carrying the trusted `ascend-add-v1` harness now builds and passes a direct, least-capability 950PR
+gate. Standalone trials may bind a local Docker tag to its exact inspected image ID; registry-backed
+deployments may instead use a manifest-pinned reference. No external scheduling API is attached yet.
 
-No license has been selected yet. Do not publish packages or redistribute the code until that
-decision is recorded.
+CUDA and Ascend share the same durable per-attempt device guard: lease before preflight, immutable
+preflight evidence before `Running`, and lease release only after terminal container cleanup plus a
+fresh `Ready`/process-free observation. NVIDIA health is fail-closed from the explicit
+`gpu_recovery_action` result rather than inferred from successful `nvidia-smi` execution.
+The selected device identity is registered in worker capabilities, and the shared heartbeat adapter
+reports only that bound device even on a multi-accelerator host.
+
+On 2026-08-11 the ignored real Ascend outbound gate passed on an Ascend950PR: the worker selected an
+`OK`, process-free NPU, downloaded the verified bundle, ran the local image pinned to its exact image
+ID, published terminal Artifacts and receipt, committed success, removed the container, and released
+the durable lease after a fresh `Ready`/zero-process observation. The deterministic result was
+`PASS fixture=ascend-add-v1 elements=16384 checksum=3d2cf971e11e0383`.
+
+AlloyPort is open-source software licensed under the [MIT License](LICENSE).

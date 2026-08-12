@@ -134,6 +134,36 @@ fn bundle_rejects_a_source_digest_mismatch() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+fn standalone_local_image_id_is_an_immutable_assignment_identity() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let bundle = Sha256Digest::digest_bytes(b"bundle");
+    let image_id = Sha256Digest::digest_bytes(b"local image config");
+    let policy = CudaFixturePolicy::new(
+        VECTOR_ADD_FIXTURE_ID,
+        bundle,
+        image_id,
+        "alloyport-cuda-vectoradd-v1:local",
+        image_id,
+        "0",
+        directory.path(),
+        CudaResourceCeilings {
+            cpu_millis: 2_000,
+            memory_bytes: 2 * 1024 * 1024 * 1024,
+            disk_bytes: 512 * 1024 * 1024,
+            process_count: 64,
+            output_bytes: 1024 * 1024,
+        },
+    )?;
+    let mut assignment = assignment(bundle, 1, image_id);
+    assignment.execution.image.media_type = OCI_IMAGE_CONFIG_MEDIA_TYPE.into();
+    policy.validate_assignment(&assignment)?;
+
+    assignment.execution.image.media_type = OCI_IMAGE_MANIFEST_MEDIA_TYPE.into();
+    assert!(policy.validate_assignment(&assignment).is_err());
+    Ok(())
+}
+
 fn policy(
     root: PathBuf,
     bundle: Sha256Digest,

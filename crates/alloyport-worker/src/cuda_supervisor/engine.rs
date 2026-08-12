@@ -1,130 +1,20 @@
-//! Pluggable CUDA container-engine port and transport-neutral value objects.
+//! Pluggable CUDA container-engine port and CUDA receipt facts.
 
-use crate::backend_error::BackendError;
+pub use crate::container_engine::{
+    ContainerEngineError, ContainerExit, ContainerIdentity, ContainerLogChunk, ContainerLogStream,
+    ContainerLogs, ContainerPhase, ContainerSnapshot, EngineFuture,
+};
 use crate::cuda::DockerCreatePlan;
 use crate::executor::ExecutorResult;
 use std::fmt::Debug;
-use std::future::Future;
-use std::pin::Pin;
-
-pub type EngineFuture<'a, T> =
-    Pin<Box<dyn Future<Output = Result<T, ContainerEngineError>> + Send + 'a>>;
-
-/// Stable failure categories exposed by pluggable CUDA container engines.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ContainerEngineError {
-    InvalidConfiguration(String),
-    Unavailable(String),
-    CommandFailed(String),
-    InvalidResponse(String),
-    Internal(String),
-}
-
-impl std::fmt::Display for ContainerEngineError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidConfiguration(detail) => {
-                write!(
-                    formatter,
-                    "invalid container engine configuration: {detail}"
-                )
-            }
-            Self::Unavailable(detail) => {
-                write!(formatter, "container engine unavailable: {detail}")
-            }
-            Self::CommandFailed(detail) => write!(formatter, "container command failed: {detail}"),
-            Self::InvalidResponse(detail) => {
-                write!(formatter, "invalid container engine response: {detail}")
-            }
-            Self::Internal(detail) => {
-                write!(formatter, "container engine internal failure: {detail}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for ContainerEngineError {}
-
-impl From<ContainerEngineError> for BackendError {
-    fn from(error: ContainerEngineError) -> Self {
-        let detail = error.to_string();
-        match error {
-            ContainerEngineError::InvalidConfiguration(_) => Self::policy(detail),
-            ContainerEngineError::Unavailable(_) => Self::retryable(detail),
-            ContainerEngineError::CommandFailed(_) | ContainerEngineError::Internal(_) => {
-                Self::terminal(detail)
-            }
-            ContainerEngineError::InvalidResponse(_) => Self::integrity(detail),
-        }
-    }
-}
-
-impl From<String> for ContainerEngineError {
-    fn from(detail: String) -> Self {
-        Self::Internal(detail)
-    }
-}
-
-impl From<&str> for ContainerEngineError {
-    fn from(detail: &str) -> Self {
-        Self::Internal(detail.into())
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContainerIdentity {
-    pub name: String,
-    pub attempt_id: String,
-    pub bundle_digest: String,
-    pub image_manifest_digest: String,
-    pub image_id: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ContainerPhase {
-    Created,
-    Running,
-    Exited,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContainerSnapshot {
-    pub identity: ContainerIdentity,
-    pub phase: ContainerPhase,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ContainerExit {
-    pub exit_code: i32,
-    pub elapsed_ms: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContainerLogs {
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-    pub output_limit_exceeded: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ContainerLogStream {
-    Stdout,
-    Stderr,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContainerLogChunk {
-    pub stream: ContainerLogStream,
-    pub byte_offset: u64,
-    pub bytes: Vec<u8>,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CudaExecutionFacts {
     pub container_name: String,
     pub bundle_digest: String,
     pub source_digest: String,
-    pub image_manifest_digest: String,
+    pub image_digest: String,
+    pub image_media_type: String,
     pub image_id: String,
     pub device_id: String,
 }

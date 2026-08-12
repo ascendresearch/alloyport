@@ -1,10 +1,13 @@
-//! Argv-only Docker CLI adapter for the durable CUDA container supervisor.
+//! Argv-only Docker CLI adapter shared by fixed accelerator supervisors.
 
-use crate::cuda::DockerCreatePlan;
-use crate::cuda_supervisor::{
+use crate::ascend::AscendDockerCreatePlan;
+use crate::ascend_supervisor::AscendContainerEngine;
+use crate::container_engine::{
     ContainerEngineError, ContainerExit, ContainerIdentity, ContainerLogChunk, ContainerLogs,
-    ContainerSnapshot, CudaContainerEngine,
+    ContainerSnapshot, EngineFuture,
 };
+use crate::cuda::DockerCreatePlan;
+use crate::cuda_supervisor::CudaContainerEngine;
 use std::fmt::{self, Debug, Formatter};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -359,6 +362,80 @@ impl CudaContainerEngine for DockerCliEngine {
                 Err(command_failure("remove container", &output))
             }
         })
+    }
+}
+
+impl AscendContainerEngine for DockerCliEngine {
+    fn resolve_image_id<'a>(
+        &'a self,
+        plan: &'a AscendDockerCreatePlan,
+    ) -> EngineFuture<'a, String> {
+        Box::pin(async move {
+            let plan = compatible_cuda_plan(plan);
+            CudaContainerEngine::resolve_image_id(self, &plan).await
+        })
+    }
+
+    fn inspect<'a>(&'a self, name: &'a str) -> EngineFuture<'a, Option<ContainerSnapshot>> {
+        CudaContainerEngine::inspect(self, name)
+    }
+
+    fn create<'a>(
+        &'a self,
+        plan: &'a AscendDockerCreatePlan,
+        identity: &'a ContainerIdentity,
+    ) -> EngineFuture<'a, ()> {
+        Box::pin(async move {
+            let plan = compatible_cuda_plan(plan);
+            CudaContainerEngine::create(self, &plan, identity).await
+        })
+    }
+
+    fn start<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()> {
+        CudaContainerEngine::start(self, name)
+    }
+
+    fn wait<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ContainerExit> {
+        CudaContainerEngine::wait(self, name)
+    }
+
+    fn stop<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()> {
+        CudaContainerEngine::stop(self, name)
+    }
+
+    fn logs<'a>(&'a self, name: &'a str, limit: u64) -> EngineFuture<'a, ContainerLogs> {
+        CudaContainerEngine::logs(self, name, limit)
+    }
+
+    fn follow_logs<'a>(&'a self, name: &'a str, limit: u64) -> EngineFuture<'a, ContainerLogs> {
+        CudaContainerEngine::follow_logs(self, name, limit)
+    }
+
+    fn follow_logs_observed<'a>(
+        &'a self,
+        name: &'a str,
+        limit: u64,
+        observer: &'a mut (dyn FnMut(ContainerLogChunk) + Send),
+    ) -> EngineFuture<'a, ContainerLogs> {
+        CudaContainerEngine::follow_logs_observed(self, name, limit, observer)
+    }
+
+    fn streams_live_log_observations(&self) -> bool {
+        CudaContainerEngine::streams_live_log_observations(self)
+    }
+
+    fn remove<'a>(&'a self, name: &'a str) -> EngineFuture<'a, ()> {
+        CudaContainerEngine::remove(self, name)
+    }
+}
+
+fn compatible_cuda_plan(plan: &AscendDockerCreatePlan) -> DockerCreatePlan {
+    DockerCreatePlan {
+        container_name: plan.container_name.clone(),
+        image_reference: plan.image_reference.clone(),
+        expected_image_id: plan.expected_image_id,
+        device_id: plan.device.device_id.clone(),
+        argv: plan.argv.clone(),
     }
 }
 

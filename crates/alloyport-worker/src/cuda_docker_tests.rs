@@ -1,8 +1,11 @@
 //! Behavioral tests for the Docker CLI adapter module.
 
 use super::*;
+use crate::ascend::{AscendDockerCreatePlan, AscendEnvironmentFacts};
+use crate::ascend_supervisor::AscendContainerEngine;
+use crate::container_engine::{ContainerLogChunk, ContainerLogStream, ContainerPhase};
 use crate::cuda_docker::protocol::elapsed_ms;
-use crate::cuda_supervisor::{ContainerLogChunk, ContainerLogStream, ContainerPhase};
+use alloyport_core::{AcceleratorDevice, Sha256Digest};
 use std::collections::VecDeque;
 use std::io::{self, Cursor};
 use std::path::Path;
@@ -250,12 +253,72 @@ async fn cli_boundary_distinguishes_absence_and_preserves_log_exhaustion()
         stop_timeout_seconds: 10,
     };
 
-    assert!(engine.inspect("alloyport-attempt-1").await?.is_none());
-    let logs = engine.follow_logs("alloyport-attempt-1", 5).await?;
+    assert!(
+        CudaContainerEngine::inspect(&engine, "alloyport-attempt-1")
+            .await?
+            .is_none()
+    );
+    let logs = CudaContainerEngine::follow_logs(&engine, "alloyport-attempt-1", 5).await?;
     assert_eq!(logs.stdout, b"abcde");
     assert!(logs.output_limit_exceeded);
-    engine.remove("alloyport-attempt-1").await?;
-    engine.remove("alloyport-attempt-1").await?;
+    CudaContainerEngine::remove(&engine, "alloyport-attempt-1").await?;
+    CudaContainerEngine::remove(&engine, "alloyport-attempt-1").await?;
+    runner.assert_exhausted();
+    Ok(())
+}
+
+#[tokio::test]
+async fn ascend_port_preserves_the_policy_derived_create_argv()
+-> Result<(), Box<dyn std::error::Error>> {
+    let image_id = Sha256Digest::digest_bytes(b"ascend image");
+    let create_argv = vec![
+        "create".into(),
+        "--name".into(),
+        "alloyport-attempt-ascend-1".into(),
+        "pinned-image".into(),
+    ];
+    let runner = Arc::new(ScriptedRunner::new(vec![
+        expected(
+            &["image", "inspect", "pinned-image"],
+            METADATA_OUTPUT_LIMIT,
+            success(format!(r#"[{{"Id":"{image_id}"}}]"#).as_bytes(), b"", false),
+        ),
+        ExpectedCommand {
+            arguments: create_argv.clone(),
+            output_limit: METADATA_OUTPUT_LIMIT,
+            output: success(b"container\n", b"", false),
+        },
+    ]));
+    let engine = DockerCliEngine {
+        runner: runner.clone(),
+        stop_timeout_seconds: 10,
+    };
+    let plan = AscendDockerCreatePlan {
+        container_name: "alloyport-attempt-ascend-1".into(),
+        image_reference: "pinned-image".into(),
+        expected_image_id: image_id,
+        device: AcceleratorDevice {
+            device_id: "3".into(),
+            product_name: "Ascend950PR".into(),
+            serial_number: "serial-3".into(),
+            firmware_version: "firmware".into(),
+        },
+        environment: AscendEnvironmentFacts::new("Ascend950PR", "CANN", "driver", "firmware")?,
+        argv: create_argv,
+    };
+    let identity = ContainerIdentity {
+        name: plan.container_name.clone(),
+        attempt_id: "attempt-ascend-1".into(),
+        bundle_digest: "sha256:bundle".into(),
+        image_manifest_digest: "sha256:manifest".into(),
+        image_id: image_id.to_string(),
+    };
+
+    assert_eq!(
+        AscendContainerEngine::resolve_image_id(&engine, &plan).await?,
+        image_id.to_string()
+    );
+    AscendContainerEngine::create(&engine, &plan, &identity).await?;
     runner.assert_exhausted();
     Ok(())
 }

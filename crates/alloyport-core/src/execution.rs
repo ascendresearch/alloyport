@@ -16,6 +16,7 @@ pub enum ExecutionKind {
     Container = 2,
     Shell = 3,
     CudaFixture = 4,
+    AscendFixture = 5,
 }
 
 impl ExecutionKind {
@@ -27,6 +28,7 @@ impl ExecutionKind {
             Self::Container => "EXECUTOR_KIND_CONTAINER",
             Self::Shell => "EXECUTOR_KIND_SHELL",
             Self::CudaFixture => "EXECUTOR_KIND_CUDA_FIXTURE",
+            Self::AscendFixture => "EXECUTOR_KIND_ASCEND_FIXTURE",
         }
     }
 }
@@ -46,6 +48,7 @@ impl TryFrom<i32> for ExecutionKind {
             2 => Ok(Self::Container),
             3 => Ok(Self::Shell),
             4 => Ok(Self::CudaFixture),
+            5 => Ok(Self::AscendFixture),
             _ => Err(ExecutionKindError(value)),
         }
     }
@@ -226,6 +229,7 @@ mod tests {
             serde_json::from_str::<ExecutionKind>(&encoded)?,
             ExecutionKind::CudaFixture
         );
+        assert_eq!(serde_json::to_string(&ExecutionKind::AscendFixture)?, "5");
         assert!(serde_json::from_str::<ExecutionKind>("0").is_err());
         assert_eq!(serde_json::to_string(&NetworkPolicy::Disabled)?, "1");
         assert_eq!(

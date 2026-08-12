@@ -1,24 +1,46 @@
 {
   "schema_version": 1,
-  "fixture_id": "cuda-vectoradd-v1",
-  "bundle_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "image_manifest_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "image_reference": "example.invalid/alloyport-cuda@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "device_id": "0",
-  "sandbox_root": "/var/lib/alloyport/cuda-sandboxes",
-  "ceilings": {
-    "cpu_millis": 2000,
-    "memory_bytes": 2147483648,
-    "disk_bytes": 536870912,
-    "process_count": 64,
-    "output_bytes": 65536
+  "server": {
+    "endpoint": "http://127.0.0.1:50051"
   },
-  "local_artifact_root": "/var/lib/alloyport/cuda-artifacts",
-  "local_artifact_max_bytes": 8388608,
-  "max_input_bytes": 8388608,
-  "upload_chunk_bytes": 1048576,
-  "upload_ttl_ms": 3600000,
-  "docker_binary": "/usr/bin/docker",
-  "docker_stop_timeout_seconds": 10
+  "worker": {
+    "id": "cuda-worker-1",
+    "journal": "/var/lib/alloyport/cuda-worker.sqlite3"
+  },
+  "runtime": {
+    "backend": "cuda",
+    "environment": {
+      "architecture": "REPLACE_WITH_GPU_ARCHITECTURE",
+      "driver_version": "REPLACE_WITH_HOST_DRIVER",
+      "toolkit_version": "REPLACE_WITH_PINNED_IMAGE_TOOLKIT"
+    },
+    "policy": {
+      "schema_version": 1,
+      "fixture_id": "cuda-vectoradd-v1",
+      "bundle_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "image_reference": "alloyport-cuda-vectoradd-v1:local",
+      "image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "device_selection": {
+        "allowed_device_ids": [],
+        "preferred_device_id": null
+      },
+      "sandbox_root": "/var/lib/alloyport/cuda-sandboxes",
+      "ceilings": {
+        "cpu_millis": 2000,
+        "memory_bytes": 2147483648,
+        "disk_bytes": 536870912,
+        "process_count": 64,
+        "output_bytes": 65536
+      },
+      "local_artifact_root": "/var/lib/alloyport/cuda-artifacts",
+      "local_artifact_max_bytes": 8388608,
+      "max_input_bytes": 8388608,
+      "upload_chunk_bytes": 1048576,
+      "upload_ttl_ms": 3600000,
+      "docker_binary": "/usr/bin/docker",
+      "docker_stop_timeout_seconds": 10,
+      "nvidia_smi_binary": "/usr/bin/nvidia-smi"
+    }
+  }
 }

@@ -1,6 +1,6 @@
 //! Docker CLI JSON and scalar response parsing.
 
-use crate::cuda_supervisor::{
+use crate::container_engine::{
     ContainerEngineError, ContainerExit, ContainerIdentity, ContainerPhase, ContainerSnapshot,
 };
 use serde::Deserialize;

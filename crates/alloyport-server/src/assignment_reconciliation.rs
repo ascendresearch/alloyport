@@ -29,7 +29,7 @@ impl WorkerControlService {
             let preparation = self
                 .persistence
                 .run(move || {
-                    if let Err(error) = service.grant_cuda_assignment_input(
+                    if let Err(error) = service.grant_fixed_fixture_assignment_input(
                         &persisted_assignment.worker_id,
                         &persisted_assignment.contract,
                         now_ms,

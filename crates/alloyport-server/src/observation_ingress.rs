@@ -5,6 +5,8 @@ use super::{
     WorkerToServer, expected_worker_message_id, mpsc, repository_status, server_to_worker,
     validate_worker_acknowledgement,
 };
+use alloyport_proto::v1::{Heartbeat, WorkerHealth, WorkerHello, worker_to_server};
+use std::collections::BTreeSet;
 
 impl WorkerControlService {
     pub(super) async fn ingest(
@@ -13,6 +15,10 @@ impl WorkerControlService {
         connection_id: &str,
         frame: WorkerToServer,
     ) -> Result<bool, Status> {
+        if let Some(worker_to_server::Message::Heartbeat(heartbeat)) = frame.message.as_ref() {
+            alloyport_proto::validate_heartbeat(heartbeat)
+                .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        }
         let state = self.state.lock().await;
         let worker = state
             .workers
@@ -20,6 +26,9 @@ impl WorkerControlService {
             .ok_or_else(|| Status::failed_precondition("worker is not registered"))?;
         if worker.connection_id != connection_id || !worker.connected {
             return Err(Status::aborted("worker connection was superseded"));
+        }
+        if let Some(worker_to_server::Message::Heartbeat(heartbeat)) = frame.message.as_ref() {
+            validate_heartbeat_against_hello(heartbeat, &worker.hello)?;
         }
         if frame.sequence != worker.last_worker_sequence + 1 {
             return Err(Status::invalid_argument(format!(
@@ -161,5 +170,140 @@ impl WorkerControlService {
                 )),
             },
         )))
+    }
+}
+
+fn validate_heartbeat_against_hello(
+    heartbeat: &Heartbeat,
+    hello: &WorkerHello,
+) -> Result<(), Status> {
+    let capabilities = hello
+        .capabilities
+        .as_ref()
+        .ok_or_else(|| Status::failed_precondition("registered worker capabilities are missing"))?;
+    if heartbeat.available_slots > capabilities.max_concurrency {
+        return Err(Status::invalid_argument(
+            "heartbeat available slots exceed registered concurrency",
+        ));
+    }
+    let known_devices = capabilities
+        .devices
+        .iter()
+        .map(|device| device.device_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if heartbeat
+        .devices
+        .iter()
+        .any(|device| !known_devices.contains(device.device_id.as_str()))
+        || heartbeat
+            .device_leases
+            .iter()
+            .any(|lease| !known_devices.contains(lease.device_id.as_str()))
+    {
+        return Err(Status::invalid_argument(
+            "heartbeat references a device absent from registered capabilities",
+        ));
+    }
+    let fixed_ascend = hello
+        .features
+        .iter()
+        .any(|feature| feature == "ascend-fixture-v1");
+    if fixed_ascend
+        && heartbeat.health == WorkerHealth::Ready as i32
+        && heartbeat.devices.len() != known_devices.len()
+    {
+        return Err(Status::invalid_argument(
+            "ready fixed Ascend heartbeat must observe every registered device",
+        ));
+    }
+    let known_attempts = heartbeat
+        .active_attempts
+        .iter()
+        .map(|attempt| attempt.attempt_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if heartbeat
+        .device_leases
+        .iter()
+        .any(|lease| !known_attempts.contains(lease.attempt_id.as_str()))
+    {
+        return Err(Status::invalid_argument(
+            "heartbeat device lease does not name a durable local attempt",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloyport_proto::v1::{
+        AcceleratorDevice, Backend, DeviceHealth, DeviceLease, DeviceObservation,
+        WorkerCapabilities,
+    };
+
+    fn hello() -> WorkerHello {
+        WorkerHello {
+            protocol_major: alloyport_proto::PROTOCOL_MAJOR,
+            protocol_minor: alloyport_proto::PROTOCOL_MINOR,
+            worker_id: "ascend-1".to_owned(),
+            instance_id: "boot-1".to_owned(),
+            worker_version: "test".to_owned(),
+            features: vec!["ascend-fixture-v1".to_owned()],
+            capabilities: Some(WorkerCapabilities {
+                backend: Backend::Ascend.into(),
+                architecture: "Ascend950PR".to_owned(),
+                device_count: 1,
+                max_concurrency: 1,
+                driver_version: "25.7.rc1.6".to_owned(),
+                toolkit_version: "9.1.0-beta.1".to_owned(),
+                container_runtime: "docker".to_owned(),
+                devices: vec![AcceleratorDevice {
+                    device_id: "3".to_owned(),
+                    product_name: "Ascend950PR".to_owned(),
+                    serial_number: "serial-3".to_owned(),
+                    firmware_version: "9.0.0.105.229".to_owned(),
+                }],
+            }),
+            active_attempts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn heartbeat_devices_and_leases_must_match_registered_identity() {
+        let heartbeat = Heartbeat {
+            active_attempts: vec![alloyport_proto::v1::ActiveAttempt {
+                assignment_id: "assignment-1".to_owned(),
+                attempt_id: "attempt-1".to_owned(),
+                phase: alloyport_proto::v1::AttemptPhase::Running.into(),
+            }],
+            available_slots: 0,
+            health: WorkerHealth::Ready.into(),
+            devices: vec![DeviceObservation {
+                device_id: "3".to_owned(),
+                health: DeviceHealth::Ready.into(),
+                process_count: 0,
+                utilization_percent: 0,
+                memory_used_bytes: 0,
+                memory_total_bytes: 1,
+                temperature_millicelsius: 1,
+                power_milliwatts: 1,
+                observed_at_ms: 1,
+                detail: String::new(),
+            }],
+            device_leases: vec![DeviceLease {
+                attempt_id: "attempt-1".to_owned(),
+                device_id: "3".to_owned(),
+                acquired_at_ms: 1,
+            }],
+        };
+        assert!(validate_heartbeat_against_hello(&heartbeat, &hello()).is_ok());
+
+        let mut unknown = heartbeat.clone();
+        unknown.device_leases[0].device_id = "6".to_owned();
+        assert!(validate_heartbeat_against_hello(&unknown, &hello()).is_err());
+
+        let mut missing_attempt = heartbeat;
+        missing_attempt.device_leases[0].attempt_id = "attempt-missing".to_owned();
+        assert!(validate_heartbeat_against_hello(&missing_attempt, &hello()).is_err());
     }
 }

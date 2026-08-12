@@ -3,7 +3,8 @@
 //! Database drivers, transactions, schema migrations, and SQL belong to outer adapters.
 
 use alloyport_core::{
-    ArtifactDescriptor, AssignmentId, AttemptId, AttemptOutcome, RejectionReason,
+    ArtifactDescriptor, AssignmentId, AttemptId, AttemptOutcome, DeviceLease, DeviceObservation,
+    RejectionReason,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -114,6 +115,24 @@ pub enum StoreOutboxOutcome {
     Duplicate,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeviceLeaseOutcome {
+    Acquired,
+    Duplicate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeviceReleaseOutcome {
+    Released,
+    AlreadyReleased,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DevicePreflightOutcome {
+    Recorded,
+    Duplicate,
+}
+
 #[derive(Debug)]
 pub enum AttemptStoreError {
     Storage(Box<dyn Error + Send + Sync>),
@@ -131,6 +150,15 @@ pub enum AttemptStoreError {
         stored: String,
         requested: String,
     },
+    DeviceAlreadyLeased {
+        device_id: String,
+        attempt_id: String,
+    },
+    ConflictingDeviceLease {
+        attempt_id: String,
+        device_id: String,
+    },
+    ConflictingDevicePreflight(String),
     Corrupt(String),
 }
 
@@ -165,6 +193,24 @@ impl Display for AttemptStoreError {
             Self::WorkerIdentityMismatch { stored, requested } => write!(
                 formatter,
                 "worker journal belongs to {stored}, not requested worker {requested}"
+            ),
+            Self::DeviceAlreadyLeased {
+                device_id,
+                attempt_id,
+            } => write!(
+                formatter,
+                "worker device {device_id} is already leased to attempt {attempt_id}"
+            ),
+            Self::ConflictingDeviceLease {
+                attempt_id,
+                device_id,
+            } => write!(
+                formatter,
+                "attempt {attempt_id} has a conflicting device lease for {device_id}"
+            ),
+            Self::ConflictingDevicePreflight(attempt_id) => write!(
+                formatter,
+                "attempt {attempt_id} has conflicting durable device preflight evidence"
             ),
             Self::Corrupt(detail) => write!(formatter, "corrupt worker attempt journal: {detail}"),
         }
@@ -233,7 +279,39 @@ pub trait WorkerOutboxStore: Debug + Send + Sync {
     fn outbox_len(&self) -> Result<usize, AttemptStoreError>;
 }
 
-/// Compatibility composition for workers that need both attempt lifecycle and durable outbox.
-pub trait AttemptStore: AttemptLifecycleStore + WorkerOutboxStore {}
+#[allow(clippy::missing_errors_doc)]
+pub trait DeviceLeaseStore: Debug + Send + Sync {
+    fn acquire_device_lease(
+        &self,
+        attempt_id: &AttemptId,
+        device_id: &str,
+        at_ms: u64,
+    ) -> Result<DeviceLeaseOutcome, AttemptStoreError>;
 
-impl<T> AttemptStore for T where T: AttemptLifecycleStore + WorkerOutboxStore + ?Sized {}
+    fn release_device_lease(
+        &self,
+        attempt_id: &AttemptId,
+        at_ms: u64,
+    ) -> Result<DeviceReleaseOutcome, AttemptStoreError>;
+
+    fn active_device_leases(&self) -> Result<Vec<DeviceLease>, AttemptStoreError>;
+
+    fn record_device_preflight(
+        &self,
+        attempt_id: &AttemptId,
+        observation: &DeviceObservation,
+    ) -> Result<DevicePreflightOutcome, AttemptStoreError>;
+
+    fn device_preflight(
+        &self,
+        attempt_id: &AttemptId,
+    ) -> Result<Option<DeviceObservation>, AttemptStoreError>;
+}
+
+/// Compatibility composition for workers that need both attempt lifecycle and durable outbox.
+pub trait AttemptStore: AttemptLifecycleStore + WorkerOutboxStore + DeviceLeaseStore {}
+
+impl<T> AttemptStore for T where
+    T: AttemptLifecycleStore + WorkerOutboxStore + DeviceLeaseStore + ?Sized
+{
+}

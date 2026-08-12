@@ -3,9 +3,11 @@
 use super::{DEFAULT_HEARTBEAT_INTERVAL, OutboundWorker, WorkerError};
 use crate::journal::LocalAttemptPhase;
 use crate::wire_mapping::expected_server_message_id;
+use alloyport_core::DeviceHealth;
 use alloyport_proto::v1::worker_control_client::WorkerControlClient;
 use alloyport_proto::v1::{
-    Heartbeat, ServerToWorker, WorkerHealth, WorkerToServer, server_to_worker, worker_to_server,
+    DeviceLease as WireDeviceLease, DeviceObservation as WireDeviceObservation, Heartbeat,
+    ServerToWorker, WorkerHealth, WorkerToServer, server_to_worker, worker_to_server,
 };
 use std::collections::BTreeSet;
 use tokio::sync::mpsc;
@@ -127,16 +129,11 @@ impl OutboundWorker {
                     last_worker_sequence_acknowledged = acknowledges_worker_through;
                 }
                 _ = heartbeat.tick() => {
-                    let active_attempts = self.state.active_attempts_async().await?;
                     Self::send_ephemeral(
                         &outbound,
                         &mut next_worker_sequence,
                         last_server_sequence,
-                        worker_to_server::Message::Heartbeat(Heartbeat {
-                            active_attempts,
-                            available_slots: self.available_slots().await?,
-                            health: WorkerHealth::Ready.into(),
-                        }),
+                        worker_to_server::Message::Heartbeat(self.build_heartbeat().await?),
                     ).await?;
                 }
                 update = execution_updates.recv(), if self.execution.is_some() => {
@@ -151,6 +148,63 @@ impl OutboundWorker {
                 }
             }
         }
+    }
+
+    pub(super) async fn build_heartbeat(&self) -> Result<Heartbeat, WorkerError> {
+        let active_attempts = self.state.active_attempts_async().await?;
+        let (device_snapshot, device_probe_failed) = match self.device_status.as_ref() {
+            Some(provider) => match provider.snapshot().await {
+                Ok(snapshot) => (snapshot, false),
+                Err(_) => (crate::device::DeviceSnapshot::default(), true),
+            },
+            None => (crate::device::DeviceSnapshot::default(), false),
+        };
+        let health = if !device_probe_failed
+            && (self.device_status.is_none()
+                || (!device_snapshot.devices.is_empty()
+                    && device_snapshot
+                        .devices
+                        .iter()
+                        .all(|device| device.health == DeviceHealth::Ready)))
+        {
+            WorkerHealth::Ready
+        } else {
+            WorkerHealth::Degraded
+        };
+        let devices = device_snapshot
+            .devices
+            .into_iter()
+            .map(|device| WireDeviceObservation {
+                device_id: device.device_id,
+                health: i32::from(device.health),
+                process_count: device.process_count,
+                utilization_percent: device.utilization_percent,
+                memory_used_bytes: device.memory_used_bytes,
+                memory_total_bytes: device.memory_total_bytes,
+                temperature_millicelsius: device.temperature_millicelsius,
+                power_milliwatts: device.power_milliwatts,
+                observed_at_ms: device.observed_at_ms,
+                detail: device.detail,
+            })
+            .collect();
+        let device_leases = self
+            .state
+            .active_device_leases_async()
+            .await?
+            .into_iter()
+            .map(|lease| WireDeviceLease {
+                attempt_id: lease.attempt_id.to_string(),
+                device_id: lease.device_id,
+                acquired_at_ms: lease.acquired_at_ms,
+            })
+            .collect();
+        Ok(Heartbeat {
+            active_attempts,
+            available_slots: self.available_slots().await?,
+            health: health.into(),
+            devices,
+            device_leases,
+        })
     }
 
     async fn resume_outbox_delivery(

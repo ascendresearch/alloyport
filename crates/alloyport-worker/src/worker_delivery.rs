@@ -82,7 +82,22 @@ impl OutboundWorker {
     }
 
     pub(super) async fn available_slots(&self) -> Result<u32, WorkerError> {
-        let active = u32::try_from(self.state.attempt_count_async().await?).unwrap_or(u32::MAX);
+        let mut occupied = self
+            .state
+            .attempts_async()
+            .await?
+            .into_iter()
+            .filter(|attempt| attempt.phase != crate::journal::LocalAttemptPhase::Finished)
+            .map(|attempt| attempt.assignment.attempt_id.to_string())
+            .collect::<BTreeSet<_>>();
+        occupied.extend(
+            self.state
+                .active_device_leases_async()
+                .await?
+                .into_iter()
+                .map(|lease| lease.attempt_id.to_string()),
+        );
+        let active = u32::try_from(occupied.len()).unwrap_or(u32::MAX);
         Ok(self.hello.capabilities.as_ref().map_or(0, |capabilities| {
             capabilities.max_concurrency.saturating_sub(active)
         }))

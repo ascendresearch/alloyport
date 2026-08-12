@@ -1,6 +1,6 @@
 //! Bounded Docker CLI process execution and log following.
 
-use crate::cuda_supervisor::{ContainerEngineError, ContainerLogChunk, ContainerLogStream};
+use crate::container_engine::{ContainerEngineError, ContainerLogChunk, ContainerLogStream};
 use std::fmt::Debug;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};

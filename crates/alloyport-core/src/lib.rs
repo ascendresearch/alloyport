@@ -2,11 +2,15 @@
 
 mod artifact;
 mod assignment;
+mod device;
 mod execution;
 mod identity;
 
 pub use artifact::{ArtifactDescriptor, DigestParseError, Sha256Digest};
 pub use assignment::{AssignmentContract, EnvironmentEntry, ExecutionContract, ResourceContract};
+pub use device::{
+    AcceleratorDevice, DeviceHealth, DeviceHealthError, DeviceLease, DeviceObservation,
+};
 pub use execution::{
     AttemptOutcome, AttemptOutcomeError, ExecutionKind, ExecutionKindError, NetworkPolicy,
     NetworkPolicyError, RejectionReason, RejectionReasonError,

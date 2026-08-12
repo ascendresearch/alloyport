@@ -1,11 +1,11 @@
 # AlloyPort handoff
 
-- Handoff date: 2026-08-10
+- Handoff date: 2026-08-11
 - Repository: `/data/projects/shinesheep/alloyport`
 - Branch: `main`
 - Baseline: this file is part of the repository's initial commit; run `git rev-parse HEAD` to obtain
   its local commit ID
-- Project state: architecture bootstrap with the first worker-control and interaction-event slices
+- Project state: architecture bootstrap with fixed CUDA and fixed Ascend runtime composition
 
 This document is the entry point for a new Codex session. It separates product intent, accepted
 architecture, implemented behavior, and planned behavior so that work does not drift simply because
@@ -47,6 +47,9 @@ Read these documents before changing architecture or implementation:
 15. [`design/0020-worker-supervisor-placement-and-attempt-isolation.md`](design/0020-worker-supervisor-placement-and-attempt-isolation.md)
     for the decision to keep the trusted worker supervisor outside per-attempt candidate sandboxes,
     including acceptable containerized-supervisor deployments and reconsideration criteria.
+16. [`design/0021-fixed-ascend-worker-contract.md`](design/0021-fixed-ascend-worker-contract.md)
+    for fixed Ascend identity, device-node policy, dynamic health/occupancy, and worker-durable device
+    leases.
 
 Design documents state intended behavior. Tests and code state what this revision actually implements.
 
@@ -194,6 +197,8 @@ The schema currently includes:
 - accepted/rejected, started, output, and finished lifecycle messages;
 - cancel, cancellation-acknowledged, and drain messages;
 - content-addressed artifact references and resource limits.
+- protocol minor 4 fixed-Ascend executor identity, explicitly enumerated static device identities,
+  dynamic health/occupancy observations, and worker-durable device-lease reporting.
 
 Validation currently enforces supported protocol major version, worker identity/capacity, typed
 executor, sandbox-relative working directory, non-empty argv, and `sha256:` artifact digests.
@@ -463,9 +468,10 @@ execution in the worker binary yet:
 - `OutboundWorker` can explicitly attach that runtime, enforce CUDA-fixture-only admission, match
   hello and receipt environment facts, share cancellation/task ownership, and retry terminal cleanup
   at session startup without blocking terminal outbox delivery.
-- the worker binary attaches the complete CUDA stack only when `ALLOYPORT_CUDA_CONFIG` names a
-  schema-1 local policy file; it then downloads the granted bundle into its verified CAS before
-  execution and requires remote stdout/stderr/receipt publication before terminal commit.
+- the worker binary attaches the complete CUDA stack from one schema-1 worker configuration carrying
+  server/TLS, identity, journal, environment, local image and device-selection policy; it then
+  downloads the granted bundle into its verified CAS before execution and requires remote
+  stdout/stderr/receipt publication before terminal commit.
 
 The self-contained fixture covers CUDA compilation, allocation/copy, a real kernel launch,
 synchronization, and deterministic device-result verification. On 2026-08-11 the ignored real-engine
@@ -484,32 +490,89 @@ stdout/stderr/receipt only when the reporting stable worker finalized exact owne
 with matching digest, size, and media type. It then creates idempotent `AssignmentOutput` and
 `Receipt` roots before recording `Finished`. A wire digest cannot manufacture remote evidence.
 
-The worker binary uses `ALLOYPORT_WORKER_DATABASE` or defaults to `alloyport-worker.sqlite3`. It does
-not attach the fake runtime. CUDA remains default-deny unless `ALLOYPORT_CUDA_CONFIG` points to a
-complete schema-1 JSON policy. [The checked-in template](cuda-worker-config.example.json)
-contains deliberately unusable all-zero digests that operators must replace with the exact granted
-bundle, pinned manifest, and resolved local image identities. The file also declares the one device,
-absolute non-overlapping sandbox/CAS roots, resource ceilings, bounded Artifact download/upload
-settings, absolute Docker CLI, and stop grace period. Enabling it additionally requires CUDA hello
-facts, `device_count=1`, `max_concurrency=1`, and `container_runtime=docker`.
+Design 0021 defines the fixed Ascend contract. The fixed runtime implementation now provides:
 
-The `alloyport-worker` binary reconnects with capped exponential backoff. Required identity variables:
+- `ExecutionKind::AscendFixture` and wire `EXECUTOR_KIND_ASCEND_FIXTURE` are distinct from generic
+  container/shell and from the CUDA fixture;
+- static worker capabilities can enumerate stable device ID, product, serial, and firmware identity;
+- bounded heartbeats can separately report device health, process occupancy, utilization, memory,
+  temperature, power, and crash-durable attempt/device leases;
+- the fixed `ascend-add-v1` local policy binds exact bundle/image, CANN/driver/firmware, one selected
+  device, enumerated `davinci*`/manager/HDC nodes, the read-only driver mount, sandbox, and ceilings;
+- its derived Docker plan contains no shell or server-selected host path/device/environment and sets
+  `ASCEND_RT_VISIBLE_DEVICES` only from worker-local policy;
+- the worker journal has a segregated `DeviceLeaseStore`: acquisition is exclusive and idempotent,
+  survives SQLite reopen, and release stays explicit so terminal failure cannot make a device
+  reusable before health/reset handling;
+- immutable preflight observations are stored separately before `Running`; recovery of a `Running`
+  attempt reads those original facts instead of performing a new probe that could observe its own or
+  a completed candidate process;
+- the controller grants published input bundles to both fixed CUDA and fixed Ascend assignments;
+- a bounded shell-free local `npu-smi` adapter discovers static IDs/product/serial/firmware identity
+  and parses dynamic health, process count, utilization, HBM, temperature, and power. It uses an
+  absolute binary, bounded time/output, a captured fixed-driver regression fixture, and fails closed
+  on incomplete or mismatched inventory;
+- a distinct `AscendContainerEngine` port and supervisor reconcile stable container identity across
+  missing, `Created`, `Running`, and `Exited` states and enforce image identity, cancellation,
+  timeout, output bounds, and the fixed verification marker;
+- backend-neutral `DeviceGuard` is used by CUDA and Ascend. It acquires the durable lease before
+  preflight, persists immutable evidence before `Running`, never resets a device with an unattributed
+  visible process, retains uncertain/unhealthy state as quarantine, and releases after terminal
+  execution only after container removal plus `Ready` and zero processes. Current adapters authorize
+  no reset, so unhealthy cleanup remains safely quarantined.
+- `AscendFixtureBundle` is size/digest/schema checked and materialized write-once with a trusted local
+  dispatcher; the assignment cannot provide host paths, mounts, environment, Docker options, or a
+  shell command;
+- the existing argv-only Docker CLI implements the separate Ascend engine port without changing the
+  derived create argv;
+- `AscendExecutionRuntime` and `AscendExecutionBackend` compose lease/preflight, supervisor, local
+  CAS, mandatory terminal publication, receipt creation, and post-commit cleanup. The independent
+  receipt records bundle/source/image IDs, environment, exact device/lease, pre/post observations,
+  output digests, outcome, and cleanup intent;
+- publication failure leaves the attempt `Running`; replay reconciles the exited container without
+  recreating it. Terminal cleanup failure leaves terminal state and the device lease durable; replay
+  retries only cleanup;
+- the unified worker configuration attaches this stack default-deny in the production binary after
+  exact capability, `npu-smi` identity, and host character-device inventory checks. The checked-in
+  example deliberately uses unusable digests and placeholder identities.
+- `fixtures/ascend-add-v1/image` now contains the trusted CANN-image harness and fixed host/tiling
+  closure; `make_bundle.py` produces canonical bundle JSON from the candidate kernel. On 2026-08-11
+  it built from CANN base RepoDigest `sha256:a7770a...9f7d` and passed a direct real 950PR gate on an
+  independently rechecked unoccupied card: ASC compiled/linked for `dav-3510`, exit 0, and stdout was
+  exactly `PASS fixture=ascend-add-v1 elements=16384 checksum=3d2cf971e11e0383`. This was a direct
+  diagnostic container, not an outbound AlloyPort receipt.
+- least-capability probing found `cap-drop=ALL` alone makes `aclInit` fail because the selected
+  `davinciN` node is driver-group-owned `0660`; adding back only `DAC_OVERRIDE` succeeds. The final
+  plan retains disabled networking, read-only root/driver/source, `no-new-privileges`, and a bounded
+  tmpfs for build, HOME, temporaries, and CANN logs.
 
-- `ALLOYPORT_SERVER`
-- `ALLOYPORT_WORKER_ID`
-- `ALLOYPORT_BACKEND` (`cuda`, `ascend`, or `npu`)
-- optional capability fields: `ALLOYPORT_ARCH`, `ALLOYPORT_DEVICE_COUNT`,
-  `ALLOYPORT_MAX_CONCURRENCY`, `ALLOYPORT_DRIVER_VERSION`, `ALLOYPORT_TOOLKIT_VERSION`, and
-  `ALLOYPORT_CONTAINER_RUNTIME`
+A read-only 2026-08-11 environment probe found seven Ascend 950PR devices (`davinci0..6`), host
+driver `25.7.rc1.6`, pinned-image CANN `9.1.0-beta.1`, and the required `davinci_manager`/`hisi_hdc`
+nodes. Concurrent processes, 99% utilization, and `Alarm` health on different cards confirmed that
+device count, occupancy, utilization, and health cannot be collapsed. Login material remains only in
+the separate legacy project/operator environment and was not copied into AlloyPort.
 
-Remote TLS additionally requires:
+The worker binary does not attach the fake runtime. CUDA and Ascend remain mutually exclusive and
+default-deny. `alloyport-worker --config PATH` loads one complete schema-1 JSON file containing the
+server/TLS connection, worker ID, journal path, backend facts, and local policy;
+`ALLOYPORT_WORKER_CONFIG` is only an equivalent file locator.
+[The CUDA template](cuda-worker-config.example.json) and
+[the Ascend template](ascend-worker-config.example.json)
+contain deliberately unusable all-zero digests that operators must replace with the exact granted
+bundle and image identities. A standalone tag is accepted only when `image_digest == image_id` and
+the assignment declares the OCI image-config media type; a registry-backed manifest-pinned reference
+remains optional. The templates also declare local device selection, absolute non-overlapping
+sandbox/CAS roots, resource ceilings, bounded Artifact
+download/upload settings, absolute Docker CLI, and stop grace period. Ascend additionally requires
+the exact startup-enumerated host `davinci*`/manager/HDC character-device set and an absolute
+`npu-smi` binary; CUDA requires an absolute `nvidia-smi`. Enabling either path produces matching
+hello facts with `device_count=1`,
+`max_concurrency=1`, and `container_runtime=docker`.
 
-- `ALLOYPORT_TLS_CERT`
-- `ALLOYPORT_TLS_KEY`
-- `ALLOYPORT_TLS_SERVER_CA`
-- `ALLOYPORT_TLS_SERVER_NAME`
-
-Remote plaintext endpoints are rejected. Loopback HTTP is permitted for tests and development.
+The `alloyport-worker` binary reconnects with capped exponential backoff. Remote TLS certificate,
+private-key, server-CA, and server-name paths are fields of the same file. Remote plaintext endpoints
+are rejected; loopback HTTP is permitted for tests and development. See
+[worker configuration](worker-configuration.md) and Design 0022.
 
 ## Delivery semantics that must survive future work
 
@@ -534,8 +597,11 @@ Remote plaintext endpoints are rejected. Loopback HTTP is permitted for tests an
 
 The architecture-remediation round closed on 2026-08-11. Its layering, persistence, plugin, typed
 error, and module-size constraints are recorded in `docs/ARCHITECTURE_REMEDIATION.md` and enforced by
-the two boundary scripts. Ascend implementation is deliberately deferred to the next feature
-session; it should extend the existing backend registry rather than reopen the broad refactor.
+the two boundary scripts. The fixed Ascend runtime extends those ports through the existing backend
+registry with verified bundle materialization, Docker composition, durable device evidence,
+Artifact-gated receipt publication, and production-binary configuration. The remaining Ascend work
+is the trusted pinned-image harness and explicit real-environment acceptance, not a new control-state
+machine.
 
 The following commands passed at the closing verification:
 
@@ -547,8 +613,8 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 129 passing Rust tests and one ignored by default because it explicitly requires Docker
-and a CUDA device. Control-plane coverage includes real loopback gRPC streams and SQLite
+There are 171 passing Rust tests and two ignored by default because they explicitly require Docker
+and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;
@@ -638,19 +704,18 @@ metadata non-resurrection after reopen.
 
 CI runs stable fmt/clippy/tests and a separate Rust 1.88.0 locked-dependency test job.
 
-Local smoke setup:
+Configured worker startup:
 
 ```bash
 # terminal 1
 cargo run -p alloyport-server
 
-# terminal 2
-ALLOYPORT_WORKER_ID=cuda-dev \
-ALLOYPORT_BACKEND=cuda \
-cargo run -p alloyport-worker
+# terminal 2; copy a checked-in template and replace every placeholder first
+cargo run -p alloyport-worker -- --config /absolute/path/to/worker.json
 ```
 
-This proves connection/heartbeat only. There is no public scheduling API in the binary yet.
+Startup validates connection policy, backend probe, image policy, and device eligibility before the
+control session. There is no public scheduling API in the binary yet.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 
@@ -694,7 +759,7 @@ cargo test -p alloyport-server --test cuda_control_plane \
   and authorized reader leases/garbage collection; SQL remains inside these implementation modules.
   Garbage collection depends on the narrow `ArtifactRetentionStore` removal port rather than the
   filesystem CAS. There is no object-store adapter or filesystem-capacity monitor.
-- No automatic device discovery or device reset. The Docker boundary follows running logs, forwards
+- No automatic device reset. The Docker boundary follows running logs, forwards
   bounded best-effort stdout/stderr previews with independent offsets, and actively stops the
   identified container on combined output-budget exhaustion. A full preview queue never blocks log
   draining or changes terminal bytes; later chunks expose gaps to the server warning path. Preview
@@ -702,7 +767,14 @@ cargo test -p alloyport-server --test cuda_control_plane \
   explicit rather than discovered.
   Attached fake runs emit ephemeral gRPC output previews and accept control-stream cancellation;
   workers with no executor attached still terminate cancelled admitted attempts directly.
-- No CUDA/NPU discovery commands or dynamic health/occupancy scheduler.
+- CUDA has a bounded `nvidia-smi` adapter whose `Ready` state requires explicit
+  `gpu_recovery_action=None`; recovery actions are unhealthy and unsupported evidence is degraded.
+  Both backends use the common Design 0022 selector and durable per-attempt `DeviceGuard`, including
+  immutable preflight, cleanup replay, and quarantine retention. There is no automatic reset or
+  dynamic per-attempt multi-device scheduler. Startup binds a uniquely leased quarantine device for
+  recovery without making it eligible for new work, preventing cleanup replay deadlock. The trusted
+  local Ascend image ID can drive the
+  outbound gate without an OCI registry when the assignment uses the OCI image-config media type.
 - Assigned worker lifecycle and raw previews are durably translated into observed canonical events.
   The production service now shares a bounded per-run hub with mTLS-authorized replay/subscription
   RPCs and durable run grants. There is no interaction retention scheduler, cursor-expired response,
@@ -750,10 +822,23 @@ for canonical envelope JSON rather than a second event type system.
 
 ### 3. One Ascend vertical slice
 
-Add device discovery, CANN/driver identity, enumerated device-node policy, occupancy/health reporting,
-device leases, driver mount rules, and post-crash health/reset handling. Preserve the epistemic split:
-CUDA reference output and Ascend target output are independently executed receipts joined by an
-experiment and judged by the oracle.
+The software path is composed and tested: explicit CANN/driver/firmware and per-device identity,
+exact device-node/driver-mount policy, bounded `npu-smi`, durable leases/preflight evidence, verified
+bundle materialization, restart-safe Docker reconciliation, Artifact-gated independent receipt,
+backend/binary registration, fail-closed quarantine ordering, and the trusted image harness. The
+direct real-device gate and the full outbound loopback gate both pass. The 2026-08-11 outbound run
+selected NPU 3 (`Ascend950PR`), used local image ID
+`sha256:fc755f6d67a5484ecf6f1e4416c2d97da330122b4fd6842c95c6642ed1f9472c`, exited 0, and produced
+`PASS fixture=ascend-add-v1 elements=16384 checksum=3d2cf971e11e0383`. Its receipt records CANN
+`9.1.0-beta.1`, driver `25.7.rc1.6`, firmware `9.0.0.105.229`, `Ready`/zero-process preflight and
+postflight, terminal Artifact publication, container removal, and `release_after_commit` with no
+remaining lease. The first real attempt also exposed and fixed a shared multi-device-host boundary:
+the selected identity is now registered in Hello capabilities and heartbeat telemetry is filtered
+to that bound device for both CUDA and Ascend. Registry publication remains optional. Next record
+the legacy SSH harness as a separate parity attempt and exercise long-running reconnect behavior
+from the production binary's unified config. Preserve the
+epistemic split: CUDA reference output and Ascend target output are independently executed receipts
+joined by an experiment and judged by the oracle.
 
 ### 4. Cut over and remove SSH from runtime
 
@@ -764,9 +849,10 @@ evidence.
 
 ## Suggested first task for the next Codex session
 
-Start the first Ascend worker contract slice:
+Exercise the production worker configuration and reconnect path without adding a public submission
+API yet:
 
-> Read `docs/HANDOFF.md` and Designs 0007, 0009, 0011, 0016, 0018, and 0019. Define the first fixed
-> Ascend worker execution contract: explicit CANN/driver and device identity, enumerated device-node
-> policy, occupancy/health reporting, and a durable device lease. Keep CUDA reference and Ascend
-> target receipts independent; do not add an oracle verdict or release transition to the worker.
+> Read `docs/HANDOFF.md` and Designs 0018, 0021, and 0022. Populate an uncommitted unified Ascend
+> worker config from the verified local image ID and a fresh read-only inventory, start the production
+> binary against a loopback controller, and verify bounded reconnect plus bound-device heartbeats
+> without rerunning or duplicating the already accepted real outbound fixture.

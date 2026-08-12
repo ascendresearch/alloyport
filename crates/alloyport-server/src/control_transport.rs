@@ -6,7 +6,9 @@ use crate::storage::{
     ArtifactIdentity, AssignmentContract, EnvironmentEntry, ExecutionContract, RepositoryError,
     ResourceContract, WorkerCapabilities, WorkerRegistration,
 };
-use alloyport_core::{AssignmentId, AttemptId, CandidateId, ExecutionKind, NetworkPolicy, TaskId};
+use alloyport_core::{
+    AcceleratorDevice, AssignmentId, AttemptId, CandidateId, ExecutionKind, NetworkPolicy, TaskId,
+};
 use alloyport_events::{
     ArtifactRef as EventArtifactRef, Authority, Event, Producer, ProducerEvent, Visibility,
 };
@@ -152,6 +154,16 @@ pub(super) fn hello_to_registration(hello: &WorkerHello) -> WorkerRegistration {
             driver_version: capabilities.driver_version.clone(),
             toolkit_version: capabilities.toolkit_version.clone(),
             container_runtime: capabilities.container_runtime.clone(),
+            devices: capabilities
+                .devices
+                .iter()
+                .map(|device| AcceleratorDevice {
+                    device_id: device.device_id.clone(),
+                    product_name: device.product_name.clone(),
+                    serial_number: device.serial_number.clone(),
+                    firmware_version: device.firmware_version.clone(),
+                })
+                .collect(),
         },
     }
 }

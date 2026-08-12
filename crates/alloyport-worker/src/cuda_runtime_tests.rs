@@ -9,9 +9,14 @@ use crate::cuda_supervisor::{
     ContainerExit, ContainerIdentity, ContainerLogChunk, ContainerLogStream, ContainerLogs,
     ContainerPhase, ContainerSnapshot, EngineFuture,
 };
+use crate::device::{
+    DeviceLifecycleFuture, DeviceLifecycleManager, DeviceSnapshot, DeviceSnapshotFuture,
+    DeviceStatusError, DeviceStatusProvider,
+};
 use crate::executor::{ArtifactPublicationError, CancellationToken};
 use crate::{AdmissionOutcome, AdmissionPolicy, OutboundWorker, WorkerError};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
+use alloyport_core::{DeviceHealth, DeviceObservation};
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, Backend, ExecutionSpec, ExecutorKind, NetworkPolicy, ResourceLimits,
     WorkerCapabilities, WorkerHello,
@@ -23,6 +28,7 @@ const CUDA_RUNTIME_STDOUT: &[u8] =
     b"PASS fixture=cuda-vectoradd-v1 elements=1048576 checksum=670562424\n";
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn publication_and_terminal_commit_precede_retryable_cleanup()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -65,12 +71,14 @@ async fn publication_and_terminal_commit_precede_retryable_cleanup()
     let engine = Arc::new(RecordingEngine::new(state.clone(), image_id.to_string()));
     let engine_trait: Arc<dyn CudaContainerEngine> = engine.clone();
     let supervisor = Arc::new(CudaContainerSupervisor::new(policy, artifacts.clone()));
+    let device_manager = Arc::new(StaticDeviceManager::new(3));
     let runtime = Arc::new(CudaExecutionRuntime::new(
         "cuda-worker-1",
         artifacts.clone(),
         supervisor,
         engine_trait,
         CudaEnvironmentFacts::new("sm_121", "580.159.03", "13.0")?,
+        device_manager,
     )?);
     let publisher = OrderingPublisher::new(state.clone());
     let observations = Arc::new(Mutex::new(Vec::new()));
@@ -96,6 +104,7 @@ async fn publication_and_terminal_commit_precede_retryable_cleanup()
     let terminal = state.attempt("attempt-1")?.expect("attempt exists");
     assert_eq!(terminal.phase, LocalAttemptPhase::Finished);
     assert!(engine.has_container());
+    assert_eq!(state.active_device_leases()?.len(), 1);
 
     let replay = runtime
         .run(&state, "attempt-1", &CancellationToken::new())
@@ -103,6 +112,7 @@ async fn publication_and_terminal_commit_precede_retryable_cleanup()
     assert!(replay.replayed_terminal);
     assert!(!engine.has_container());
     assert_eq!(engine.remove_attempts(), 2);
+    assert!(state.active_device_leases()?.is_empty());
 
     let receipt = replay.finished.receipt.expect("receipt is persisted");
     let digest = receipt.digest;
@@ -114,6 +124,10 @@ async fn publication_and_terminal_commit_precede_retryable_cleanup()
     assert_eq!(receipt["resolved_image_id"], image_id.to_string());
     assert_eq!(receipt["device_id"], "0");
     assert_eq!(receipt["environment"]["driver_version"], "580.159.03");
+    assert_eq!(receipt["lease"]["device_id"], "0");
+    assert_eq!(receipt["pre_observation"]["health"], 1);
+    assert_eq!(receipt["post_observation"]["health"], 1);
+    assert_eq!(receipt["post_commit_cleanup"], "release_after_commit");
 
     assert_outbound_cuda_only(
         runtime,
@@ -122,6 +136,180 @@ async fn publication_and_terminal_commit_precede_retryable_cleanup()
         image_manifest,
     )?;
     Ok(())
+}
+
+#[tokio::test]
+async fn cuda_attempt_quarantines_a_device_that_became_unhealthy_before_preflight()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let artifacts = Arc::new(FilesystemArtifactStore::open(
+        directory.path().join("cas"),
+        64 * 1024,
+    )?);
+    let bundle = CudaFixtureBundle::vector_add("__global__ void vector_add() {}\n");
+    let bytes = serde_json::to_vec(&bundle)?;
+    let stored = artifacts.ingest(&mut Cursor::new(bytes), IngestRequest::unverified())?;
+    let image_manifest = Sha256Digest::digest_bytes(b"manifest");
+    let image_id = Sha256Digest::digest_bytes(b"image-id");
+    let policy = Arc::new(CudaFixturePolicy::new(
+        VECTOR_ADD_FIXTURE_ID,
+        stored.artifact.digest,
+        image_manifest,
+        format!("example.invalid/cuda@{image_manifest}"),
+        image_id,
+        "0",
+        directory.path().join("sandboxes"),
+        CudaResourceCeilings {
+            cpu_millis: 2_000,
+            memory_bytes: 2 * 1024 * 1024 * 1024,
+            disk_bytes: 512 * 1024 * 1024,
+            process_count: 64,
+            output_bytes: 64 * 1024,
+        },
+    )?);
+    let state = WorkerState::with_policy(AdmissionPolicy::default().allowing_cuda_fixture());
+    state.admit(&assignment(
+        stored.artifact.digest,
+        stored.artifact.size_bytes,
+        image_manifest,
+    ))?;
+    let engine = Arc::new(RecordingEngine::new(state.clone(), image_id.to_string()));
+    let engine_trait: Arc<dyn CudaContainerEngine> = engine.clone();
+    let supervisor = Arc::new(CudaContainerSupervisor::new(policy, artifacts.clone()));
+    let device_manager: Arc<dyn DeviceLifecycleManager> = Arc::new(FixedObservationManager {
+        observation: DeviceObservation {
+            health: DeviceHealth::Unhealthy,
+            detail: "gpu_recovery_action=Reset".into(),
+            ..cuda_observation()
+        },
+    });
+    let runtime = CudaExecutionRuntime::new(
+        "cuda-worker-1",
+        artifacts,
+        supervisor,
+        engine_trait,
+        CudaEnvironmentFacts::new("sm_121", "580.159.03", "13.0")?,
+        device_manager,
+    )?;
+
+    assert!(
+        runtime
+            .run(&state, "attempt-1", &CancellationToken::new())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        state.attempt("attempt-1")?.expect("attempt exists").phase,
+        LocalAttemptPhase::Accepted
+    );
+    assert_eq!(state.active_device_leases()?.len(), 1);
+    assert!(!engine.has_container());
+    Ok(())
+}
+
+#[derive(Debug)]
+struct StaticDeviceManager {
+    remaining_observations: Mutex<usize>,
+}
+
+#[derive(Debug)]
+struct FixedObservationManager {
+    observation: DeviceObservation,
+}
+
+impl DeviceStatusProvider for FixedObservationManager {
+    fn snapshot(&self) -> DeviceSnapshotFuture<'_> {
+        Box::pin(async move {
+            Ok(DeviceSnapshot {
+                devices: vec![self.observation.clone()],
+            })
+        })
+    }
+}
+
+impl DeviceLifecycleManager for FixedObservationManager {
+    fn observe_device<'a>(
+        &'a self,
+        _device_id: &'a str,
+    ) -> DeviceLifecycleFuture<'a, DeviceObservation> {
+        Box::pin(async move { Ok(self.observation.clone()) })
+    }
+
+    fn recover_device<'a>(
+        &'a self,
+        _device_id: &'a str,
+    ) -> DeviceLifecycleFuture<'a, DeviceObservation> {
+        Box::pin(async {
+            Err(DeviceStatusError::RecoveryUnsupported(
+                "test reset is disabled".into(),
+            ))
+        })
+    }
+}
+
+impl StaticDeviceManager {
+    fn new(observations: usize) -> Self {
+        Self {
+            remaining_observations: Mutex::new(observations),
+        }
+    }
+}
+
+impl DeviceStatusProvider for StaticDeviceManager {
+    fn snapshot(&self) -> DeviceSnapshotFuture<'_> {
+        Box::pin(async {
+            Ok(DeviceSnapshot {
+                devices: vec![cuda_observation()],
+            })
+        })
+    }
+}
+
+impl DeviceLifecycleManager for StaticDeviceManager {
+    fn observe_device<'a>(
+        &'a self,
+        _device_id: &'a str,
+    ) -> DeviceLifecycleFuture<'a, DeviceObservation> {
+        Box::pin(async move {
+            let mut remaining = self
+                .remaining_observations
+                .lock()
+                .map_err(|_| DeviceStatusError::Internal("device observation lock".into()))?;
+            if *remaining == 0 {
+                return Err(DeviceStatusError::Internal(
+                    "unexpected device observation".into(),
+                ));
+            }
+            *remaining -= 1;
+            Ok(cuda_observation())
+        })
+    }
+
+    fn recover_device<'a>(
+        &'a self,
+        _device_id: &'a str,
+    ) -> DeviceLifecycleFuture<'a, DeviceObservation> {
+        Box::pin(async {
+            Err(DeviceStatusError::RecoveryUnsupported(
+                "test reset is disabled".into(),
+            ))
+        })
+    }
+}
+
+fn cuda_observation() -> DeviceObservation {
+    DeviceObservation {
+        device_id: "0".into(),
+        health: DeviceHealth::Ready,
+        process_count: 0,
+        utilization_percent: 0,
+        memory_used_bytes: 0,
+        memory_total_bytes: 24 * 1024 * 1024 * 1024,
+        temperature_millicelsius: 40_000,
+        power_milliwatts: 20_000,
+        observed_at_ms: 1,
+        detail: "gpu_recovery_action=None".into(),
+    }
 }
 
 fn assert_live_observations(observations: &Mutex<Vec<ExecutionObservation>>) {
@@ -196,6 +384,7 @@ fn worker_hello() -> WorkerHello {
             driver_version: "580.159.03".into(),
             toolkit_version: "13.0".into(),
             container_runtime: "docker".into(),
+            devices: Vec::new(),
         }),
         active_attempts: Vec::new(),
     }

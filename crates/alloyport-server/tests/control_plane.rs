@@ -963,6 +963,7 @@ fn hello() -> WorkerHello {
             driver_version: "test".to_owned(),
             toolkit_version: "test".to_owned(),
             container_runtime: "test".to_owned(),
+            devices: Vec::new(),
         }),
         active_attempts: Vec::new(),
     }
