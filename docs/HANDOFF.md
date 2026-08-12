@@ -58,6 +58,15 @@ Read these documents before changing architecture or implementation:
 18. [`design/0023-versioned-server-configuration.md`](design/0023-versioned-server-configuration.md)
     for strict server bootstrap, configuration precedence, local defaults, and shared identity
     administration.
+19. [`design/0024-migration-spec-v1-and-first-product-slice.md`](design/0024-migration-spec-v1-and-first-product-slice.md)
+    for the accepted migration domain, lifecycle, generated-source release Gate, and first specimen.
+20. [`design/0025-pluggable-llm-provider-architecture.md`](design/0025-pluggable-llm-provider-architecture.md)
+    for the complete proposed five-loop runtime, protocol-native provider boundary, durable recovery,
+    tool authority, candidate search, and implementation sequence. The user accepted it on
+    2026-08-12; it is now implementation authority.
+21. [`research/agent-runtime-and-provider-study.md`](research/agent-runtime-and-provider-study.md)
+    for the completed evidence ledger covering `ascend-factory`, EvoKernel, three provider
+    protocols, durable runtimes, and the design choices carried into 0025.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -644,7 +653,8 @@ registry with verified bundle materialization, Docker composition, durable devic
 Artifact-gated receipt publication, and production-binary configuration. The trusted pinned-image
 harness and explicit real-environment acceptance have passed. Remaining Ascend work is a separately
 recorded legacy-SSH parity attempt plus production-binary reconnect/configuration exercise, not a
-new control-state machine or another execution of the already accepted fixture.
+new control-state machine or another execution of the already accepted fixture. Both remaining
+exercises completed on 2026-08-12 without rerunning the accepted outbound fixture.
 
 The following commands passed at the closing verification:
 
@@ -767,6 +777,32 @@ cargo run -p alloyport-worker -- --config /absolute/path/to/worker.json
 Startup validates connection policy, backend probe, image policy, and device eligibility before the
 control session. There is no public scheduling API in the binary yet.
 
+On 2026-08-12 the production `alloyport-worker` binary was also exercised from a populated,
+uncommitted schema-1 Ascend configuration against a loopback production server without submitting
+an assignment. A fresh read-only inventory found NPU 5 (`Ascend950PR`, serial `10265D495399`) as the
+only `OK`, process-free device, and the worker registered only that device. Accepted heartbeats
+advanced the first connection through worker sequence 7. After two deliberate controller restarts,
+the same worker process and instance reconnected with fresh connection-local sequences; the final
+connection advanced through sequence 5. Observed retry delays were exactly 1, 2, 4, 8, 16, 30, and
+30 seconds, proving the production reconnect loop reaches and retains its 30-second cap. No fixture,
+container, assignment, or device workload ran during this exercise. The development host's normal
+dynamically linked worker binary required glibc 2.39 while the 950PR host provides glibc 2.34, so the
+exercise used a static-musl binary built from the same revision; portable release packaging remains
+a deployment concern rather than an execution-contract change. That packaging gap is now closed by
+[`build_portable_linux_binaries.sh`](../scripts/build_portable_linux_binaries.sh) and its Rust 1.88.0
+CI job. The script builds locked static-musl release server/worker binaries, verifies static linkage,
+and emits checksums. The release worker was directly loaded on the glibc 2.34 host and reached normal
+configuration validation without a loader error.
+
+The separately identified legacy attempt
+[`legacy-ascend-parity-20260812T092354Z`](evidence/ascend-add-v1-legacy-parity-20260812.json) then ran
+the unchanged fixed source once through the legacy SSH/SCP container path. NPU 3 was `OK` and
+process-free before and after; the exact image, CANN, driver, firmware, deterministic stdout, exit 0,
+and successful classification agree with the accepted outbound attempt. The comparison and its
+explicit stderr-archive limitation are recorded in
+[`ascend-add-v1-parity-20260812.md`](evidence/ascend-add-v1-parity-20260812.md). The legacy observation
+is not an authoritative AlloyPort receipt or correctness verdict.
+
 The worker process entry is now deliberately thin. `application/config.rs` owns the unified
 connection/identity schema, `application/backend_config.rs` owns CUDA/Ascend local policy schemas,
 `application/assembly.rs` selects and wires concrete probes, stores, transport clients, supervisors,
@@ -887,68 +923,136 @@ cargo test -p alloyport-server --test cuda_control_plane \
 - No server replication, shared registry, load balancer/session ownership, or cross-process GC reader
   coordination.
 - The Python harness in `/data/projects/ascend-factory/harness/worker.py` and `box.py` still uses
-  SSH/SCP. No cutover has happened.
+  SSH/SCP as a separate legacy/reference project. AlloyPort's runtime and process configuration have
+  cut over to outbound gRPC and contain no SSH/SCP path; architecture CI prevents those fields and
+  transports from re-entering the runtime. Retiring or rewriting the separate Python project is not
+  an AlloyPort runtime requirement.
 
-## Recommended next implementation order
+## Product course correction and active work order
 
-### 1. One CUDA vertical slice
+The fixed CUDA and Ascend execution slices, outbound-only runtime, Artifact transport, authenticated
+control, canonical events, and portable worker packaging form a completed infrastructure baseline.
+They prove that prepared workloads can be transported and executed with durable evidence. They do
+not prove that AlloyPort can analyze CUDA source, generate Ascend C, preserve a public call path, or
+release an independently verified migration.
 
-Port the existing content-addressed bundle-to-container behavior from the Python harness into the new
-worker path. Do not copy the old SSH wrapper. Run a fixed fixture once through the old path and once
-through the new path as separate attempts, then compare bundle digest, image/environment identity,
-stdout/stderr, exit classification, and receipt fields.
+The previous next task, interaction retention, is deferred. Continuing to improve the control plane
+before a real migration loop exists would increase platform completeness without reducing the main
+product risk.
 
-The typed executor, fixture bundle, local allowlist, Docker create plan, Artifact bundle
-download/grant, durable supervisor, argv-only Docker engine, gated CUDA runtime, environment receipt,
-terminal cleanup ordering, outbound-session integration, and bounded running-log enforcement are
-implemented. The worker binary now wires a schema-validated local policy, verified input downloader,
-Docker runtime, and mandatory remote publisher. The real GB10 outbound loopback and separate legacy
-reference attempt agree on the fixed fixture. Live bounded previews now traverse Docker, runtime,
-outbound gRPC, and canonical event ingestion without replacing terminal CAS authority. The fixed CUDA
-vertical slice is complete; keep shell execution disabled and proceed to public event replay and
-subscription.
+[`PRODUCT_EXECUTION_PLAN.md`](PRODUCT_EXECUTION_PLAN.md) is now the only active work order. Its scope
+is deliberately narrow:
 
-### 2. Public event replay and subscription
+1. implement [Design 0024](design/0024-migration-spec-v1-and-first-product-slice.md), replacing the
+   obsolete multi-backend route model with `MigrationSpec v1` and Ascend-C-producing strategies;
+2. add one bounded reduction extension containing CUDA device code, host launch, CMake, a public
+   C/C++ call path, and an independently runnable CUDA reference;
+3. generate the target Ascend C compute, host glue, and build integration rather than accepting an
+   observer-written target skeleton;
+4. execute CUDA reference and Ascend candidate independently, join their receipts by experiment, and
+   judge them with a calibrated oracle;
+5. release source, component mapping, supported domain, fallback, correctness evidence, performance
+   evidence, and integration evidence;
+6. only then add EvoKernel-inspired drafting/refining rewards and value-backed cross-task memory.
 
-Durable run grants, controller redaction, shared production hub wiring, and mTLS-authorized replay and
-subscription RPCs are implemented. Before attaching a TUI, add retention scheduling and an explicit
-cursor-expired response containing the earliest retained sequence. The transport remains a carrier
-for canonical envelope JSON rather than a second event type system.
+Infrastructure is frozen by default until that slice passes. Interaction retention, TUI, public task
+submission, general scheduling, automatic GC, server replication, online certificate issuance, and
+additional unrelated fixed fixtures are explicitly deferred. A change in one of those areas requires
+a concrete blocker observed in the active migration slice.
 
-### 3. One Ascend vertical slice
+The first implementation slices are complete in the current working tree: `alloyport-core` owns a
+validated, versioned `MigrationSpec`, Ascend-C-producing generation strategies, the migration
+lifecycle, candidate/spec binding, and a mandatory generated-source release gate. The original CUDA
+reduction intake and frozen JSON contract live under
+[`fixtures/migrations/cuda-reduction-v1`](../fixtures/migrations/cuda-reduction-v1); the intake
+deliberately contains no Ascend target skeleton. Deterministic source/build inspection now binds its
+report to spec/source digests and checks the declared files, CUDA kernel/indexing, host launch/error
+path, public symbol, CMake references, and initial unsupported constructs. The checked-in reduction
+intake passes with 12 source evidence records; deliberate missing-launch, missing-build-reference,
+undeclared-copy, and cooperative-groups cases fail before generation.
 
-The software path is composed and tested: explicit CANN/driver/firmware and per-device identity,
-exact device-node/driver-mount policy, bounded `npu-smi`, durable leases/preflight evidence, verified
-bundle materialization, restart-safe Docker reconciliation, Artifact-gated independent receipt,
-backend/binary registration, fail-closed quarantine ordering, and the trusted image harness. The
-direct real-device gate and the full outbound loopback gate both pass. The 2026-08-11 outbound run
-selected NPU 3 (`Ascend950PR`), used local image ID
-`sha256:fc755f6d67a5484ecf6f1e4416c2d97da330122b4fd6842c95c6642ed1f9472c`, exited 0, and produced
-`PASS fixture=ascend-add-v1 elements=16384 checksum=3d2cf971e11e0383`. Its receipt records CANN
-`9.1.0-beta.1`, driver `25.7.rc1.6`, firmware `9.0.0.105.229`, `Ready`/zero-process preflight and
-postflight, terminal Artifact publication, container removal, and `release_after_commit` with no
-remaining lease. The first real attempt also exposed and fixed a shared multi-device-host boundary:
-the selected identity is now registered in Hello capabilities and heartbeat telemetry is filtered
-to that bound device for both CUDA and Ascend. Registry publication remains optional. Next record
-the legacy SSH harness as a separate parity attempt and exercise long-running reconnect behavior
-from the production binary's unified config. Preserve the
-epistemic split: CUDA reference output and Ascend target output are independently executed receipts
-joined by an experiment and judged by the oracle.
+The reusable portion of the first candidate-authoring boundary is implemented. `alloyport-core`
+constructs migration context only after reproducing the passing intake inspection, excludes
+undeclared files, and validates a bounded four-category source bundle under `generated/`. The
+provisional DeepSeek-specific one-shot authoring command and its curl subprocess transport have now
+been deleted. Their vendor/model coupling is not part of the runtime architecture. Useful transport
+constraints—owner-only secret files, exact bytes, explicit timeouts and bounds, and sanitized
+diagnostics—were carried into the provider-neutral SDK and Tokio-native HTTPS adapter.
 
-### 4. Cut over and remove SSH from runtime
+The repository developer is the system developer and coach, not the runtime migration driver. The
+runtime LLM is replaceable and defaults by configuration to `deepseek-v4-pro`; vendor, deployment,
+protocol, model profile, and generation parameters are separate receipt facts. Design 0025 now
+defines five loops: model attempt, Agent Episode, candidate search, task delivery, and cross-task
+knowledge. It preserves native continuation separately for `openai_responses`,
+`openai_chat_completions`, and `anthropic_messages`. The model iterates through controlled tools but
+cannot approve its output, Gates, knowledge, or release.
 
-Only after evidence parity, make the outbound worker client the sole scheduler path. Remove SSH host,
-key, root-directory, remote-shell, and SCP configuration from AlloyPort runtime. Keep any operational
-SSH procedure separate and document that manually produced output is not authoritative AlloyPort
-evidence.
+The first Design 0025 implementation slice is complete in `alloyport-core`. Validated identities and
+checked records now cover Agent Episodes, Model Attempts, decoded Turns, Tool Operations, and Search
+Runs. Episode, attempt, turn, and search records explicitly bind their immutable subtask, input,
+model/deployment/profile, continuation, policy, and budget identities needed for later recovery.
+Episode completion must pass through stop review; terminal tool results must be committed before the
+loop continues; ambiguous external effects must reconcile before success; and refinement requires a
+recorded incumbent. A strict schema-1 model catalog resolves alias, wire model, deployment,
+protocol-specific options, typed secret-file auth, profile, settings, data boundary, and conformance
+receipt into an immutable episode snapshot. `deepseek-v4-pro` appears only as test configuration:
+the same wire model resolves through Chat Completions or Anthropic Messages without vendor branches.
+A semantic `ModelGateway` port and scripted non-network fake preserve native call IDs, reject empty
+or duplicate calls, and deterministically prove multiple tool turns.
+
+The second Design 0025 slice is also complete. A stateless `AgentLoopRunner` advances one durable
+boundary at a time over a compare-and-swap `EpisodeRepository`; the checked-in in-memory adapter is
+only the deterministic reference fake, not the eventual production persistence adapter. Model and
+tool dispatch first commit `Dispatching`. An uncertain model dispatch is charged and retried as a
+new linked attempt within budget, while an uncertain tool action retains its stable logical
+operation identity and must reconcile before progress. The scripted scenario submits a candidate,
+consumes an independent fake Source Gate failure, submits a corrected candidate, consumes a passing
+Gate reference, and succeeds only after controller stop review. Tests reconstruct the runner across
+every ordinary boundary and cover injected dispatch/outcome crashes, explicit reconciliation,
+cancellation with and without ambiguity, verified-result authority, incomplete narrative stops, and
+model-turn budget exhaustion.
+
+The third Design 0025 slice is complete in `alloyport-core`. `ProtocolCodec` now has independent
+`OpenAiResponsesCodec`, `OpenAiChatCompletionsCodec`, and `AnthropicMessagesCodec`
+implementations over a shared bounded request/continuation contract. Golden fixtures replay two
+successive client-tool turns for every protocol. Chat retains the complete assistant message and
+uses `tool_call_id`; Responses retains every typed output item, including encrypted reasoning, and
+uses `call_id`; Anthropic retains ordered thinking/signature/redacted-thinking blocks and emits a
+following user `tool_result` message keyed by `tool_use_id`. Malformed argument strings remain
+exact, while missing/duplicate call IDs, undeclared tools, result-set mismatches, unsupported native
+items, empty turns/results, invalid JSON/schema, and exceeded bounds fail closed. Tests also cover
+usage/actual-model capture, refusal/filter/truncation/unknown stop normalization, raw-response and
+continuation digests, and result ordering independent of execution order. The codec layer has no
+secret, transport, tool execution, or completion authority.
+
+The fourth slice is complete. `alloyport-llm-provider` is the independent provider SDK used through
+the Agent Runtime's async `ModelGateway`; it resolves the configured alias, selects one of the three
+protocol codecs, appends correlated tool results, dispatches exactly once, decodes the response, and
+commits exact request/response/continuation bytes through a context-store port before exposing the
+semantic turn. `alloyport-model-http` supplies `reqwest`/`rustls` transport with HTTPS-only,
+redirect/proxy/retry/decompression disabled, explicit TLS/timeouts, bounded streaming response, and
+typed dispatch certainty. The default `deepseek-v4-pro` remains configuration only. Deterministic
+tests prove the real Agent loop calls the SDK without network access.
+
+The fifth slice is also complete. `alloyport-candidate-tools` now implements the iterative
+`submit_candidate_bundle` and `request_source_gate` adapters without depending on any provider or
+HTTP implementation. Submission binds controller-owned task/spec/strategy facts around the
+untrusted source bundle, ingests each file and the manifest into CAS, derives a task-scoped content
+identity, and publishes the candidate tree through same-directory staging plus create-only rename.
+Every reuse rereads the exact file set, sizes, and digests; unsafe candidate path segments,
+symlinks, extra files, cross-task manifests, and changed bytes fail closed. The independent
+structural Source Gate checks exact Artifact identity, UTF-8 source, forbidden framework/prebuilt
+fallbacks, Ascend C kernel structure, preserved host entry point/launch, build references, and
+complete input/output component mapping. Its immutable receipt is the verified model-visible tool
+result. A deterministic real-tool Agent Episode test consumes a failing receipt identity, submits a
+child correction, consumes a passing receipt, and succeeds only after stop review. Build,
+Correctness, live provider validation, API, scheduler, UI, and generalized execution remain absent.
 
 ## Suggested first task for the next Codex session
 
-Exercise the production worker configuration and reconnect path without adding a public submission
-API yet:
+The next action is the sixth accepted implementation slice:
 
-> Read `docs/HANDOFF.md` and Designs 0018, 0021, and 0022. Populate an uncommitted unified Ascend
-> worker config from the verified local image ID and a fresh read-only inventory, start the production
-> binary against a loopback controller, and verify bounded reconnect plus bound-device heartbeats
-> without rerunning or duplicating the already accepted real outbound fixture. Do not add a public
-> task-submission API in this slice.
+> Connect a Source-Gate-passing immutable candidate to one bounded Ascend build attempt through the
+> existing worker substrate. Preserve independent build authority and feed structured build failure
+> back into the same Episode. Do not yet add Correctness/Performance gates, live provider
+> validation, API, scheduler, UI, retention policy, or generalized executor.

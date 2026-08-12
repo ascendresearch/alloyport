@@ -6,8 +6,9 @@ For a new development session, start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
 The completed architecture remediation baseline is tracked in
 [`docs/ARCHITECTURE_REMEDIATION.md`](docs/ARCHITECTURE_REMEDIATION.md).
-The active incremental architecture work is tracked in
-[`docs/ARCHITECTURE_EVOLUTION_PLAN.md`](docs/ARCHITECTURE_EVOLUTION_PLAN.md).
+The infrastructure evolution baseline is tracked in
+[`docs/ARCHITECTURE_EVOLUTION_PLAN.md`](docs/ARCHITECTURE_EVOLUTION_PLAN.md). The active product work
+is tracked in [`docs/PRODUCT_EXECUTION_PLAN.md`](docs/PRODUCT_EXECUTION_PLAN.md).
 
 The project treats migration as evidence-backed engineering, not source-to-source translation.
 A successful delivery includes the implementation, its supported domain, correctness and
@@ -37,6 +38,17 @@ CUDA Intake -> Semantic Analysis -> MigrationSpec -> Ascend C Generation
 All accepted generation routes must produce Ascend C. Translators, templates, libraries, and agents
 may help produce candidates, but only independent gates can approve them.
 
+The runtime model is replaceable and currently defaults by configuration to `deepseek-v4-pro`.
+AlloyPort owns an iterative, tool-using Agent Episode; model text and candidate proposals remain
+untrusted while independent Gates own evidence and release state. The complete provider/runtime
+design is [Design 0025](docs/design/0025-pluggable-llm-provider-architecture.md), accepted on
+2026-08-12 and now being implemented in its documented order. Its first five slices have landed:
+provider-neutral records, a durable Agent Episode loop, independent protocol codecs, strict model
+configuration, bounded Tokio-native HTTPS transport, and the first real candidate-submission / Source
+Gate correction loop. The `alloyport-llm-provider` SDK composes model connectivity behind the async
+`ModelGateway`; independent candidate tools retain materialization and Gate authority. No live
+provider call is part of the test suite.
+
 ## Run experience
 
 AlloyPort is designed as an observable coding agent, not a silent batch translator. Interactive
@@ -50,6 +62,11 @@ automation, and replay; an agent's narrative remains distinct from verified migr
   explicitly non-durable memory adapters, durable typed references, quotas, and conservative
   garbage collection.
 - `alloyport-core`: dependency-light domain model and lifecycle invariants.
+- `alloyport-candidate-tools`: create-only candidate materialization plus independently authored
+  structural Source Gate receipts for the current migration slice.
+- `alloyport-llm-provider`: provider-neutral SDK and Agent-loop gateway composition.
+- `alloyport-model-http`: bounded `reqwest`/`rustls` transport adapter with no redirects, proxy,
+  decompression, or internal retry.
 - `alloyport-events`: versioned producer/canonical events, lifecycle reduction, JSONL, and plain
   rendering shared with the Python executor bridge.
 - `alloyport-proto`: versioned worker-control, Artifact, and interaction Protobuf/gRPC protocols plus
@@ -73,11 +90,25 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p alloyport-cli -- about
+cargo run -p alloyport-cli -- inspect-migration \
+  fixtures/migrations/cuda-reduction-v1/migration-spec-v1.json \
+  fixtures/migrations/cuda-reduction-v1
 cargo run -p alloyport-cli -- event-demo
 # Python producer JSONL -> validated Rust rendering:
 python3 /data/projects/ascend-factory/harness/test_event_protocol.py --fixture \
   | cargo run -q -p alloyport-cli -- render-events
 ```
+
+Provider calls are explicit and potentially billable; no provider call occurs during normal tests
+or intake inspection. The removed one-shot candidate command has not been replaced by another
+one-shot path: the supported composition boundary is the iterative Agent Episode plus
+`alloyport-llm-provider`. The checked-in
+[`runtime-model-catalog.example.json`](docs/runtime-model-catalog.example.json) is deliberately
+non-routable and contains no credential.
+
+For glibc-independent x86-64 deployment artifacts, use the checked
+[portable Linux build](docs/portable-linux-builds.md). CI builds the static server and worker with
+Rust 1.88.0 and verifies that neither result is dynamically linked.
 
 Start the server locally, then run a configured GPU or NPU worker:
 

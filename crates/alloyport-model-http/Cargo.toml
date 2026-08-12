@@ -1,0 +1,20 @@
+[package]
+name = "alloyport-model-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloyport-core = { path = "../alloyport-core" }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls-no-provider", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1.53", features = ["fs"] }
+
+[dev-dependencies]
+serde_json = "1.0"
+tempfile = "3.27"
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread"] }

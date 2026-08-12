@@ -1,11 +1,18 @@
-use alloyport_core::{Gate, Route, TaskState};
+use alloyport_core::{
+    BundlePath, Gate, GenerationStrategy, MigrationSpec, TaskState, inspect_migration_source,
+};
 use alloyport_events::{
     Authority, Event, EventSequencer, FileChange, FileChangeKind, MessageRole, OutputStream,
     Producer, ProducerEvent, RunReducer, Visibility, producer_event_from_json_line, render_plain,
 };
 use std::env;
+use std::fs;
 use std::io::{self, BufRead, Write};
+use std::path::Path;
 use std::process::ExitCode;
+
+const MAX_SPEC_BYTES: u64 = 1024 * 1024;
+const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
 
 fn main() -> ExitCode {
     let mut arguments = env::args().skip(1);
@@ -17,14 +24,32 @@ fn main() -> ExitCode {
         }
         Some("lifecycle") => {
             println!("states: {:?}", lifecycle());
-            println!("routes: {:?}", routes());
+            println!("generation strategies: {:?}", generation_strategies());
             println!("release gates: {:?}", Gate::ALL);
             Ok(())
         }
         Some("render-events") => render_events(arguments.next().as_deref() == Some("--jsonl")),
         Some("event-demo") => render_demo(arguments.next().as_deref() == Some("--jsonl")),
+        Some("inspect-migration") => {
+            let spec_path = arguments
+                .next()
+                .ok_or_else(|| "inspect-migration requires SPEC_PATH and BUNDLE_ROOT".to_owned());
+            let bundle_root = arguments
+                .next()
+                .ok_or_else(|| "inspect-migration requires SPEC_PATH and BUNDLE_ROOT".to_owned());
+            match (spec_path, bundle_root, arguments.next()) {
+                (Ok(spec_path), Ok(bundle_root), None) => {
+                    inspect_migration(Path::new(&spec_path), Path::new(&bundle_root))
+                }
+                (Ok(_), Ok(_), Some(_)) => {
+                    Err("inspect-migration accepts exactly SPEC_PATH and BUNDLE_ROOT".to_owned())
+                }
+                (Err(error), _, _) | (_, Err(error), _) => Err(error),
+            }
+        }
         _ => Err(
-            "usage: alloyport-cli <about|lifecycle|render-events [--jsonl]|event-demo [--jsonl]>"
+            "usage: alloyport-cli <about|lifecycle|inspect-migration SPEC_PATH BUNDLE_ROOT|\
+             render-events [--jsonl]|event-demo [--jsonl]>"
                 .to_owned(),
         ),
     };
@@ -36,6 +61,100 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn inspect_migration(spec_path: &Path, bundle_root: &Path) -> Result<(), String> {
+    let spec_bytes = read_bounded_regular_file(spec_path, MAX_SPEC_BYTES, "MigrationSpec")?;
+    let spec: MigrationSpec = serde_json::from_slice(&spec_bytes)
+        .map_err(|error| format!("invalid MigrationSpec {}: {error}", spec_path.display()))?;
+    let root = fs::canonicalize(bundle_root)
+        .map_err(|error| format!("cannot open bundle root {}: {error}", bundle_root.display()))?;
+    if !root.is_dir() {
+        return Err(format!("bundle root {} is not a directory", root.display()));
+    }
+
+    let files = load_declared_sources(&spec, &root)?;
+    let report = inspect_migration_source(&spec, &files);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report)
+            .map_err(|error| format!("cannot render inspection report: {error}"))?
+    );
+    if report.passed {
+        Ok(())
+    } else {
+        Err("migration intake inspection failed".to_owned())
+    }
+}
+
+pub(crate) fn load_declared_sources(
+    spec: &MigrationSpec,
+    bundle_root: &Path,
+) -> Result<std::collections::BTreeMap<BundlePath, String>, String> {
+    let paths = spec
+        .sources()
+        .device_sources()
+        .iter()
+        .chain(spec.sources().host_sources())
+        .chain(spec.sources().build_files());
+    let mut files = std::collections::BTreeMap::new();
+
+    for relative in paths {
+        let candidate = bundle_root.join(relative.as_str());
+        let metadata = match fs::symlink_metadata(&candidate) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect declared file {}: {error}",
+                    relative.as_str()
+                ));
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "declared source {} must be a regular non-symlink file",
+                relative.as_str()
+            ));
+        }
+        let canonical = fs::canonicalize(&candidate).map_err(|error| {
+            format!(
+                "cannot resolve declared file {}: {error}",
+                relative.as_str()
+            )
+        })?;
+        if !canonical.starts_with(bundle_root) {
+            return Err(format!(
+                "declared source {} escapes the bundle root",
+                relative.as_str()
+            ));
+        }
+        let bytes = read_bounded_regular_file(&canonical, MAX_SOURCE_BYTES, "source file")?;
+        let contents = String::from_utf8(bytes)
+            .map_err(|_| format!("declared source {} is not UTF-8", relative.as_str()))?;
+        files.insert(relative.clone(), contents);
+    }
+    Ok(files)
+}
+
+pub(crate) fn read_bounded_regular_file(
+    path: &Path,
+    limit: u64,
+    kind: &str,
+) -> Result<Vec<u8>, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect {kind} {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!("{kind} {} must be a regular file", path.display()));
+    }
+    if metadata.len() > limit {
+        return Err(format!(
+            "{kind} {} is {} bytes; limit is {limit}",
+            path.display(),
+            metadata.len()
+        ));
+    }
+    fs::read(path).map_err(|error| format!("cannot read {kind} {}: {error}", path.display()))
 }
 
 fn render_events(jsonl: bool) -> Result<(), String> {
@@ -266,25 +385,48 @@ fn serde_json_value(variant: &str) -> serde_json::Value {
     serde_json::Value::Object(value)
 }
 
-const fn lifecycle() -> [TaskState; 8] {
+const fn lifecycle() -> [TaskState; 10] {
     [
         TaskState::Captured,
         TaskState::Specified,
-        TaskState::Routed,
-        TaskState::Searching,
+        TaskState::Generating,
+        TaskState::Building,
         TaskState::Verifying,
+        TaskState::Optimizing,
+        TaskState::Integrating,
         TaskState::Releasable,
         TaskState::Released,
         TaskState::Failed,
     ]
 }
 
-const fn routes() -> [Route; 5] {
+const fn generation_strategies() -> [GenerationStrategy; 4] {
     [
-        Route::Keep,
-        Route::Reuse,
-        Route::Compile,
-        Route::PortableKernel,
-        Route::NativeKernel,
+        GenerationStrategy::DirectAscendC,
+        GenerationStrategy::AscendSimtBootstrap,
+        GenerationStrategy::VerifiedTemplateAdaptation,
+        GenerationStrategy::MemoryGuidedSynthesis,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_product_fixture_passes_filesystem_inspection() -> Result<(), String> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/migrations/cuda-reduction-v1");
+        let spec_path = root.join("migration-spec-v1.json");
+        let spec_bytes = read_bounded_regular_file(&spec_path, MAX_SPEC_BYTES, "MigrationSpec")?;
+        let spec: MigrationSpec = serde_json::from_slice(&spec_bytes)
+            .map_err(|error| format!("invalid fixture spec: {error}"))?;
+        let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
+        let files = load_declared_sources(&spec, &root)?;
+        let report = inspect_migration_source(&spec, &files);
+
+        assert!(report.passed, "{:?}", report.failures);
+        assert_eq!(report.inspected_files, 5);
+        Ok(())
+    }
 }

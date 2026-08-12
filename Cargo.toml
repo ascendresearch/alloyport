@@ -1,9 +1,12 @@
 [workspace]
 members = [
     "crates/alloyport-artifacts",
+    "crates/alloyport-candidate-tools",
     "crates/alloyport-cli",
     "crates/alloyport-core",
     "crates/alloyport-events",
+    "crates/alloyport-llm-provider",
+    "crates/alloyport-model-http",
     "crates/alloyport-proto",
     "crates/alloyport-server",
     "crates/alloyport-worker",

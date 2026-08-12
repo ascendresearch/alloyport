@@ -42,6 +42,20 @@ if lifecycle_backend_coupling=$(rg -n \
     violations+=("worker process lifecycle gained backend-specific composition: ${lifecycle_backend_coupling}")
 fi
 
+runtime_transport_files=(
+    crates/alloyport-worker
+    crates/alloyport-server
+    crates/alloyport-cli
+    docs/cuda-worker-config.example.json
+    docs/ascend-worker-config.example.json
+    docs/server-config.example.json
+)
+if legacy_runtime_transport=$(rg -n -i \
+    '\bssh\b|\bscp\b|\brsync\b|AF_SSH_KEY|StrictHostKeyChecking|ssh[_-]?(host|key)|remote[_-]?(root|shell)' \
+    "${runtime_transport_files[@]}"); then
+    violations+=("legacy SSH/SCP transport returned to AlloyPort runtime or process configuration: ${legacy_runtime_transport}")
+fi
+
 server_main=crates/alloyport-server/src/main.rs
 server_main_lines=$(wc -l < "$server_main")
 if ((server_main_lines > 20)); then
@@ -498,6 +512,42 @@ if ! rg -q '^pub const MAX_WORKER_TO_SERVER_MESSAGE_BYTES' crates/alloyport-prot
     || ! rg -q 'validate_worker_frame\(&frame\)' \
         crates/alloyport-server/src/observation_ingress.rs; then
     violations+=("internal gRPC adapters no longer share explicit message envelopes and bounded preview validation")
+fi
+
+if curl_runtime=$(rg -n -i '\bcurl\b|DeepSeekCurlTransport|candidate_transport' crates \
+    -g '*.rs' -g 'Cargo.toml'); then
+    violations+=("removed curl model transport returned to production code: ${curl_runtime}")
+fi
+if provider_vendor_branch=$(rg -n -i '\bdeepseek\b|\.vendor\(' \
+    crates/alloyport-llm-provider/src/lib.rs crates/alloyport-model-http/src/lib.rs); then
+    violations+=("LLM Provider SDK or HTTP transport gained a vendor/model branch: ${provider_vendor_branch}")
+fi
+if ! rg -q '^pub struct LlmProviderSdk' crates/alloyport-llm-provider/src/lib.rs \
+    || ! rg -q 'impl<S, T> ModelGateway for ProviderModelGateway' \
+        crates/alloyport-llm-provider/src/lib.rs \
+    || ! rg -q 'pub async fn advance' crates/alloyport-core/src/agent_runtime.rs; then
+    violations+=("Agent loop no longer calls the independent async LLM Provider SDK through ModelGateway")
+fi
+if reqwest_outside_adapter=$(rg -n '\breqwest\b' crates -g 'Cargo.toml' \
+    | rg -v '^crates/alloyport-model-http/Cargo.toml:'); then
+    violations+=("reqwest escaped the dedicated model HTTP adapter: ${reqwest_outside_adapter}")
+fi
+if source_gate_authority=$(rg -n \
+    'SourceGateReceipt|evaluate_source_gate|SOURCE_GATE_REVISION' \
+    crates/alloyport-llm-provider crates/alloyport-model-http crates/alloyport-cli); then
+    violations+=("Source Gate authority escaped core/candidate-tool boundaries: ${source_gate_authority}")
+fi
+if ! rg -q '^pub struct CandidateToolGateway' \
+    crates/alloyport-candidate-tools/src/gateway.rs \
+    || ! rg -q '^impl AgentToolGateway for CandidateToolGateway' \
+        crates/alloyport-candidate-tools/src/gateway.rs \
+    || ! rg -q '^pub fn evaluate_source_gate' crates/alloyport-core/src/candidate_source.rs \
+    || ! rg -q 'persist_noclobber' crates/alloyport-candidate-tools/src/materialization.rs; then
+    violations+=("candidate submission, independent Source Gate, or create-only materialization boundary is missing")
+fi
+if candidate_tool_provider_coupling=$(rg -n -i \
+    '\b(deepseek|anthropic|openai|reqwest|curl)\b' crates/alloyport-candidate-tools); then
+    violations+=("candidate tools gained provider or HTTP coupling: ${candidate_tool_provider_coupling}")
 fi
 
 if ((${#violations[@]} != 0)); then

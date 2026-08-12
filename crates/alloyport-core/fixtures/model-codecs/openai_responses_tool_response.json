@@ -1,0 +1,42 @@
+{
+  "id": "resp_fixture_1",
+  "model": "fixture-model-actual",
+  "status": "completed",
+  "output": [
+    {
+      "type": "reasoning",
+      "id": "rs_fixture_1",
+      "summary": [],
+      "encrypted_content": "encrypted-reasoning-state"
+    },
+    {
+      "type": "function_call",
+      "id": "fc_fixture_a",
+      "call_id": "resp_call_a",
+      "name": "inspect_candidate",
+      "arguments": "{broken",
+      "status": "completed"
+    },
+    {
+      "type": "function_call",
+      "id": "fc_fixture_b",
+      "call_id": "resp_call_b",
+      "name": "run_gate",
+      "arguments": "{\"gate\":\"source\"}",
+      "status": "completed"
+    },
+    {
+      "type": "message",
+      "id": "msg_fixture_1",
+      "role": "assistant",
+      "status": "completed",
+      "content": [{"type": "output_text", "text": "I will inspect both candidates.", "annotations": []}]
+    }
+  ],
+  "usage": {
+    "input_tokens": 19,
+    "output_tokens": 11,
+    "total_tokens": 30,
+    "input_tokens_details": {"cached_tokens": 5}
+  }
+}

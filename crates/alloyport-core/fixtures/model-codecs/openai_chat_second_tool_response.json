@@ -1,0 +1,23 @@
+{
+  "id": "chatcmpl_fixture_2",
+  "model": "fixture-model-actual",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "reasoning_content": "second-opaque-compatible-profile-state",
+        "tool_calls": [
+          {
+            "id": "chat_call_c",
+            "type": "function",
+            "function": {"name": "inspect_candidate", "arguments": "{\"candidate_id\":\"candidate-b\"}"}
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {"prompt_tokens": 31, "completion_tokens": 7, "total_tokens": 38}
+}

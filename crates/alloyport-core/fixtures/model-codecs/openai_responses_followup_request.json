@@ -1,0 +1,30 @@
+{
+  "model": "fixture-model",
+  "instructions": "You are AlloyPort.",
+  "input": [
+    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Port vector_add."}]},
+    {"type": "reasoning", "id": "rs_fixture_1", "summary": [], "encrypted_content": "encrypted-reasoning-state"},
+    {"type": "function_call", "id": "fc_fixture_a", "call_id": "resp_call_a", "name": "inspect_candidate", "arguments": "{broken", "status": "completed"},
+    {"type": "function_call", "id": "fc_fixture_b", "call_id": "resp_call_b", "name": "run_gate", "arguments": "{\"gate\":\"source\"}", "status": "completed"},
+    {"type": "message", "id": "msg_fixture_1", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "I will inspect both candidates.", "annotations": []}]},
+    {"type": "function_call_output", "call_id": "resp_call_a", "output": "inspection-ok"},
+    {"type": "function_call_output", "call_id": "resp_call_b", "output": "source-gate-failed"}
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "inspect_candidate",
+      "description": "Inspect a candidate.",
+      "parameters": {"type": "object", "properties": {"candidate_id": {"type": "string"}}},
+      "strict": true
+    },
+    {
+      "type": "function",
+      "name": "run_gate",
+      "description": "Run one candidate gate.",
+      "parameters": {"type": "object", "properties": {"gate": {"type": "string"}}}
+    }
+  ],
+  "max_output_tokens": 4096,
+  "store": false
+}

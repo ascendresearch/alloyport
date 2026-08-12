@@ -1,13 +1,55 @@
 //! Domain primitives for `AlloyPort`'s verified delivery lifecycle.
 
+mod agent;
+mod agent_runtime;
+mod agent_runtime_helpers;
+mod agent_runtime_policy;
+mod agent_runtime_support;
 mod artifact;
 mod assignment;
+mod candidate_source;
 mod device;
 mod execution;
+mod generation;
 mod identity;
+mod inspection;
+mod migration;
+mod model;
+mod model_codec;
+mod model_codec_anthropic;
+mod model_codec_chat;
+mod model_codec_responses;
+mod model_gateway;
+mod model_transport;
+mod model_transport_policy;
 
+#[cfg(test)]
+mod model_codec_tests;
+
+pub use agent::{
+    AGENT_EPISODE_SCHEMA_V1, AgentEpisodeRecord, AgentRecordError, EpisodeSpec, EpisodeStatus,
+    SEARCH_RUN_SCHEMA_V1, SearchPhase, SearchRunRecord, SearchRunSpec, SearchStatus,
+    TOOL_OPERATION_SCHEMA_V1, ToolEffectClass, ToolOperationRecord, ToolOperationSpec,
+    ToolOperationStatus, ToolResultAuthority,
+};
+pub use agent_runtime::{AgentLoopRunner, AgentLoopRuntimeSpec, DurableEpisodeState};
+pub use agent_runtime_helpers::AgentLoopRuntimeError;
+pub use agent_runtime_helpers::derive_model_continuation_input_digest;
+pub use agent_runtime_policy::AgentLoopPolicy;
+pub use agent_runtime_support::{
+    AgentLoopAdvance, AgentRuntimeFaultInjector, AgentRuntimeFaultPoint, AgentToolGateway,
+    EpisodeRepository, EpisodeRepositoryError, InMemoryEpisodeRepository, NoAgentRuntimeFault,
+    OneShotAgentRuntimeFault, RuntimeToolDescriptor, ScriptedFakeToolGateway, ScriptedToolStep,
+    ToolGatewayAction, ToolGatewayError, ToolGatewayOutcome, ToolInvocation, VersionedEpisodeState,
+};
 pub use artifact::{ArtifactDescriptor, DigestParseError, Sha256Digest};
 pub use assignment::{AssignmentContract, EnvironmentEntry, ExecutionContract, ResourceContract};
+pub use candidate_source::{
+    CANDIDATE_SOURCE_MANIFEST_SCHEMA_V1, CandidateSourceError, CandidateSourceFile,
+    CandidateSourceManifest, CandidateSourceManifestSpec, SOURCE_GATE_RECEIPT_SCHEMA_V1,
+    SOURCE_GATE_REVISION_V1, SourceGateFailure, SourceGateFailureKind, SourceGateReceipt,
+    evaluate_source_gate,
+};
 pub use device::{
     AcceleratorDevice, DeviceHealth, DeviceHealthError, DeviceLease, DeviceObservation,
 };
@@ -15,32 +57,69 @@ pub use execution::{
     AttemptOutcome, AttemptOutcomeError, ExecutionKind, ExecutionKindError, NetworkPolicy,
     NetworkPolicyError, RejectionReason, RejectionReasonError,
 };
+pub use generation::{
+    AUTHORING_REQUEST_SCHEMA_V1, CandidateAuthoringError, CandidateAuthoringRequest,
+    CandidateProposal, GeneratedSourceBundle, GeneratedSourceError, GeneratedSourceFile,
+    GeneratedSourceKind, ModelInvocation, SourceDocument,
+};
 pub use identity::{
     AssignmentId, AssignmentIdError, AttemptId, AttemptIdError, CandidateId, CandidateIdError,
-    TaskId, TaskIdError,
+    EpisodeId, EpisodeIdError, ModelAttemptId, ModelAttemptIdError, SearchRunId, SearchRunIdError,
+    TaskId, TaskIdError, ToolOperationId, ToolOperationIdError, TurnId, TurnIdError,
+};
+pub use inspection::{
+    InspectionEvidence, InspectionEvidenceKind, InspectionFailure, InspectionFailureKind,
+    MigrationInspection, inspect_migration_source,
+};
+pub use migration::{
+    AscendTarget, BundlePath, CudaSourceSet, MIGRATION_SPEC_SCHEMA_V1, MigrationSpec,
+    MigrationSpecError, PublicEntryPoint, ReferenceWorkload,
+};
+pub use model::{
+    MODEL_ATTEMPT_SCHEMA_V1, ModelAttemptError, ModelAttemptRecord, ModelAttemptSpec,
+    ModelAttemptStatus, ModelAuthConfig, ModelCatalogError, ModelDataBoundary,
+    ModelDeploymentConfig, ModelGenerationSettings, ModelProfileConfig, ModelUsage, ProtocolConfig,
+    ProtocolKind, RUNTIME_MODEL_CATALOG_SCHEMA_V1, ReasoningEffort, ReasoningMode,
+    ReasoningSettings, ResolvedRuntimeModel, RuntimeModelCatalog, RuntimeModelConfig,
+    ToolSchemaDialect,
+};
+pub use model_codec::{
+    CodecError, CodecLimits, CodecToolDefinition, DecodedModelTurn, ModelVisibleToolResult,
+    NATIVE_CONTINUATION_SCHEMA_V1, NativeContinuation, NativeTurnInput, PreparedModelPayload,
+    ProtocolCodec, RawModelResponseRef,
+};
+pub use model_codec_anthropic::AnthropicMessagesCodec;
+pub use model_codec_chat::OpenAiChatCompletionsCodec;
+pub use model_codec_responses::OpenAiResponsesCodec;
+pub use model_gateway::{
+    GatewayToolCall, GatewayTurn, GatewayTurnExchange, ModelGateway, ModelGatewayError,
+    ModelGatewayFuture, ModelGatewayOutcome, ModelTurnRequest, NormalizedStopReason,
+    ScriptedFakeModelGateway, ScriptedGatewayStep, TURN_RECORD_SCHEMA_V1, TurnRecord,
+    TurnRecordError, TurnSpec,
+};
+pub use model_transport::{
+    ModelTransport, ModelTransportFailure, ModelTransportFailureKind, ModelTransportFuture,
+    ModelTransportOutcome, ModelTransportRetryHint, RawModelResponse, ScriptedFakeModelTransport,
+    ScriptedModelTransportStep,
+};
+pub use model_transport_policy::{
+    ModelProxyPolicy, ModelRedirectPolicy, ModelTlsMinimumVersion, ModelTransportPolicy,
 };
 
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
-/// Target accelerator selected for a porting task.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum TargetBackend {
-    Ascend,
-    AmdHip,
-    IntelXpu,
-    Other(String),
-}
-
-/// Implementation route selected after capture and contract construction.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum Route {
-    Keep,
-    Reuse,
-    Compile,
-    PortableKernel,
-    NativeKernel,
+/// Strategy used to produce an Ascend C candidate.
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum GenerationStrategy {
+    DirectAscendC,
+    AscendSimtBootstrap,
+    VerifiedTemplateAdaptation,
+    MemoryGuidedSynthesis,
 }
 
 /// Durable task lifecycle. Terminal states have no outgoing transitions.
@@ -48,9 +127,11 @@ pub enum Route {
 pub enum TaskState {
     Captured,
     Specified,
-    Routed,
-    Searching,
+    Generating,
+    Building,
     Verifying,
+    Optimizing,
+    Integrating,
     Releasable,
     Released,
     Failed,
@@ -63,26 +144,37 @@ impl TaskState {
         matches!(
             (self, next),
             (Self::Captured, Self::Specified | Self::Failed)
-                | (Self::Specified, Self::Routed | Self::Failed)
-                | (Self::Routed, Self::Searching | Self::Failed)
-                | (Self::Searching, Self::Verifying | Self::Failed)
+                | (Self::Specified, Self::Generating | Self::Failed)
+                | (Self::Generating, Self::Building | Self::Failed)
+                | (
+                    Self::Building,
+                    Self::Generating | Self::Verifying | Self::Failed
+                )
                 | (
                     Self::Verifying,
-                    Self::Searching | Self::Releasable | Self::Failed
+                    Self::Generating | Self::Optimizing | Self::Failed
+                )
+                | (
+                    Self::Optimizing,
+                    Self::Building | Self::Integrating | Self::Failed
+                )
+                | (
+                    Self::Integrating,
+                    Self::Generating | Self::Releasable | Self::Failed
                 )
                 | (Self::Releasable, Self::Released | Self::Failed)
         )
     }
 }
 
-/// A porting task with explicit lifecycle and selected route.
+/// A migration task with explicit lifecycle and selected generation strategy.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Task {
     pub id: TaskId,
     pub source_revision: String,
-    pub target: TargetBackend,
+    pub migration_spec_digest: Option<Sha256Digest>,
     pub state: TaskState,
-    pub route: Option<Route>,
+    pub generation_strategy: Option<GenerationStrategy>,
 }
 
 impl Task {
@@ -108,7 +200,8 @@ impl Task {
 pub struct Candidate {
     pub id: CandidateId,
     pub task_id: TaskId,
-    pub route: Route,
+    pub migration_spec_digest: Sha256Digest,
+    pub generation_strategy: GenerationStrategy,
     pub parent_id: Option<CandidateId>,
     pub source_digest: Sha256Digest,
     pub artifact_digest: Option<Sha256Digest>,
@@ -118,6 +211,7 @@ pub struct Candidate {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Gate {
     Contract,
+    Source,
     Build,
     Correctness,
     Performance,
@@ -125,8 +219,9 @@ pub enum Gate {
 }
 
 impl Gate {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Contract,
+        Self::Source,
         Self::Build,
         Self::Correctness,
         Self::Performance,
@@ -150,6 +245,7 @@ pub struct ReleaseManifest {
     pub supported_domain: String,
     pub dispatch_guard: String,
     pub fallback: String,
+    pub source_artifact_digests: BTreeSet<Sha256Digest>,
     pub evidence_digests: BTreeSet<Sha256Digest>,
 }
 
@@ -164,8 +260,12 @@ impl ReleaseManifest {
         supported_domain: impl Into<String>,
         dispatch_guard: impl Into<String>,
         fallback: impl Into<String>,
+        source_artifact_digests: BTreeSet<Sha256Digest>,
         verdicts: &[Verdict],
     ) -> Result<Self, ReleaseError> {
+        if source_artifact_digests.is_empty() {
+            return Err(ReleaseError::MissingSourceArtifacts);
+        }
         let mut passed = BTreeSet::new();
         let mut evidence_digests = BTreeSet::new();
 
@@ -196,6 +296,7 @@ impl ReleaseManifest {
             supported_domain: supported_domain.into(),
             dispatch_guard: dispatch_guard.into(),
             fallback: fallback.into(),
+            source_artifact_digests,
             evidence_digests,
         })
     }
@@ -226,6 +327,7 @@ pub enum ReleaseError {
     FailedGate(Gate),
     MissingEvidence(Gate),
     MissingGate(Gate),
+    MissingSourceArtifacts,
 }
 
 impl Display for ReleaseError {
@@ -236,6 +338,9 @@ impl Display for ReleaseError {
             Self::FailedGate(gate) => write!(formatter, "gate {gate:?} did not pass"),
             Self::MissingEvidence(gate) => write!(formatter, "gate {gate:?} has no receipts"),
             Self::MissingGate(gate) => write!(formatter, "gate {gate:?} has no verdict"),
+            Self::MissingSourceArtifacts => {
+                write!(formatter, "release has no generated source artifacts")
+            }
         }
     }
 }
@@ -258,10 +363,17 @@ mod tests {
             .collect()
     }
 
+    fn source_artifacts() -> BTreeSet<Sha256Digest> {
+        [Sha256Digest::digest_bytes(b"ascend-c-source")]
+            .into_iter()
+            .collect()
+    }
+
     #[test]
     fn lifecycle_allows_rework_after_verification() {
-        assert!(TaskState::Verifying.can_transition_to(TaskState::Searching));
-        assert!(!TaskState::Released.can_transition_to(TaskState::Searching));
+        assert!(TaskState::Verifying.can_transition_to(TaskState::Generating));
+        assert!(TaskState::Optimizing.can_transition_to(TaskState::Building));
+        assert!(!TaskState::Released.can_transition_to(TaskState::Generating));
     }
 
     #[test]
@@ -275,6 +387,7 @@ mod tests {
             "M,N,K divisible by 16",
             "shape_guard_v1",
             "torch_reference",
+            source_artifacts(),
             &verdicts,
         )
         .expect_err("a release without performance evidence must fail");
@@ -291,10 +404,48 @@ mod tests {
             "all tested shapes",
             "always",
             "torch_reference",
+            source_artifacts(),
             &verdicts,
         )
         .expect("all gates have independent evidence");
 
         assert_eq!(manifest.evidence_digests.len(), Gate::ALL.len());
+        assert_eq!(manifest.source_artifact_digests.len(), 1);
+    }
+
+    #[test]
+    fn release_requires_generated_source_even_when_gates_pass() {
+        let candidate_id = CandidateId::try_from("candidate-1").expect("valid candidate ID");
+        let verdicts = passing_verdicts(&candidate_id);
+        let error = ReleaseManifest::from_verdicts(
+            candidate_id,
+            "all tested shapes",
+            "always",
+            "return unsupported-domain status",
+            BTreeSet::new(),
+            &verdicts,
+        )
+        .expect_err("a source-less release is outside the product contract");
+
+        assert_eq!(error, ReleaseError::MissingSourceArtifacts);
+    }
+
+    #[test]
+    fn candidate_is_bound_to_spec_and_generation_strategy() {
+        let spec_digest = Sha256Digest::digest_bytes(b"migration-spec-v1");
+        let candidate = Candidate {
+            id: CandidateId::try_from("candidate-1").expect("candidate ID"),
+            task_id: TaskId::try_from("task-1").expect("task ID"),
+            migration_spec_digest: spec_digest,
+            generation_strategy: GenerationStrategy::DirectAscendC,
+            parent_id: None,
+            source_digest: Sha256Digest::digest_bytes(b"generated-source"),
+            artifact_digest: None,
+        };
+
+        assert_eq!(
+            candidate.generation_strategy,
+            GenerationStrategy::DirectAscendC
+        );
     }
 }

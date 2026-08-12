@@ -1,11 +1,19 @@
 # Architecture evolution plan
 
 - Date: 2026-08-11
-- Status: Active
+- Status: Infrastructure baseline complete; frozen by default
 - Motivation: retain AlloyPort's verified accelerator lifecycle while adopting the useful
   modular-monolith, port, composition-root, and API-boundary practices demonstrated by Shepherd
 
 ## Outcome
+
+> This plan completed the runtime and modular-monolith baseline. Product work now follows
+> [`PRODUCT_EXECUTION_PLAN.md`](PRODUCT_EXECUTION_PLAN.md). Until its first migration slice passes,
+> new infrastructure work requires a demonstrated blocker in that slice.
+
+The active product change is [Design 0025](design/0025-pluggable-llm-provider-architecture.md), a
+durable iterative Agent Episode and three native LLM protocol codecs. It was accepted on 2026-08-12;
+implementation now follows its fake-first sequence without reopening deferred infrastructure.
 
 AlloyPort remains a small modular monolith with separate server and outbound-worker processes. It
 will not copy Shepherd's crate count or expose a broad public API before a real product use case
@@ -157,6 +165,10 @@ canonical Interaction events, wire messages, and durable audit/evidence as separ
   split in backend-neutral worker coordination, while Artifact upload limits remain configurable.
 - [x] Strict schema-1 server configuration, explicit locator precedence, file-relative paths, and a
   shared serving/identity-administration command boundary introduced.
+- [x] Rust 1.88.0 CI builds locked static-musl server/worker release artifacts, verifies linkage, and
+  emits checksums for deployment on older-glibc x86-64 workers.
+- [x] AlloyPort runtime and process configuration use outbound gRPC only; architecture CI rejects
+  legacy SSH/SCP/rsync transports and their host/key/root/shell configuration from returning.
 
 ## Verification
 

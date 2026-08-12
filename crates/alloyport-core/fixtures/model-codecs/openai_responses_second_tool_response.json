@@ -1,0 +1,22 @@
+{
+  "id": "resp_fixture_2",
+  "model": "fixture-model-actual",
+  "status": "completed",
+  "output": [
+    {
+      "type": "reasoning",
+      "id": "rs_fixture_2",
+      "summary": [],
+      "encrypted_content": "second-encrypted-reasoning-state"
+    },
+    {
+      "type": "function_call",
+      "id": "fc_fixture_c",
+      "call_id": "resp_call_c",
+      "name": "inspect_candidate",
+      "arguments": "{\"candidate_id\":\"candidate-b\"}",
+      "status": "completed"
+    }
+  ],
+  "usage": {"input_tokens": 33, "output_tokens": 8, "total_tokens": 41}
+}

@@ -115,6 +115,41 @@ validated_id!(
     "candidate"
 );
 
+validated_id!(
+    /// Stable identity of one bounded candidate-search frontier.
+    SearchRunId,
+    SearchRunIdError,
+    "search run"
+);
+
+validated_id!(
+    /// Stable identity of one pinned runtime-model episode.
+    EpisodeId,
+    EpisodeIdError,
+    "episode"
+);
+
+validated_id!(
+    /// Stable identity of one decoded model turn inside an episode.
+    TurnId,
+    TurnIdError,
+    "turn"
+);
+
+validated_id!(
+    /// Stable identity of one possibly billed external model request.
+    ModelAttemptId,
+    ModelAttemptIdError,
+    "model attempt"
+);
+
+validated_id!(
+    /// Stable identity of one logical tool operation across restart and reconciliation.
+    ToolOperationId,
+    ToolOperationIdError,
+    "tool operation"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +175,29 @@ mod tests {
         let candidate_id = CandidateId::try_from("candidate-1")?;
         assert_eq!(serde_json::to_string(&candidate_id)?, r#""candidate-1""#);
         assert!(CandidateId::try_from("  ").is_err());
+
+        let search_run_id = SearchRunId::try_from("search-1")?;
+        assert_eq!(serde_json::to_string(&search_run_id)?, r#""search-1""#);
+        assert!(SearchRunId::try_from("\n").is_err());
+
+        let episode_id = EpisodeId::try_from("episode-1")?;
+        assert_eq!(serde_json::to_string(&episode_id)?, r#""episode-1""#);
+        assert!(EpisodeId::try_from(" ").is_err());
+
+        let turn_id = TurnId::try_from("turn-1")?;
+        assert_eq!(serde_json::to_string(&turn_id)?, r#""turn-1""#);
+
+        let model_attempt_id = ModelAttemptId::try_from("model-attempt-1")?;
+        assert_eq!(
+            serde_json::to_string(&model_attempt_id)?,
+            r#""model-attempt-1""#
+        );
+
+        let tool_operation_id = ToolOperationId::try_from("tool-operation-1")?;
+        assert_eq!(
+            serde_json::to_string(&tool_operation_id)?,
+            r#""tool-operation-1""#
+        );
         Ok(())
     }
 }

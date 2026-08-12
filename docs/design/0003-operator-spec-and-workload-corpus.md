@@ -1,13 +1,12 @@
 # 0003: Operator specification and workload corpus
 
-- Status: Proposed
+- Status: Superseded by Design 0024; corpus principles retained
 - Date: 2026-08-09
 - Scope: semantic contracts, input domains, reference behavior, and test-corpus ownership
 
-> Revision required: [Design 0009](0009-product-definition-and-staged-cuda-scope.md) establishes
-> CUDA source as the migration object and Ascend C source as a mandatory output. This proposal must
-> be replaced by a CUDA `MigrationSpec` design before it can be accepted. Its corpus ownership and
-> evidence-separation principles remain useful; its PyTorch-operator framing is not authoritative.
+> [Design 0024](0024-migration-spec-v1-and-first-product-slice.md) replaces this proposal with CUDA
+> `MigrationSpec v1`. Its corpus ownership and evidence-separation principles remain useful; its
+> PyTorch-operator framing is not authoritative.
 
 ## Context
 

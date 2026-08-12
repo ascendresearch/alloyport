@@ -31,6 +31,8 @@ stable identifier.
 | 0021 | [Fixed Ascend worker execution contract](0021-fixed-ascend-worker-contract.md) | Accepted; fixed runtime and outbound gate implemented |
 | 0022 | [Standalone worker configuration and shared device selection](0022-standalone-worker-configuration-and-device-selection.md) | Accepted; first implementation slice complete |
 | 0023 | [Versioned server configuration](0023-versioned-server-configuration.md) | Accepted; first implementation slice complete |
+| 0024 | [MigrationSpec v1 and the first product slice](0024-migration-spec-v1-and-first-product-slice.md) | Accepted; contract, fixture, inspection, and authoring boundary implemented |
+| 0025 | [Durable iterative agent runtime and pluggable LLM protocols](0025-pluggable-llm-provider-architecture.md) | Accepted; domain/catalog/durable-fake-loop/codec slices implemented |
 
 ## Convention
 

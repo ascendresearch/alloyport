@@ -1,0 +1,13 @@
+{
+  "id": "msg_fixture_2",
+  "type": "message",
+  "role": "assistant",
+  "model": "fixture-model-actual",
+  "content": [
+    {"type": "thinking", "thinking": "second opaque thought", "signature": "second-signed-thinking-state"},
+    {"type": "tool_use", "id": "anthropic_call_c", "name": "inspect_candidate", "input": {"candidate_id": "candidate-b"}}
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 37, "output_tokens": 10}
+}

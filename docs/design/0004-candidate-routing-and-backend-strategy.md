@@ -1,13 +1,11 @@
 # 0004: Candidate routing and backend strategy
 
-- Status: Proposed
+- Status: Superseded by Design 0024
 - Date: 2026-08-09
 - Scope: implementation-route selection, backend boundaries, fallback, and candidate lineage
 
-> Revision required: [Design 0009](0009-product-definition-and-staged-cuda-scope.md) requires every
-> successful migration route to produce Ascend C source. The `KEEP`, framework-only `REUSE`, graph
-> `COMPILE`, and portable-kernel outcomes below cannot satisfy the product contract as written. This
-> proposal must be replaced before acceptance.
+> [Design 0024](0024-migration-spec-v1-and-first-product-slice.md) replaces these outcome routes with
+> generation strategies that all produce Ascend C. The historical ladder below is not authoritative.
 
 ## Context
 

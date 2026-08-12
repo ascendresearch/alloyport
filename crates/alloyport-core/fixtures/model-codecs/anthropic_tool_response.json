@@ -1,0 +1,16 @@
+{
+  "id": "msg_fixture_1",
+  "type": "message",
+  "role": "assistant",
+  "model": "fixture-model-actual",
+  "content": [
+    {"type": "thinking", "thinking": "opaque thought", "signature": "signed-thinking-state"},
+    {"type": "text", "text": "I will inspect both candidates."},
+    {"type": "tool_use", "id": "anthropic_call_a", "name": "inspect_candidate", "input": {"candidate_id": "candidate-a"}},
+    {"type": "redacted_thinking", "data": "redacted-thinking-state"},
+    {"type": "tool_use", "id": "anthropic_call_b", "name": "run_gate", "input": {"gate": "source"}}
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {"input_tokens": 23, "output_tokens": 13, "cache_read_input_tokens": 6}
+}

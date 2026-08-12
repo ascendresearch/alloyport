@@ -1,0 +1,33 @@
+{
+  "id": "chatcmpl_fixture_1",
+  "model": "fixture-model-actual",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "I will inspect both candidates.",
+        "reasoning_content": "opaque-compatible-profile-state",
+        "tool_calls": [
+          {
+            "id": "chat_call_a",
+            "type": "function",
+            "function": {"name": "inspect_candidate", "arguments": "{broken"}
+          },
+          {
+            "id": "chat_call_b",
+            "type": "function",
+            "function": {"name": "run_gate", "arguments": "{\"gate\":\"source\"}"}
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 17,
+    "completion_tokens": 9,
+    "total_tokens": 26,
+    "prompt_tokens_details": {"cached_tokens": 4}
+  }
+}

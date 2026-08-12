@@ -1,0 +1,46 @@
+{
+  "model": "fixture-model",
+  "messages": [
+    {"role": "system", "content": "You are AlloyPort."},
+    {"role": "user", "content": "Port vector_add."},
+    {
+      "role": "assistant",
+      "content": "I will inspect both candidates.",
+      "reasoning_content": "opaque-compatible-profile-state",
+      "tool_calls": [
+        {
+          "id": "chat_call_a",
+          "type": "function",
+          "function": {"name": "inspect_candidate", "arguments": "{broken"}
+        },
+        {
+          "id": "chat_call_b",
+          "type": "function",
+          "function": {"name": "run_gate", "arguments": "{\"gate\":\"source\"}"}
+        }
+      ]
+    },
+    {"role": "tool", "tool_call_id": "chat_call_a", "content": "inspection-ok"},
+    {"role": "tool", "tool_call_id": "chat_call_b", "content": "source-gate-failed"}
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "inspect_candidate",
+        "description": "Inspect a candidate.",
+        "parameters": {"type": "object", "properties": {"candidate_id": {"type": "string"}}},
+        "strict": true
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "run_gate",
+        "description": "Run one candidate gate.",
+        "parameters": {"type": "object", "properties": {"gate": {"type": "string"}}}
+      }
+    }
+  ],
+  "max_completion_tokens": 4096
+}

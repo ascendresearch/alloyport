@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "default_runtime_model": "deepseek-v4-pro-default",
+  "runtime_models": {
+    "deepseek-v4-pro-default": {
+      "wire_model": "deepseek-v4-pro",
+      "deployment": "configured-chat-endpoint",
+      "profile": "deepseek-v4-profile",
+      "settings": {
+        "max_output_tokens": 16384,
+        "temperature_millis": 200,
+        "reasoning": {"mode": "enabled", "effort": "high"}
+      }
+    }
+  },
+  "deployments": {
+    "configured-chat-endpoint": {
+      "vendor": "deployment-owner-label",
+      "protocol": {"kind": "openai_chat_completions"},
+      "endpoint": "https://api.example.invalid/v1/chat/completions",
+      "auth": {"kind": "bearer_file", "path": "/run/secrets/alloyport-model-key"},
+      "transport": {
+        "connect_timeout_millis": 5000,
+        "request_timeout_millis": 30000,
+        "max_request_bytes": 8388608,
+        "max_response_bytes": 8388608,
+        "max_response_header_bytes": 65536,
+        "max_diagnostic_bytes": 65536,
+        "tls_minimum_version": "tls12",
+        "redirects": "disabled",
+        "proxy": "disabled"
+      },
+      "data_boundary": "external_provider",
+      "conformance_receipt_digest": "sha256:6c1d6cedf276ea3fd7486a212fd62b32fbb9ecaa4dea70545486737199dd24ed"
+    }
+  },
+  "profiles": {
+    "deepseek-v4-profile": {
+      "supported_protocols": ["openai_chat_completions"],
+      "supports_tools": true,
+      "supports_parallel_tool_calls": true,
+      "supports_reasoning": true,
+      "tool_schema_dialect": "json_schema",
+      "max_context_tokens": 1000000,
+      "max_output_tokens": 384000
+    }
+  }
+}

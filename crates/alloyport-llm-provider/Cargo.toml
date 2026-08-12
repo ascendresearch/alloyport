@@ -1,0 +1,17 @@
+[package]
+name = "alloyport-llm-provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloyport-core = { path = "../alloyport-core" }
+alloyport-model-http = { path = "../alloyport-model-http" }
+
+[dev-dependencies]
+serde_json = "1.0"
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread"] }

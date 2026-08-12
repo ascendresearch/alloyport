@@ -1,0 +1,38 @@
+{
+  "model": "fixture-model",
+  "max_tokens": 4096,
+  "system": "You are AlloyPort.",
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "Port vector_add."}]},
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "thinking", "thinking": "opaque thought", "signature": "signed-thinking-state"},
+        {"type": "text", "text": "I will inspect both candidates."},
+        {"type": "tool_use", "id": "anthropic_call_a", "name": "inspect_candidate", "input": {"candidate_id": "candidate-a"}},
+        {"type": "redacted_thinking", "data": "redacted-thinking-state"},
+        {"type": "tool_use", "id": "anthropic_call_b", "name": "run_gate", "input": {"gate": "source"}}
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {"type": "tool_result", "tool_use_id": "anthropic_call_a", "content": "inspection-ok"},
+        {"type": "tool_result", "tool_use_id": "anthropic_call_b", "content": "source-gate-failed"}
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "inspect_candidate",
+      "description": "Inspect a candidate.",
+      "input_schema": {"type": "object", "properties": {"candidate_id": {"type": "string"}}},
+      "strict": true
+    },
+    {
+      "name": "run_gate",
+      "description": "Run one candidate gate.",
+      "input_schema": {"type": "object", "properties": {"gate": {"type": "string"}}}
+    }
+  ]
+}
