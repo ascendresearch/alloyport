@@ -27,16 +27,20 @@ not considered compatible merely because it implements the Rust trait.
    ownership, idempotent acquisition/release, immutable device-matched preflight evidence, terminal
    quarantine, and attempt-transition restrictions. A separate SQLite test proves leases and
    preflight evidence survive reopen. This is the persistence foundation shared by GPU/NPU guards.
-3. **Server assignment and attempt leases — next.** Separate assignment read/write and attempt
-   lifecycle contracts. Cover immutable admission, preparation visibility, atomic
-   dispatch/lease/outbox permission, renewal/expiry, stale late results, cancellation, and
-   reassignment linkage.
-4. **Artifact upload metadata.** Cover idempotent sessions, exact offsets, finalize retry classes,
+3. **Server attempt leases — implemented.** `AttemptLifecycleRepository` runs one contract against
+   SQLite and a focused memory reference. It covers identity binding, monotonic observation
+   transitions and duplicate classification, renewal/expiry, non-resurrection, stale late results,
+   cancel-before-send, cancellation acknowledgement versus execution termination, and terminal
+   cancellation. SQLite-only tests retain durable observation auditing and reassignment SQL.
+4. **Server assignment dispatch — next.** Run assignment read/write behavior against SQLite and a
+   focused reference, including immutable admission, preparation visibility/defer ordering,
+   dispatchability, reassignment linkage, and the atomic dispatch/lease/outbox permission boundary.
+5. **Artifact upload metadata.** Cover idempotent sessions, exact offsets, finalize retry classes,
    ownership, quota reservation, references, and reachability independently of SQLite-specific SQL.
-5. **Interaction persistence and replay.** Cover per-run sequence, deduplication/conflict, cursors,
+6. **Interaction persistence and replay.** Cover per-run sequence, deduplication/conflict, cursors,
    run grants/revocation, and replay-to-live boundaries without folding transport delivery into the
    persistence Port.
-6. **Execution backends and gRPC adapters.** Preserve typed failure classes, immutable assignment
+7. **Execution backends and gRPC adapters.** Preserve typed failure classes, immutable assignment
    identity, cancellation, terminal Artifact gating, and replay semantics across fake, CUDA, Ascend,
    and transport adapters. Hardware evidence remains a separate explicitly configured gate.
 

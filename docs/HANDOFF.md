@@ -759,8 +759,11 @@ same identity database for serving and offline administration. The first Port co
 also runs immutable Artifact semantics against filesystem and memory implementations. A second
 suite now applies the same known-attempt, exclusivity, idempotency, immutable preflight, terminal
 quarantine, and explicit-release rules to the SQLite worker journal and a focused memory fake;
-SQLite restart durability remains an adapter-specific test. The next structural slice is separate
-server assignment and attempt-lease contracts.
+SQLite restart durability remains an adapter-specific test. A third suite applies identity,
+monotonic observation, duplicate, renewal/expiry, non-resurrection, stale-result, and cancellation
+semantics to the server's SQLite attempt/lease adapter and a focused reference. Cancellation
+acknowledgement remains a control receipt; only the terminal observation proves execution ended.
+The next slice is server assignment dispatch, including atomic assignment/lease/outbox permission.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 

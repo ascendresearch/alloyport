@@ -152,6 +152,12 @@ pub trait AssignmentRepository: AssignmentReadRepository + AssignmentWriteReposi
 impl<T> AssignmentRepository for T where T: AssignmentReadRepository + AssignmentWriteRepository {}
 
 /// Durable attempt observations and lease lifecycle operations.
+///
+/// Implementations preserve immutable assignment/worker identity, monotonic attempt transitions,
+/// idempotent observation classification, and auditable leases. Heartbeats may renew only active,
+/// unexpired leases; an expired lease and its timestamp cannot be resurrected or rewritten. Late
+/// terminal observations are retained as stale without replacing `LeaseExpired`. Cancellation
+/// acknowledgement proves receipt of control intent but does not itself prove execution ended.
 #[allow(clippy::missing_errors_doc)]
 pub trait AttemptLifecycleRepository: Debug + Send + Sync {
     fn observe_attempt(

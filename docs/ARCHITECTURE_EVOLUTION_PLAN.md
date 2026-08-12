@@ -134,8 +134,10 @@ canonical Interaction events, wire messages, and durable audit/evidence as separ
   lifecycle separated; periodic tasks cooperatively cancel and drain within a configured bound.
 - [x] Reusable Port contract suites run immutable Artifact/retention semantics against filesystem
   and memory adapters, and shared GPU/NPU device-lease semantics against SQLite and a focused fake.
+- [x] Server attempt/lease lifecycle contract runs identity, transition, duplicate, renewal,
+  expiry, stale-result, and cancellation semantics against SQLite and a focused reference.
 - [ ] Remaining high-value Port contract suites implemented in the order recorded in
-  `PORT_CONTRACTS.md`, beginning with server assignment and attempt leases.
+  `PORT_CONTRACTS.md`, beginning with server assignment dispatch.
 - [ ] Common gRPC middleware/error policy established.
 - [x] Strict schema-1 server configuration, explicit locator precedence, file-relative paths, and a
   shared serving/identity-administration command boundary introduced.

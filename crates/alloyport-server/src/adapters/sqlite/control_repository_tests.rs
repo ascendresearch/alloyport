@@ -1,10 +1,9 @@
 use super::*;
 use crate::storage::{
     AssignmentContract, AssignmentDeliveryPreparation, AssignmentReadRepository,
-    AssignmentWriteRepository, AttemptLifecycleRepository, AttemptState, CancellationStoreOutcome,
-    ConnectionRegistration, ObservationDisposition, ObservedAttempt, RepositoryError,
-    ServerOutboxFrame, ServerOutboxRepository, StoreAssignmentOutcome, WorkerConnectionRepository,
-    WorkerRegistration,
+    AssignmentWriteRepository, AttemptLifecycleRepository, AttemptState, ConnectionRegistration,
+    ObservationDisposition, ObservedAttempt, RepositoryError, ServerOutboxFrame,
+    ServerOutboxRepository, StoreAssignmentOutcome, WorkerConnectionRepository, WorkerRegistration,
 };
 use alloyport_core::{AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind, TaskId};
 use std::error::Error;
@@ -294,80 +293,6 @@ fn expired_attempt_reassignment_creates_a_fresh_linked_contract() -> Result<(), 
             })),
         ))?,
         ObservationDisposition::Stale
-    );
-    Ok(())
-}
-
-#[test]
-fn active_heartbeat_renews_the_lease() -> Result<(), Box<dyn Error>> {
-    let repository = SqliteControlRepository::in_memory()?;
-    repository.store_assignment("worker-1", &contract(), 1_000)?;
-    prepare_test_assignment(&repository, "attempt-1", 1_000, 100)?;
-    repository.renew_active_leases("worker-1", &["attempt-1".to_owned()], 1_050, 100)?;
-    assert!(repository.expire_leases(1_100)?.is_empty());
-    assert_eq!(repository.expire_leases(1_150)?, vec!["attempt-1"]);
-    Ok(())
-}
-
-#[test]
-fn heartbeat_after_expiry_cannot_resurrect_a_lease() -> Result<(), Box<dyn Error>> {
-    let repository = SqliteControlRepository::in_memory()?;
-    repository.store_assignment("worker-1", &contract(), 1_000)?;
-    prepare_test_assignment(&repository, "attempt-1", 1_000, 100)?;
-    repository.renew_active_leases("worker-1", &["attempt-1".to_owned()], 1_101, 100)?;
-    assert_eq!(
-        repository
-            .assignment("attempt-1")?
-            .expect("attempt remains durable")
-            .state,
-        AttemptState::LeaseExpired
-    );
-    assert_eq!(
-        repository
-            .lease("attempt-1")?
-            .expect("lease remains auditable")
-            .expired_at_ms,
-        Some(1_101)
-    );
-    Ok(())
-}
-
-#[test]
-fn cancellation_cannot_resurrect_expired_work() -> Result<(), Box<dyn Error>> {
-    let repository = SqliteControlRepository::in_memory()?;
-    repository.store_assignment("worker-1", &contract(), 1_000)?;
-    assert_eq!(
-        repository
-            .request_cancellation("attempt-1", "cancel queued", 1_001)?
-            .outcome,
-        CancellationStoreOutcome::CancelledBeforeSend
-    );
-    assert_eq!(
-        repository
-            .assignment("attempt-1")?
-            .expect("cancelled assignment remains auditable")
-            .state,
-        AttemptState::Cancelled
-    );
-
-    let mut second = contract();
-    second.assignment_id = AssignmentId::try_from("assignment-2")?;
-    second.attempt_id = AttemptId::try_from("attempt-2")?;
-    repository.store_assignment("worker-1", &second, 2_000)?;
-    prepare_test_assignment(&repository, "attempt-2", 2_000, 100)?;
-    assert_eq!(repository.expire_leases(2_100)?, vec!["attempt-2"]);
-    assert_eq!(
-        repository
-            .request_cancellation("attempt-2", "too late", 2_101)?
-            .outcome,
-        CancellationStoreOutcome::AlreadyTerminal
-    );
-    assert_eq!(
-        repository
-            .assignment("attempt-2")?
-            .expect("expired attempt remains auditable")
-            .state,
-        AttemptState::LeaseExpired
     );
     Ok(())
 }

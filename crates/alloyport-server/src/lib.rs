@@ -16,6 +16,8 @@ mod observation_ingress;
 mod persistence;
 mod session;
 pub mod storage;
+#[cfg(test)]
+mod storage_contract_tests;
 
 use adapters::sqlite::{SqliteControlRepository, SqliteInteractionStore};
 use alloyport_artifacts::Sha256Digest;
