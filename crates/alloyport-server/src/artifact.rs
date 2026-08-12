@@ -1,5 +1,6 @@
 //! Artifact gRPC edge over durable upload sessions and the filesystem CAS.
 
+use crate::grpc_status::upload_status;
 use crate::identity::ConnectionIdentityResolver;
 use crate::persistence::ServerPersistence;
 use crate::storage::Clock;
@@ -397,42 +398,5 @@ fn identity_to_proto(identity: ArtifactIdentity) -> artifact_v1::ArtifactIdentit
     artifact_v1::ArtifactIdentity {
         digest: identity.digest.to_string(),
         size_bytes: identity.size_bytes,
-    }
-}
-
-pub(crate) fn upload_status(error: UploadError) -> Status {
-    match error {
-        UploadError::NotFound(_) => Status::not_found(error.to_string()),
-        UploadError::OwnerMismatch => Status::permission_denied(error.to_string()),
-        UploadError::OffsetConflict { .. } => Status::aborted(error.to_string()),
-        UploadError::ChunkTooLarge { .. }
-        | UploadError::SizeLimitExceeded { .. }
-        | UploadError::QuotaExceeded { .. } => Status::resource_exhausted(error.to_string()),
-        UploadError::InvalidRequest(_)
-        | UploadError::ConflictingUploadKey
-        | UploadError::ConflictingReferenceKey => Status::invalid_argument(error.to_string()),
-        UploadError::ReferenceRevoked
-        | UploadError::GarbageCollectionPending(_)
-        | UploadError::Expired
-        | UploadError::Incomplete { .. }
-        | UploadError::InvalidState(_) => Status::failed_precondition(error.to_string()),
-        UploadError::Artifact(error) => artifact_status(&error),
-        UploadError::Storage(_) | UploadError::Io { .. } | UploadError::Corrupt(_) => {
-            Status::internal(error.to_string())
-        }
-    }
-}
-
-fn artifact_status(error: &alloyport_artifacts::ArtifactStoreError) -> Status {
-    match error {
-        alloyport_artifacts::ArtifactStoreError::DigestMismatch { .. }
-        | alloyport_artifacts::ArtifactStoreError::SizeMismatch { .. }
-        | alloyport_artifacts::ArtifactStoreError::IntegrityViolation { .. } => {
-            Status::data_loss(error.to_string())
-        }
-        alloyport_artifacts::ArtifactStoreError::SizeLimitExceeded { .. } => {
-            Status::resource_exhausted(error.to_string())
-        }
-        alloyport_artifacts::ArtifactStoreError::Io { .. } => Status::internal(error.to_string()),
     }
 }

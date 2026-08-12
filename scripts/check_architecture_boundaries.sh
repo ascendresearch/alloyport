@@ -441,6 +441,26 @@ if duplicated_accelerator_supervision=$(rg -n \
     crates/alloyport-worker/src/ascend_supervisor.rs); then
     violations+=("accelerator-specific supervisor duplicated shared container lifecycle policy: ${duplicated_accelerator_supervision}")
 fi
+if ! rg -q '^pub\(crate\) fn repository_status' \
+    crates/alloyport-server/src/grpc_status.rs \
+    || ! rg -q '^pub\(crate\) fn interaction_status' \
+        crates/alloyport-server/src/grpc_status.rs \
+    || ! rg -q '^pub\(crate\) fn upload_status' \
+        crates/alloyport-server/src/grpc_status.rs \
+    || ! rg -q '^pub\(crate\) fn identity_status' \
+        crates/alloyport-server/src/grpc_status.rs \
+    || ! rg -q '^    fn upload_and_artifact_error_codes_are_stable' \
+        crates/alloyport-server/src/grpc_status.rs; then
+    violations+=("gRPC adapters no longer share one domain-error status policy")
+fi
+if duplicated_grpc_status=$(rg -n \
+    '^pub\(crate\) fn upload_status|^fn artifact_status|^fn interaction_status|^pub\(super\) fn interaction_status|^pub\(super\) fn repository_status|^fn identity_status' \
+    crates/alloyport-server/src/artifact.rs \
+    crates/alloyport-server/src/control_transport.rs \
+    crates/alloyport-server/src/identity.rs \
+    crates/alloyport-server/src/interaction_service.rs); then
+    violations+=("service adapter duplicated shared gRPC status mapping: ${duplicated_grpc_status}")
+fi
 
 if ((${#violations[@]} != 0)); then
     printf 'Architecture boundary check failed:\n' >&2

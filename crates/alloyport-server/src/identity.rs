@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tonic::transport::server::{TcpConnectInfo, TlsConnectInfo};
 use tonic::{Extensions, Status};
 
+use crate::grpc_status::identity_status;
 use crate::persistence::ServerPersistence;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -260,20 +261,5 @@ pub(crate) fn validate_owner(owner_id: &str) -> Result<(), IdentityError> {
         Err(IdentityError::Invalid("owner ID is missing"))
     } else {
         Ok(())
-    }
-}
-
-fn identity_status(error: &IdentityError) -> Status {
-    match error {
-        IdentityError::NotEnrolled(_) | IdentityError::Certificate(_) => {
-            Status::unauthenticated(error.to_string())
-        }
-        IdentityError::Revoked(_)
-        | IdentityError::Replaced(_)
-        | IdentityError::Conflict(_)
-        | IdentityError::Invalid(_) => Status::permission_denied(error.to_string()),
-        IdentityError::Storage(_) | IdentityError::Corrupt(_) => {
-            Status::internal(error.to_string())
-        }
     }
 }

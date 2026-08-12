@@ -1,10 +1,11 @@
 //! gRPC control-stream adapter and wire/domain mappings.
 
 use super::WorkerControlService;
-use crate::interaction::{self, InteractionError};
+use crate::grpc_status::repository_status;
+use crate::interaction;
 use crate::storage::{
-    ArtifactIdentity, AssignmentContract, EnvironmentEntry, ExecutionContract, RepositoryError,
-    ResourceContract, WorkerCapabilities, WorkerRegistration,
+    ArtifactIdentity, AssignmentContract, EnvironmentEntry, ExecutionContract, ResourceContract,
+    WorkerCapabilities, WorkerRegistration,
 };
 use alloyport_core::{
     AcceleratorDevice, AssignmentId, AttemptId, CandidateId, ExecutionKind, NetworkPolicy, TaskId,
@@ -93,16 +94,6 @@ impl WorkerControl for WorkerControlService {
             outbound,
         ));
         Ok(Response::new(Box::pin(ReceiverStream::new(receiver))))
-    }
-}
-
-pub(super) fn repository_status(error: RepositoryError) -> Status {
-    match error {
-        RepositoryError::NotFound(detail) => Status::not_found(detail),
-        RepositoryError::IdentityMismatch(detail) => Status::permission_denied(detail),
-        RepositoryError::InvalidIdentity(detail) => Status::invalid_argument(detail),
-        RepositoryError::InvalidTransition { .. } => Status::failed_precondition(error.to_string()),
-        _ => Status::internal(error.to_string()),
     }
 }
 
@@ -313,21 +304,4 @@ pub(super) fn worker_event(
     frame.authority = Authority::Observed;
     frame.visibility = Visibility::User;
     frame
-}
-
-pub(super) fn interaction_status(error: &InteractionError) -> Status {
-    let detail = error.to_string();
-    match error {
-        InteractionError::InvalidFrame(_)
-        | InteractionError::ConflictingDedupKey(_)
-        | InteractionError::ConflictingOutput { .. }
-        | InteractionError::InvalidCursor { .. }
-        | InteractionError::RevokedRunGrant { .. }
-        | InteractionError::MissingRunGrant { .. }
-        | InteractionError::ValueOutOfRange(_) => Status::invalid_argument(detail),
-        InteractionError::Storage(_)
-        | InteractionError::Encoding(_)
-        | InteractionError::InvalidSubscriptionCapacity
-        | InteractionError::LockPoisoned => Status::internal(detail),
-    }
 }

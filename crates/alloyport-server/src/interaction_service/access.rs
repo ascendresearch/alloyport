@@ -1,6 +1,6 @@
 //! Identity resolution and durable run-access authorization policy.
 
-use super::interaction_status;
+use crate::grpc_status::interaction_status;
 use crate::identity::{ConnectionIdentityResolver, ResolvedConnectionIdentity};
 use crate::interaction::InteractionStore;
 use crate::persistence::ServerPersistence;

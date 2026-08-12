@@ -12,6 +12,7 @@ mod assignment_reconciliation;
 mod attempt_observer;
 mod attempt_projection;
 mod control_transport;
+mod grpc_status;
 pub mod identity;
 pub mod interaction;
 #[cfg(test)]
@@ -42,9 +43,9 @@ use alloyport_proto::v1::{
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR, ValidationError, validate_assignment};
 use control_transport::{
     artifact_to_identity, assignment_to_contract, contract_to_assignment, event_artifact,
-    expected_worker_message_id, hello_to_registration, interaction_status, repository_status,
-    worker_event,
+    expected_worker_message_id, hello_to_registration, worker_event,
 };
+use grpc_status::{interaction_status, repository_status, upload_status};
 use identity::{ConnectionIdentityResolver, ResolvedConnectionIdentity};
 use interaction::{
     AppendOutcome, InteractionError, InteractionHub, InteractionStore, RunGrantOutcome,
@@ -537,7 +538,7 @@ fn validate_and_grant_finished_artifacts(
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         let uploaded = metadata
             .completed_upload_session_by_key(worker_id, &reference_key)
-            .map_err(artifact::upload_status)?
+            .map_err(upload_status)?
             .ok_or_else(|| {
                 Status::failed_precondition(format!(
                     "terminal Artifact {reference_key} is not finalized by worker {worker_id}"
@@ -566,7 +567,7 @@ fn validate_and_grant_finished_artifacts(
                 now_ms,
                 retained_until_ms: None,
             })
-            .map_err(artifact::upload_status)?;
+            .map_err(upload_status)?;
     }
     Ok(())
 }

@@ -4,6 +4,7 @@ mod access;
 
 pub use access::{EnrolledInteractionAccessPolicy, InteractionAccessPolicy, RunAuthorization};
 
+use crate::grpc_status::interaction_status;
 use crate::interaction::{
     InteractionError, InteractionEventReader, InteractionHub, SubscriptionError,
 };
@@ -233,23 +234,6 @@ fn subscription_status(error: SubscriptionError) -> Status {
             "interaction sequence gap: expected {expected_sequence}, observed {observed_sequence}"
         )),
         SubscriptionError::Closed => Status::unavailable("interaction subscription closed"),
-    }
-}
-
-fn interaction_status(error: &InteractionError) -> Status {
-    let detail = error.to_string();
-    match error {
-        InteractionError::InvalidFrame(_)
-        | InteractionError::ConflictingDedupKey(_)
-        | InteractionError::ConflictingOutput { .. }
-        | InteractionError::InvalidCursor { .. }
-        | InteractionError::RevokedRunGrant { .. }
-        | InteractionError::MissingRunGrant { .. }
-        | InteractionError::ValueOutOfRange(_) => Status::invalid_argument(detail),
-        InteractionError::Storage(_)
-        | InteractionError::Encoding(_)
-        | InteractionError::InvalidSubscriptionCapacity
-        | InteractionError::LockPoisoned => Status::internal(detail),
     }
 }
 

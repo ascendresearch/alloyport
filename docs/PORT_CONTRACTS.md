@@ -58,9 +58,16 @@ not considered compatible merely because it implements the Rust trait.
    cancellation, timeout, output exhaustion, and missing verification-marker rules to both fixture
    policies. Adapter tests retain image/device policy and engine-command evidence; real hardware
    remains an explicitly configured gate.
-8. **gRPC adapters — next.** Preserve typed failure classes, authenticated identity, immutable
-   assignment identity, cancellation, terminal Artifact gating, replay cursors, and transport status
-   mapping without moving use-case policy into service implementations.
+8. **gRPC domain-error status policy — implemented.** Control repository, Interaction, Artifact
+   upload/storage, and certificate identity failures map to gRPC codes in one internal transport
+   policy. Table-driven contract tests lock not-found, authentication/authorization, validation,
+   conflict, resource exhaustion, failed-precondition, integrity/data-loss, and internal classes;
+   service adapters retain request validation and use-case orchestration rather than duplicating
+   mappings.
+9. **Authenticated gRPC request context — next.** Resolve and revalidate enrolled connection
+   identity consistently for Control, Artifact, and Interaction without trusting body ownership or
+   moving run/Artifact authorization into middleware. Streaming revocation and transport-specific
+   lifecycle behavior remain explicit contracts.
 
 ## Non-goals
 

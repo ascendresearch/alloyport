@@ -778,7 +778,10 @@ backend commonality has advanced as well: CUDA and Ascend now use one transport-
 identity reconciler, one running-container cancellation/timeout/output supervisor, and one terminal
 outcome classifier with backend-specific typed policy constants. Their create plans, image/device
 checks, environment facts, receipts, and hardware gates remain deliberately separate. gRPC adapter
-status/authentication contracts are the next slice.
+status policy is now centralized too: Control repository, Interaction, Artifact, and certificate
+identity errors have one audited domain-category-to-`tonic::Code` mapping with table-driven tests,
+and duplicate service-local mappings were removed without changing existing codes. Consistent
+authenticated request context and streaming revalidation are the next gRPC slice.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 
