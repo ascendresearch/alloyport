@@ -5,6 +5,7 @@ pub mod application;
 pub mod artifact;
 #[cfg(test)]
 mod assignment_contract_tests;
+
 mod assignment_coordinator;
 mod assignment_delivery;
 mod assignment_reconciliation;
@@ -13,6 +14,8 @@ mod attempt_projection;
 mod control_transport;
 pub mod identity;
 pub mod interaction;
+#[cfg(test)]
+mod interaction_contract_tests;
 pub mod interaction_service;
 mod observation_ingress;
 mod persistence;

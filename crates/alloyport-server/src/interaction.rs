@@ -142,6 +142,9 @@ pub enum RunRevokeOutcome {
 pub trait InteractionEventWriter: Debug + Send + Sync {
     /// Appends or idempotently replays one canonical event.
     ///
+    /// Deduplication identity is scoped to the run. Producer instance, producer sequence, and
+    /// emission time may change across a replay; conflicting canonical content must be rejected.
+    ///
     /// # Errors
     ///
     /// Returns an error for invalid input, conflicting deduplication content, or storage failure.
@@ -152,6 +155,9 @@ pub trait InteractionEventWriter: Debug + Send + Sync {
     ) -> Result<AppendOutcome, InteractionError>;
 
     /// Appends one raw-byte-correlated output preview.
+    ///
+    /// Output correlation is independently scoped by attempt, stream, and raw byte offset. Exact
+    /// duplicates are idempotent, forward gaps are reported, and overlap is a conflict.
     ///
     /// # Errors
     ///
@@ -176,6 +182,7 @@ pub trait InteractionEventReader: Debug + Send + Sync {
     fn events(&self, run_id: &str) -> Result<Vec<EventEnvelope>, InteractionError>;
 
     /// Returns at most `limit` events strictly after one canonical sequence.
+    /// Results are ordered by increasing run-local sequence; a zero limit returns no events.
     ///
     /// # Errors
     ///

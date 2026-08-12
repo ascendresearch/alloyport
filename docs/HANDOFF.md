@@ -770,7 +770,11 @@ upload metadata now has the same substitutability evidence: SQLite and a focused
 share owner-scoped idempotency, exact offsets, publication failure classes, quotas, references,
 retention, and reachability semantics. Reopen/migration, crash-tail repair, concurrent quota
 admission, active readers, and pending-GC recovery remain SQLite-specific. Interaction persistence
-and replay is the next Port contract slice.
+now also has shared substitutability evidence: SQLite and a focused memory reference share run-local
+sequence, canonical deduplication/conflict, raw-output gap/overlap, bounded cursor, run isolation,
+and terminal grant-revocation rules. SQLite retains reopen evidence, while replay-to-live delivery,
+slow-consumer recovery, authorization, and sanitization remain application-level tests. Execution
+backends and gRPC adapters are the next Port contract slice.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 

@@ -9,53 +9,27 @@ use std::error::Error;
 use std::sync::Arc;
 
 #[test]
-fn durable_sequence_dedup_conflict_gap_and_restart() -> Result<(), Box<dyn Error>> {
+fn events_and_output_correlation_survive_reopen() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("events.sqlite3");
     let store = SqliteInteractionStore::open(&database)?;
     let start = frame(Event::RunStarted {
         task: "fixture".into(),
     });
-    let mut replayed_start = start.clone();
-    replayed_start.emitted_at_unix_ms = 99;
-    replayed_start.producer.instance = "restarted-server".into();
-    assert!(matches!(
-        store.append("run:start", &replayed_start)?,
-        AppendOutcome::Inserted(_)
-    ));
     assert!(matches!(
         store.append("run:start", &start)?,
-        AppendOutcome::Duplicate(_)
+        AppendOutcome::Inserted(_)
     ));
-    let conflicting = frame(Event::RunStarted {
-        task: "changed".into(),
-    });
-    assert!(matches!(
-        store.append("run:start", &conflicting),
-        Err(InteractionError::ConflictingDedupKey(_))
-    ));
-
     let output = output_frame(3, "abc");
     let appended = store.append_output("output:3", "attempt-1", 1, 3, b"abc", &output)?;
     assert_eq!(appended.missing_bytes_before, 3);
-    assert!(matches!(
-        store
-            .append_output("output:3", "attempt-1", 1, 3, b"abc", &output)?
-            .outcome,
-        AppendOutcome::Duplicate(_)
-    ));
-    assert!(matches!(
-        store.append_output("output:3", "attempt-1", 1, 3, b"xyz", &output),
-        Err(InteractionError::ConflictingOutput { .. })
-    ));
-    let overlap = output_frame(4, "overlap");
-    assert!(matches!(
-        store.append_output("output:4", "attempt-1", 1, 4, b"overlap", &overlap),
-        Err(InteractionError::ConflictingOutput { .. })
-    ));
     drop(store);
 
     let reopened = SqliteInteractionStore::open(&database)?;
+    assert!(matches!(
+        reopened.append("run:start", &start)?,
+        AppendOutcome::Duplicate(_)
+    ));
     assert!(matches!(
         reopened
             .append_output("output:3", "attempt-1", 1, 3, b"abc", &output)?
@@ -180,7 +154,7 @@ fn subscription_rejects_cursor_beyond_durable_high_water() -> Result<(), Box<dyn
 }
 
 #[test]
-fn run_grants_are_durable_idempotent_and_revocation_is_terminal() -> Result<(), Box<dyn Error>> {
+fn run_grant_revocation_survives_reopen() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("events.sqlite3");
     let store = SqliteInteractionStore::open(&database)?;
@@ -189,28 +163,17 @@ fn run_grants_are_durable_idempotent_and_revocation_is_terminal() -> Result<(), 
         RunGrantOutcome::Granted
     );
     assert_eq!(
-        store.grant_run_access("task-1", "owner-a", 99)?,
-        RunGrantOutcome::Duplicate
-    );
-    assert!(store.can_read_run("task-1", "owner-a")?);
-    assert!(!store.can_read_run("task-1", "owner-b")?);
-    assert_eq!(
         store.revoke_run_access("task-1", "owner-a", 2)?,
         RunRevokeOutcome::Revoked
     );
-    assert_eq!(
-        store.revoke_run_access("task-1", "owner-a", 3)?,
-        RunRevokeOutcome::Duplicate
-    );
-    assert!(!store.can_read_run("task-1", "owner-a")?);
-    assert!(matches!(
-        store.grant_run_access("task-1", "owner-a", 4),
-        Err(InteractionError::RevokedRunGrant { .. })
-    ));
     drop(store);
 
     let reopened = SqliteInteractionStore::open(database)?;
     assert!(!reopened.can_read_run("task-1", "owner-a")?);
+    assert!(matches!(
+        reopened.grant_run_access("task-1", "owner-a", 4),
+        Err(InteractionError::RevokedRunGrant { .. })
+    ));
     assert_eq!(
         reopened.grant_run_access("task-1", "owner-b", 5)?,
         RunGrantOutcome::Granted

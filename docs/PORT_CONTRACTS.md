@@ -44,11 +44,14 @@ not considered compatible merely because it implements the Rust trait.
    reservation/release, typed reference idempotency/conflict/revocation, retention, and reachability
    through garbage collection. SQLite-only tests retain reopen/migration, crash-tail repair,
    concurrent quota admission, reader leases, and pending-GC recovery.
-6. **Interaction persistence and replay — next.** Cover per-run sequence,
-   deduplication/conflict, cursors,
-   run grants/revocation, and replay-to-live boundaries without folding transport delivery into the
-   persistence Port.
-7. **Execution backends and gRPC adapters.** Preserve typed failure classes, immutable assignment
+6. **Interaction persistence and replay — implemented.** `InteractionEventWriter`,
+   `InteractionEventReader`, and `InteractionRunAccessStore` run one persistence contract against
+   SQLite and a focused memory reference. It covers run-local sequencing, restart-tolerant canonical
+   deduplication/conflict, raw-output gaps/duplicates/overlap, bounded cursors, independently scoped
+   streams/runs, and terminal run-grant revocation. SQLite-only tests retain reopen durability;
+   application tests retain replay-to-live, slow-consumer, cross-run notification, cursor rejection,
+   authorization, and sanitization behavior.
+7. **Execution backends and gRPC adapters — next.** Preserve typed failure classes, immutable assignment
    identity, cancellation, terminal Artifact gating, and replay semantics across fake, CUDA, Ascend,
    and transport adapters. Hardware evidence remains a separate explicitly configured gate.
 
