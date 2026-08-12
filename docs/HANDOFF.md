@@ -532,17 +532,23 @@ Remote plaintext endpoints are rejected. Loopback HTTP is permitted for tests an
 
 ## Verification baseline
 
-The following commands passed at the latest handoff verification:
+The architecture-remediation round closed on 2026-08-11. Its layering, persistence, plugin, typed
+error, and module-size constraints are recorded in `docs/ARCHITECTURE_REMEDIATION.md` and enforced by
+the two boundary scripts. Ascend implementation is deliberately deferred to the next feature
+session; it should extend the existing backend registry rather than reopen the broad refactor.
+
+The following commands passed at the closing verification:
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --locked
-cargo +1.88.0 test --workspace --locked
+bash scripts/check_architecture_boundaries.sh
+bash scripts/check_sql_boundaries.sh
+cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 108 Rust tests, one ignored by default because it explicitly requires Docker and a CUDA
-device. Control-plane coverage includes real loopback gRPC streams and SQLite
+There are 129 passing Rust tests and one ignored by default because it explicitly requires Docker
+and a CUDA device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
 - hello/welcome and worker registration;

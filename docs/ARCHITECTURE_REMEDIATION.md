@@ -1,7 +1,8 @@
 # AlloyPort architecture remediation plan
 
-- Status: Active
+- Status: Completed for this remediation round
 - Started: 2026-08-11
+- Completed: 2026-08-11
 - Scope: architecture, persistence boundaries, extensibility, and maintainability
 
 ## Objective
@@ -421,4 +422,25 @@ directories (including their migration and adapter-test files).
   rejects a return to `String` errors on the Artifact publisher and CUDA engine plugin ports.
 - [x] R2 safe assignment preparation and atomic delivery transaction.
 - [x] R2 autonomous reconciliation of abandoned `Preparing` assignments.
-- [ ] Remaining workstreams.
+- [x] This remediation round is closed: layering, stable domain vocabulary, SQL isolation,
+  capability-segregated persistence, pluggable execution/Artifact boundaries, typed backend errors,
+  async persistence isolation, coordinator decomposition, and automated architecture guards are in
+  place. Ascend execution, scheduling, retention operations, and other product capabilities are
+  follow-up feature work, not unfinished scope in this review.
+
+## Closure baseline
+
+The architecture is now suitable for incremental feature delivery without another broad rewrite:
+
+- dependencies point inward through domain types and narrow ports;
+- SQL and database-driver use outside `adapters/sqlite/` is zero;
+- the largest production Rust module is 573 lines and the enforced ceiling is 800;
+- execution backends can be composed by executor kind and retain typed failure classifications;
+- compatibility facades remain intentionally available while application modules use narrower
+  capabilities;
+- formatting, Clippy, architecture, SQL-boundary, and workspace tests form the required regression
+  gate.
+
+Further decomposition should be driven by measured coupling or feature pressure rather than line
+count alone. The next planned feature slice is the Ascend worker execution contract, handled in a
+separate session and constrained by the ports and guards established here.
