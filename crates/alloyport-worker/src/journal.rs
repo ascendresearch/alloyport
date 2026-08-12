@@ -280,6 +280,13 @@ pub trait WorkerOutboxStore: Debug + Send + Sync {
 }
 
 #[allow(clippy::missing_errors_doc)]
+/// Durable accelerator ownership and immutable preflight evidence.
+///
+/// Implementations must reject unknown or terminal attempts and blank device IDs. Acquisition is
+/// exclusive by device and idempotent only for the same active attempt/device pair. Finishing an
+/// attempt never releases its lease: terminal cleanup must explicitly release after proving the
+/// device reusable, and repeated release is idempotent. Preflight evidence requires an active
+/// matching lease in the accepted phase and is immutable once recorded.
 pub trait DeviceLeaseStore: Debug + Send + Sync {
     fn acquire_device_lease(
         &self,

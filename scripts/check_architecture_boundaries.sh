@@ -357,6 +357,14 @@ if ! rg -q 'pub trait AttemptLifecycleStore' crates/alloyport-worker/src/journal
     || ! rg -q 'pub trait WorkerOutboxStore' crates/alloyport-worker/src/journal.rs; then
     violations+=("worker journal capability ports are missing")
 fi
+if ! rg -q '^fn device_lease_port_contract' \
+    crates/alloyport-worker/src/journal_contract_tests.rs \
+    || ! rg -q '^fn sqlite_device_lease_store_satisfies_shared_port_contract' \
+        crates/alloyport-worker/src/journal_contract_tests.rs \
+    || ! rg -q '^fn memory_device_lease_store_satisfies_shared_port_contract' \
+        crates/alloyport-worker/src/journal_contract_tests.rs; then
+    violations+=("worker device-lease implementations no longer share one Port contract suite")
+fi
 if string_error=$(rg -n 'Future<Output = Result<\(\), String>>' \
     crates/alloyport-worker/src/executor.rs); then
     violations+=("Artifact publisher port regained an untyped String error: ${string_error}")

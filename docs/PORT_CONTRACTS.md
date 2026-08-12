@@ -22,13 +22,15 @@ not considered compatible merely because it implements the Rust trait.
    verified ingestion, exact reads, content-addressed idempotency, no publication after digest/size
    failure, configured size bounds, presence, and idempotent administrative removal. Filesystem
    tests separately retain crash recovery, atomic publication, tamper detection, and concurrency.
-2. **Worker device leases — next.** Run one contract against the SQLite journal and a focused memory
-   fake. Cover exclusive device ownership, idempotent acquisition/release, immutable preflight
-   evidence, terminal quarantine, and attempt-transition restrictions. This is shared GPU/NPU
-   policy and has higher priority than backend-specific test cleanup.
-3. **Server assignment and attempt leases.** Separate assignment read/write and attempt lifecycle
-   contracts. Cover immutable admission, preparation visibility, atomic dispatch/lease/outbox
-   permission, renewal/expiry, stale late results, cancellation, and reassignment linkage.
+2. **Worker device leases — implemented.** `DeviceLeaseStore` runs one contract against the SQLite
+   journal and a focused memory fake. It covers known-attempt enforcement, exclusive device
+   ownership, idempotent acquisition/release, immutable device-matched preflight evidence, terminal
+   quarantine, and attempt-transition restrictions. A separate SQLite test proves leases and
+   preflight evidence survive reopen. This is the persistence foundation shared by GPU/NPU guards.
+3. **Server assignment and attempt leases — next.** Separate assignment read/write and attempt
+   lifecycle contracts. Cover immutable admission, preparation visibility, atomic
+   dispatch/lease/outbox permission, renewal/expiry, stale late results, cancellation, and
+   reassignment linkage.
 4. **Artifact upload metadata.** Cover idempotent sessions, exact offsets, finalize retry classes,
    ownership, quota reservation, references, and reachability independently of SQLite-specific SQL.
 5. **Interaction persistence and replay.** Cover per-run sequence, deduplication/conflict, cursors,

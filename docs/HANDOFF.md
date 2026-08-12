@@ -756,8 +756,11 @@ Architecture CI keeps environment parsing out of assembly, concrete storage out 
 and process supervision out of the six-line binary entry point. A strict schema-1 server file now
 provides explicit locator/value precedence, file-relative paths, fail-closed validation, and the
 same identity database for serving and offline administration. The first Port conformance slice
-also runs immutable Artifact semantics against filesystem and memory implementations. The next
-structural slice is the worker device-lease contract suite.
+also runs immutable Artifact semantics against filesystem and memory implementations. A second
+suite now applies the same known-attempt, exclusivity, idempotency, immutable preflight, terminal
+quarantine, and explicit-release rules to the SQLite worker journal and a focused memory fake;
+SQLite restart durability remains an adapter-specific test. The next structural slice is separate
+server assignment and attempt-lease contracts.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 

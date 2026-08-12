@@ -29,6 +29,8 @@ mod execution_coordination;
 pub mod executor;
 pub mod fake_executor;
 pub mod journal;
+#[cfg(test)]
+mod journal_contract_tests;
 pub mod nvidia_smi;
 mod wire_mapping;
 mod worker_delivery;
