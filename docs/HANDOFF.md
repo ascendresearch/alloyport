@@ -1,6 +1,6 @@
 # AlloyPort handoff
 
-- Handoff date: 2026-08-11
+- Handoff date: 2026-08-12
 - Repository: `/data/projects/shinesheep/alloyport`
 - Branch: `main`
 - Baseline: this file is part of the repository's initial commit; run `git rev-parse HEAD` to obtain
@@ -165,6 +165,12 @@ optional retention can continue protecting physical bytes. Explicit bounded GC c
 there is no active reference, unexpired retention, live upload session, or active in-process reader.
 A durable pending marker recovers deletion interrupted between the filesystem and SQLite; global
 quota is released only after object collection. Collection is not yet scheduled automatically.
+
+The immutable object and administrative-removal Ports now have one reusable behavioral contract
+suite. It runs unchanged against the crash-recoverable `FilesystemArtifactStore` and the explicitly
+non-durable `InMemoryArtifactStore`; worker tests use that shared conforming memory adapter instead
+of maintaining a private fake. Adapter-specific filesystem crash, tamper, and concurrency tests
+remain separate. [`PORT_CONTRACTS.md`](PORT_CONTRACTS.md) records the remaining conformance order.
 
 ### `alloyport-core`
 
@@ -749,8 +755,9 @@ signal; Ctrl-C or any unexpected task exit stops the others and drains them with
 Architecture CI keeps environment parsing out of assembly, concrete storage out of configuration,
 and process supervision out of the six-line binary entry point. A strict schema-1 server file now
 provides explicit locator/value precedence, file-relative paths, fail-closed validation, and the
-same identity database for serving and offline administration. The next structural slice is
-high-value Port contract suites.
+same identity database for serving and offline administration. The first Port conformance slice
+also runs immutable Artifact semantics against filesystem and memory implementations. The next
+structural slice is the worker device-lease contract suite.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 

@@ -132,7 +132,10 @@ canonical Interaction events, wire messages, and durable audit/evidence as separ
   from composition into configuration/runtime modules.
 - [x] Server configuration, identity administration, concrete assembly, task ownership, and serve
   lifecycle separated; periodic tasks cooperatively cancel and drain within a configured bound.
-- [ ] High-value port contract suites inventoried and implemented.
+- [x] First reusable Port contract suite runs immutable Artifact and retention semantics unchanged
+  against filesystem and in-memory adapters; the worker consumes the conforming shared fake.
+- [ ] Remaining high-value Port contract suites implemented in the order recorded in
+  `PORT_CONTRACTS.md`, beginning with worker device leases.
 - [ ] Common gRPC middleware/error policy established.
 - [x] Strict schema-1 server configuration, explicit locator precedence, file-relative paths, and a
   shared serving/identity-administration command boundary introduced.

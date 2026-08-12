@@ -1,0 +1,48 @@
+# Port contract suites
+
+- Date: 2026-08-12
+- Status: Active
+- Purpose: prove adapter substitutability at application boundaries instead of testing each
+  implementation against unrelated examples
+
+## Contract-suite rule
+
+A Port contract suite is one reusable behavioral function invoked unchanged for every conforming
+adapter. It tests externally observable invariants, typed failure categories, idempotency, and
+recovery semantics; adapter-specific tests remain responsible for implementation details such as
+SQLite migration, filesystem crash residue, or backend command parsing.
+
+Test doubles that participate in application tests should implement the same contract. A fake is
+not considered compatible merely because it implements the Rust trait.
+
+## Inventory and order
+
+1. **Immutable Artifact objects — implemented.** `ArtifactStore` plus `ArtifactRetentionStore` run
+   one contract against `FilesystemArtifactStore` and `InMemoryArtifactStore`. The suite covers
+   verified ingestion, exact reads, content-addressed idempotency, no publication after digest/size
+   failure, configured size bounds, presence, and idempotent administrative removal. Filesystem
+   tests separately retain crash recovery, atomic publication, tamper detection, and concurrency.
+2. **Worker device leases — next.** Run one contract against the SQLite journal and a focused memory
+   fake. Cover exclusive device ownership, idempotent acquisition/release, immutable preflight
+   evidence, terminal quarantine, and attempt-transition restrictions. This is shared GPU/NPU
+   policy and has higher priority than backend-specific test cleanup.
+3. **Server assignment and attempt leases.** Separate assignment read/write and attempt lifecycle
+   contracts. Cover immutable admission, preparation visibility, atomic dispatch/lease/outbox
+   permission, renewal/expiry, stale late results, cancellation, and reassignment linkage.
+4. **Artifact upload metadata.** Cover idempotent sessions, exact offsets, finalize retry classes,
+   ownership, quota reservation, references, and reachability independently of SQLite-specific SQL.
+5. **Interaction persistence and replay.** Cover per-run sequence, deduplication/conflict, cursors,
+   run grants/revocation, and replay-to-live boundaries without folding transport delivery into the
+   persistence Port.
+6. **Execution backends and gRPC adapters.** Preserve typed failure classes, immutable assignment
+   identity, cancellation, terminal Artifact gating, and replay semantics across fake, CUDA, Ascend,
+   and transport adapters. Hardware evidence remains a separate explicitly configured gate.
+
+## Non-goals
+
+- Do not create an `alloyport-ports` crate solely to collect traits.
+- Do not make the in-memory Artifact adapter a production composition default; it is explicitly
+  non-durable.
+- Do not force implementation-specific behavior into a Port contract. Durability mechanisms,
+  migrations, probes, and filesystem layout keep their own adapter tests.
+- Do not add a public task-submission API as a side effect of test refactoring.

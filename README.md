@@ -46,8 +46,9 @@ automation, and replay; an agent's narrative remains distinct from verified migr
 
 ## Workspace
 
-- `alloyport-artifacts`: content-addressed artifact interfaces, the crash-recoverable filesystem
-  SHA-256 store, durable typed references, quotas, and conservative garbage collection.
+- `alloyport-artifacts`: content-addressed artifact interfaces, contract-tested filesystem and
+  explicitly non-durable memory adapters, durable typed references, quotas, and conservative
+  garbage collection.
 - `alloyport-core`: dependency-light domain model and lifecycle invariants.
 - `alloyport-events`: versioned producer/canonical events, lifecycle reduction, JSONL, and plain
   rendering shared with the Python executor bridge.

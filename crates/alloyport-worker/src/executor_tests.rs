@@ -3,10 +3,7 @@
 use super::*;
 use crate::AdmissionPolicy;
 use alloyport_artifacts::upload::ArtifactReferenceKind;
-use alloyport_artifacts::{
-    ArtifactIdentity, ArtifactReader, ArtifactStoreError, FilesystemArtifactStore,
-    IngestDisposition, IngestRequest, IngestResult, Sha256Digest,
-};
+use alloyport_artifacts::{FilesystemArtifactStore, InMemoryArtifactStore};
 use alloyport_core::AttemptOutcome;
 use alloyport_events::{Event, OutputStream as EventOutputStream};
 use alloyport_proto::v1::{ArtifactRef, ExecutionSpec, ExecutorKind, ResourceLimits};
@@ -16,91 +13,9 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-#[derive(Debug, Default)]
-struct MemoryArtifactStore {
-    objects: Mutex<BTreeMap<Sha256Digest, Vec<u8>>>,
-}
-
-impl ArtifactStore for MemoryArtifactStore {
-    fn ingest(
-        &self,
-        source: &mut dyn std::io::Read,
-        request: IngestRequest,
-    ) -> Result<IngestResult, ArtifactStoreError> {
-        let mut bytes = Vec::new();
-        source
-            .read_to_end(&mut bytes)
-            .map_err(|source| ArtifactStoreError::Io {
-                operation: "read memory Artifact",
-                source,
-            })?;
-        let digest = Sha256Digest::digest_bytes(&bytes);
-        let size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if let Some(expected) = request.expected_digest
-            && expected != digest
-        {
-            return Err(ArtifactStoreError::DigestMismatch {
-                expected,
-                actual: digest,
-            });
-        }
-        if let Some(expected_bytes) = request.expected_size_bytes
-            && expected_bytes != size_bytes
-        {
-            return Err(ArtifactStoreError::SizeMismatch {
-                expected_bytes,
-                actual_bytes: size_bytes,
-            });
-        }
-        let disposition = if self
-            .objects
-            .lock()
-            .expect("memory store lock")
-            .insert(digest, bytes)
-            .is_some()
-        {
-            IngestDisposition::AlreadyPresent
-        } else {
-            IngestDisposition::Stored
-        };
-        Ok(IngestResult {
-            artifact: ArtifactIdentity { digest, size_bytes },
-            disposition,
-        })
-    }
-
-    fn open(&self, digest: Sha256Digest) -> Result<ArtifactReader, ArtifactStoreError> {
-        let bytes = self
-            .objects
-            .lock()
-            .expect("memory store lock")
-            .get(&digest)
-            .cloned()
-            .ok_or_else(|| ArtifactStoreError::Io {
-                operation: "open memory Artifact",
-                source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing Artifact"),
-            })?;
-        Ok(ArtifactReader::new(
-            ArtifactIdentity {
-                digest,
-                size_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-            },
-            std::io::Cursor::new(bytes),
-        ))
-    }
-
-    fn contains(&self, digest: Sha256Digest) -> Result<bool, ArtifactStoreError> {
-        Ok(self
-            .objects
-            .lock()
-            .expect("memory store lock")
-            .contains_key(&digest))
-    }
-}
-
 #[tokio::test]
 async fn execution_artifact_spool_accepts_an_in_memory_port() -> Result<(), ExecutionRuntimeError> {
-    let artifacts = Arc::new(MemoryArtifactStore::default());
+    let artifacts = Arc::new(InMemoryArtifactStore::new(1024));
     let stored = store_artifact(artifacts.clone(), b"portable".to_vec(), STDOUT_MEDIA_TYPE).await?;
     let digest = stored.digest;
     assert!(artifacts.contains(digest).expect("memory store read"));

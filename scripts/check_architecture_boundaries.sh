@@ -116,6 +116,23 @@ if filesystem_impl=$(rg -n \
     crates/alloyport-artifacts/src/lib.rs); then
     violations+=("filesystem CAS implementation escaped its adapter: ${filesystem_impl}")
 fi
+if ! rg -q '^pub struct InMemoryArtifactStore' \
+    crates/alloyport-artifacts/src/adapters/memory.rs \
+    || ! rg -q '^impl ArtifactStore for InMemoryArtifactStore' \
+        crates/alloyport-artifacts/src/adapters/memory.rs \
+    || ! rg -q '^impl ArtifactRetentionStore for InMemoryArtifactStore' \
+        crates/alloyport-artifacts/src/adapters/memory.rs \
+    || ! rg -q '^fn filesystem_store_satisfies_immutable_artifact_contract' \
+        crates/alloyport-artifacts/src/artifact_store_contract_tests.rs \
+    || ! rg -q '^fn memory_store_satisfies_immutable_artifact_contract' \
+        crates/alloyport-artifacts/src/artifact_store_contract_tests.rs; then
+    violations+=("immutable Artifact adapters no longer share one Port contract suite")
+fi
+if ephemeral_artifact_composition=$(rg -n 'InMemoryArtifactStore' \
+    crates/alloyport-server/src/application/assembly.rs \
+    crates/alloyport-worker/src/application/assembly.rs); then
+    violations+=("non-durable Artifact adapter entered a production composition root: ${ephemeral_artifact_composition}")
+fi
 if event_responsibility=$(rg -n \
     'pub struct RunReducer|pub enum ReduceError|pub fn render_plain|enum OperationKind' \
     crates/alloyport-events/src/lib.rs); then

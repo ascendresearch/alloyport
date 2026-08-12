@@ -3,7 +3,9 @@
 pub mod adapters;
 pub mod upload;
 
-pub use adapters::{filesystem::FilesystemArtifactStore, sqlite::SqliteUploadStore};
+pub use adapters::{
+    filesystem::FilesystemArtifactStore, memory::InMemoryArtifactStore, sqlite::SqliteUploadStore,
+};
 pub use alloyport_core::{DigestParseError, Sha256Digest};
 
 use std::error::Error;
@@ -166,3 +168,6 @@ impl Error for ArtifactStoreError {
         }
     }
 }
+
+#[cfg(test)]
+mod artifact_store_contract_tests;
