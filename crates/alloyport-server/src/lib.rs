@@ -3,6 +3,8 @@
 pub mod adapters;
 pub mod application;
 pub mod artifact;
+#[cfg(test)]
+mod assignment_contract_tests;
 mod assignment_coordinator;
 mod assignment_delivery;
 mod assignment_reconciliation;

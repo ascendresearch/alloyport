@@ -237,6 +237,14 @@ if ! rg -q '^fn attempt_lifecycle_port_contract' \
         crates/alloyport-server/src/storage_contract_tests.rs; then
     violations+=("server attempt-lifecycle implementations no longer share one Port contract suite")
 fi
+if ! rg -q '^fn assignment_dispatch_port_contract' \
+    crates/alloyport-server/src/assignment_contract_tests.rs \
+    || ! rg -q '^fn sqlite_assignment_store_satisfies_shared_dispatch_contract' \
+        crates/alloyport-server/src/assignment_contract_tests.rs \
+    || ! rg -q '^fn memory_assignment_store_satisfies_shared_dispatch_contract' \
+        crates/alloyport-server/src/assignment_contract_tests.rs; then
+    violations+=("server assignment implementations no longer share one dispatch Port contract suite")
+fi
 if raw_execution_enum=$(rg -n 'pub (executor_kind|network|outcome): i32|reason: i32' \
     crates/alloyport-server/src/storage crates/alloyport-worker/src/journal.rs); then
     violations+=("durable assignment contract regained a raw execution enum integer: ${raw_execution_enum}")

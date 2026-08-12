@@ -31,12 +31,15 @@ not considered compatible merely because it implements the Rust trait.
    SQLite and a focused memory reference. It covers identity binding, monotonic observation
    transitions and duplicate classification, renewal/expiry, non-resurrection, stale late results,
    cancel-before-send, cancellation acknowledgement versus execution termination, and terminal
-   cancellation. SQLite-only tests retain durable observation auditing and reassignment SQL.
-4. **Server assignment dispatch — next.** Run assignment read/write behavior against SQLite and a
-   focused reference, including immutable admission, preparation visibility/defer ordering,
-   dispatchability, reassignment linkage, and the atomic dispatch/lease/outbox permission boundary.
-5. **Artifact upload metadata.** Cover idempotent sessions, exact offsets, finalize retry classes,
-   ownership, quota reservation, references, and reachability independently of SQLite-specific SQL.
+   cancellation. A SQLite-only test retains durable observation auditing.
+4. **Server assignment dispatch — implemented.** Assignment read/write behavior runs unchanged
+   against SQLite and a focused reference. The suite covers immutable admission, bounded preparing
+   reads, preparation visibility and defer ordering, dispatchability/replay, reassignment linkage,
+   and the atomic state/lease/outbox permission boundary including conflict rollback. SQLite-only
+   tests retain reopen durability, schema migration, and connection-sequence rollback evidence.
+5. **Artifact upload metadata — next.** Cover idempotent sessions, exact offsets, finalize retry
+   classes, ownership, quota reservation, references, and reachability independently of
+   SQLite-specific SQL.
 6. **Interaction persistence and replay.** Cover per-run sequence, deduplication/conflict, cursors,
    run grants/revocation, and replay-to-live boundaries without folding transport delivery into the
    persistence Port.

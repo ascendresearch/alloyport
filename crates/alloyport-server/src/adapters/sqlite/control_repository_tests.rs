@@ -3,32 +3,19 @@ use crate::storage::{
     AssignmentContract, AssignmentDeliveryPreparation, AssignmentReadRepository,
     AssignmentWriteRepository, AttemptLifecycleRepository, AttemptState, ConnectionRegistration,
     ObservationDisposition, ObservedAttempt, RepositoryError, ServerOutboxFrame,
-    ServerOutboxRepository, StoreAssignmentOutcome, WorkerConnectionRepository, WorkerRegistration,
+    ServerOutboxRepository, WorkerConnectionRepository, WorkerRegistration,
 };
 use alloyport_core::{AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind, TaskId};
 use std::error::Error;
 
 #[test]
-fn immutable_assignment_is_idempotent_and_survives_reopen() -> Result<(), Box<dyn Error>> {
+fn assignment_survives_reopen() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("control.sqlite3");
     let contract = contract();
     {
         let repository = SqliteControlRepository::open(&database)?;
-        assert_eq!(
-            repository.store_assignment("worker-1", &contract, 1_000)?,
-            StoreAssignmentOutcome::Inserted
-        );
-        assert_eq!(
-            repository.store_assignment("worker-1", &contract, 1_001)?,
-            StoreAssignmentOutcome::Duplicate
-        );
-        let mut changed = contract.clone();
-        changed.execution.argv = vec!["different".to_owned()];
-        assert!(matches!(
-            repository.store_assignment("worker-1", &changed, 1_002),
-            Err(RepositoryError::ConflictingAttempt(attempt)) if attempt == "attempt-1"
-        ));
+        repository.store_assignment("worker-1", &contract, 1_000)?;
     }
 
     let reopened = SqliteControlRepository::open(&database)?;
@@ -37,46 +24,6 @@ fn immutable_assignment_is_idempotent_and_survives_reopen() -> Result<(), Box<dy
         .expect("stored assignment is recovered");
     assert_eq!(recovered.contract, contract);
     assert_eq!(recovered.state, AttemptState::Preparing);
-    Ok(())
-}
-
-#[test]
-fn preparing_assignment_is_not_replayable_until_side_effects_complete() -> Result<(), Box<dyn Error>>
-{
-    let repository = SqliteControlRepository::in_memory()?;
-    repository.store_assignment("worker-1", &contract(), 1_000)?;
-
-    assert!(repository.replayable_assignments("worker-1")?.is_empty());
-    assert!(repository.mark_assignment_dispatchable("attempt-1", "worker-1", 1_001)?);
-    assert!(!repository.mark_assignment_dispatchable("attempt-1", "worker-1", 1_002)?);
-    assert_eq!(repository.replayable_assignments("worker-1")?.len(), 1);
-    Ok(())
-}
-
-#[test]
-fn deferred_preparation_rotates_behind_newer_work() -> Result<(), Box<dyn Error>> {
-    let repository = SqliteControlRepository::in_memory()?;
-    repository.store_assignment("worker-1", &contract(), 1_000)?;
-    let mut second = contract();
-    second.assignment_id = AssignmentId::try_from("assignment-2")?;
-    second.attempt_id = AttemptId::try_from("attempt-2")?;
-    repository.store_assignment("worker-1", &second, 1_001)?;
-
-    assert_eq!(
-        repository.preparing_assignments(1)?[0]
-            .contract
-            .attempt_id
-            .as_str(),
-        "attempt-1"
-    );
-    assert!(repository.defer_assignment_preparation("attempt-1", "worker-1", 2_000)?);
-    assert_eq!(
-        repository.preparing_assignments(1)?[0]
-            .contract
-            .attempt_id
-            .as_str(),
-        "attempt-2"
-    );
     Ok(())
 }
 
@@ -235,65 +182,6 @@ fn lease_expiry_retains_a_late_result_as_stale() -> Result<(), Box<dyn Error>> {
         |row| row.get(0),
     )?;
     assert_eq!(observation_count, 2);
-    Ok(())
-}
-
-#[test]
-fn expired_attempt_reassignment_creates_a_fresh_linked_contract() -> Result<(), Box<dyn Error>> {
-    let repository = SqliteControlRepository::in_memory()?;
-    repository.store_assignment("worker-1", &contract(), 1_000)?;
-    prepare_test_assignment(&repository, "attempt-1", 1_000, 100)?;
-    assert!(matches!(
-        repository.reassign_expired("attempt-1", "worker-2", "attempt-2", 1_050),
-        Err(RepositoryError::InvalidTransition {
-            from: AttemptState::Sent,
-            to: AttemptState::Dispatchable,
-        })
-    ));
-    assert_eq!(repository.expire_leases(1_100)?, vec!["attempt-1"]);
-    assert!(matches!(
-        repository.reassign_expired("attempt-1", "worker-2", "  ", 1_101),
-        Err(RepositoryError::InvalidIdentity(_))
-    ));
-
-    let reassigned = repository.reassign_expired("attempt-1", "worker-2", "attempt-2", 1_102)?;
-    assert_eq!(reassigned.outcome, StoreAssignmentOutcome::Inserted);
-    assert_eq!(reassigned.assignment.worker_id, "worker-2");
-    assert_eq!(
-        reassigned.assignment.contract.attempt_id.as_str(),
-        "attempt-2"
-    );
-    assert_eq!(reassigned.assignment.contract.attempt_number, 2);
-    assert_eq!(reassigned.assignment.state, AttemptState::Preparing);
-    assert_eq!(
-        repository
-            .assignment("attempt-1")?
-            .expect("expired source remains auditable")
-            .state,
-        AttemptState::LeaseExpired
-    );
-    assert_eq!(
-        repository
-            .reassign_expired("attempt-1", "worker-2", "attempt-2", 1_102)?
-            .outcome,
-        StoreAssignmentOutcome::Duplicate
-    );
-
-    assert_eq!(
-        repository.observe_attempt(&observation(
-            1_103,
-            AttemptObservation::Finished(Box::new(FinishedObservation {
-                outcome: AttemptOutcome::Succeeded,
-                exit_code: Some(0),
-                elapsed_ms: 100,
-                receipt: None,
-                stdout: None,
-                stderr: None,
-                detail: "late old result".to_owned(),
-            })),
-        ))?,
-        ObservationDisposition::Stale
-    );
     Ok(())
 }
 

@@ -106,6 +106,12 @@ pub trait AssignmentReadRepository: Debug + Send + Sync {
 }
 
 /// Durable assignment admission, dispatch, recovery, and reassignment commands.
+///
+/// Assignment content is immutable per attempt. `Preparing` records are invisible to replay until
+/// explicitly made dispatchable. Delivery preparation is the single authorization transaction for
+/// publishing an assignment frame: state transition, attempt lease, durable server outbox frame,
+/// and active connection sequence must commit together or remain unchanged. Reassignment retains
+/// the expired source and creates one idempotently linked fresh attempt.
 #[allow(clippy::missing_errors_doc)]
 pub trait AssignmentWriteRepository: Debug + Send + Sync {
     fn store_assignment(

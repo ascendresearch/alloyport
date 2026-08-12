@@ -763,7 +763,10 @@ SQLite restart durability remains an adapter-specific test. A third suite applie
 monotonic observation, duplicate, renewal/expiry, non-resurrection, stale-result, and cancellation
 semantics to the server's SQLite attempt/lease adapter and a focused reference. Cancellation
 acknowledgement remains a control receipt; only the terminal observation proves execution ended.
-The next slice is server assignment dispatch, including atomic assignment/lease/outbox permission.
+The server assignment contract is complete as well: SQLite and a focused reference share immutable
+admission, preparation/defer ordering, dispatch/replay, conflict rollback, and reassignment rules.
+SQLite-specific tests retain reopen, migration, and connection-sequence rollback evidence. Artifact
+upload metadata is the next Port contract slice.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 
