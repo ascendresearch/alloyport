@@ -134,7 +134,8 @@ canonical Interaction events, wire messages, and durable audit/evidence as separ
   lifecycle separated; periodic tasks cooperatively cancel and drain within a configured bound.
 - [ ] High-value port contract suites inventoried and implemented.
 - [ ] Common gRPC middleware/error policy established.
-- [ ] Versioned server configuration introduced now that server composition is isolated.
+- [x] Strict schema-1 server configuration, explicit locator precedence, file-relative paths, and a
+  shared serving/identity-administration command boundary introduced.
 
 ## Verification
 

@@ -53,6 +53,9 @@ Read these documents before changing architecture or implementation:
 17. [`design/0022-standalone-worker-configuration-and-device-selection.md`](design/0022-standalone-worker-configuration-and-device-selection.md)
     for the unified worker file, registry-optional image identity, and shared GPU/NPU selection and
     device-guard rules.
+18. [`design/0023-versioned-server-configuration.md`](design/0023-versioned-server-configuration.md)
+    for strict server bootstrap, configuration precedence, local defaults, and shared identity
+    administration.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -353,8 +356,10 @@ only in the worker binary composition root.
 uses `ALLOYPORT_DATABASE` or defaults to `alloyport-control.sqlite3`, so normal server state survives
 process restart.
 
-The `alloyport-server` binary listens on `127.0.0.1:50051` by default. Plaintext is rejected on a
-non-loopback bind address. Remote mode requires:
+The `alloyport-server` binary listens on `127.0.0.1:50051` by default. It accepts a strict schema-1
+JSON file through `--config PATH` or `ALLOYPORT_SERVER_CONFIG`; explicit CLI location wins, while
+individual environment values override file values and defaults. JSON-relative paths resolve from
+the file directory. Plaintext is rejected on a non-loopback bind address. Remote mode requires:
 
 - `ALLOYPORT_LISTEN`
 - `ALLOYPORT_TLS_CERT`
@@ -378,10 +383,13 @@ The TLS configuration requests a client certificate. Before remote use, an opera
 stable owner mapping offline:
 
 ```bash
-cargo run -p alloyport-server -- identity enroll WORKER_ID client.pem
-cargo run -p alloyport-server -- identity rotate WORKER_ID old.pem new.pem
-cargo run -p alloyport-server -- identity revoke client.pem
+cargo run -p alloyport-server -- --config server.json identity enroll WORKER_ID client.pem
+cargo run -p alloyport-server -- --config server.json identity rotate WORKER_ID old.pem new.pem
+cargo run -p alloyport-server -- --config server.json identity revoke client.pem
 ```
+
+These commands load the same configuration and identity database as serving. See
+[server configuration](server-configuration.md) and Design 0023.
 
 This is application-level authorization above CA verification; certificate issuance, online
 enrollment, CA revocation, and replicated identity storage are not implemented.
@@ -739,8 +747,10 @@ gRPC listener, lease reaper, and assignment-preparation reconciler share a coope
 signal; Ctrl-C or any unexpected task exit stops the others and drains them within
 `ALLOYPORT_SHUTDOWN_TIMEOUT_SECONDS` (default 10) before abort is used as a last-resort bound.
 Architecture CI keeps environment parsing out of assembly, concrete storage out of configuration,
-and process supervision out of the six-line binary entry point. The next structural slice is
-versioned server-file configuration and high-value Port contract suites.
+and process supervision out of the six-line binary entry point. A strict schema-1 server file now
+provides explicit locator/value precedence, file-relative paths, fail-closed validation, and the
+same identity database for serving and offline administration. The next structural slice is
+high-value Port contract suites.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 

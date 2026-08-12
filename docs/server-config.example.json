@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "listen": "127.0.0.1:50051",
+  "database": "../alloyport-control.sqlite3",
+  "artifact": {
+    "root": "../alloyport-artifacts",
+    "max_bytes": 8589934592,
+    "max_chunk_bytes": 1048576,
+    "total_quota_bytes": 68719476736,
+    "owner_quota_bytes": 17179869184
+  },
+  "identity_database": "../alloyport-artifacts/identities.sqlite3",
+  "tls": null,
+  "shutdown_timeout_seconds": 10
+}

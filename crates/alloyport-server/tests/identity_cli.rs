@@ -13,11 +13,19 @@ use std::process::{Command, Output};
 fn identity_cli_enrolls_rotates_revokes_and_rejects_conflicts() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("identities.sqlite3");
+    let config = directory.path().join("server.json");
+    fs::write(
+        &config,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "identity_database": database,
+        }))?,
+    )?;
     let old_certificate = certificate(directory.path(), "old")?;
     let new_certificate = certificate(directory.path(), "new")?;
 
     assert_success(&run_identity(
-        &database,
+        &config,
         [
             "enroll".as_ref(),
             "worker-1".as_ref(),
@@ -25,7 +33,7 @@ fn identity_cli_enrolls_rotates_revokes_and_rejects_conflicts() -> Result<(), Bo
         ],
     )?);
     let conflict = run_identity(
-        &database,
+        &config,
         [
             "enroll".as_ref(),
             "worker-2".as_ref(),
@@ -34,7 +42,7 @@ fn identity_cli_enrolls_rotates_revokes_and_rejects_conflicts() -> Result<(), Bo
     )?;
     assert!(!conflict.status.success());
     assert_success(&run_identity(
-        &database,
+        &config,
         [
             "rotate".as_ref(),
             "worker-1".as_ref(),
@@ -43,7 +51,7 @@ fn identity_cli_enrolls_rotates_revokes_and_rejects_conflicts() -> Result<(), Bo
         ],
     )?);
     assert_success(&run_identity(
-        &database,
+        &config,
         ["revoke".as_ref(), new_certificate.as_os_str()],
     )?);
 
@@ -69,11 +77,12 @@ fn certificate(directory: &Path, name: &str) -> Result<std::path::PathBuf, Box<d
 }
 
 fn run_identity<const N: usize>(
-    database: &Path,
+    config: &Path,
     arguments: [&OsStr; N],
 ) -> Result<Output, Box<dyn Error>> {
     Ok(Command::new(env!("CARGO_BIN_EXE_alloyport-server"))
-        .env("ALLOYPORT_IDENTITY_DATABASE", database)
+        .arg("--config")
+        .arg(config)
         .arg("identity")
         .args(arguments)
         .output()?)

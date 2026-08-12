@@ -6,6 +6,8 @@ Project documentation is divided by purpose:
   recommended starting point for the next Codex session.
 - [`worker-configuration.md`](worker-configuration.md): standalone and remote worker bootstrap,
   registry-optional image identity, and shared device-selection rules.
+- [`server-configuration.md`](server-configuration.md): schema-versioned server bootstrap, local
+  defaults, environment precedence, TLS, storage, and identity administration.
 - [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md): active incremental layering,
   composition-root, port, API, configuration, and process-lifecycle improvements.
 - [`design/`](design/README.md): numbered architecture and system-design documents.

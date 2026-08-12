@@ -56,6 +56,12 @@ if ! rg -q '^pub async fn run_from_args\(' \
     crates/alloyport-server/src/application/mod.rs; then
     violations+=("server application composition entry point is missing")
 fi
+if ! rg -q 'schema_version: u16' crates/alloyport-server/src/application/config.rs \
+    || ! rg -q 'serde\(deny_unknown_fields\)' crates/alloyport-server/src/application/config.rs \
+    || ! rg -q 'ALLOYPORT_SERVER_CONFIG' crates/alloyport-server/src/application/config.rs \
+    || ! rg -q 'ServerCommand::from_process_args' crates/alloyport-server/src/application/mod.rs; then
+    violations+=("strict versioned server configuration or shared command boundary is missing")
+fi
 if server_config_coupling=$(rg -n \
     'Sqlite|FilesystemArtifactStore|WorkerControlService|Server::builder|run_lease_reaper' \
     crates/alloyport-server/src/application/config.rs); then
@@ -69,6 +75,10 @@ fi
 if server_assembly_environment=$(rg -n 'std::env|env::args|env::var' \
     crates/alloyport-server/src/application/assembly.rs); then
     violations+=("server concrete assembly started reading process environment directly: ${server_assembly_environment}")
+fi
+if server_identity_environment=$(rg -n 'std::env|env::args|env::var' \
+    crates/alloyport-server/src/application/identity_admin.rs); then
+    violations+=("server identity administration started bypassing shared process configuration: ${server_identity_environment}")
 fi
 if ! rg -q 'serve_with_shutdown' crates/alloyport-server/src/application/runtime.rs \
     || ! rg -q 'tokio::time::timeout' crates/alloyport-server/src/application/runtime.rs \

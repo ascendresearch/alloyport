@@ -81,12 +81,18 @@ python3 /data/projects/ascend-factory/harness/test_event_protocol.py --fixture \
 Start the server locally, then run a configured GPU or NPU worker:
 
 ```bash
-# terminal 1; plaintext is intentionally restricted to loopback
-cargo run -p alloyport-server
+# terminal 1; the checked-in server example uses loopback and local SQLite/filesystem state
+cargo run -p alloyport-server -- --config docs/server-config.example.json
 
 # terminal 2; first copy the relevant example and replace every placeholder
 cargo run -p alloyport-worker -- --config /absolute/path/to/worker.json
 ```
+
+The server can use its zero-dependency loopback defaults or one strict schema-1 JSON configuration.
+`--config PATH` takes locator precedence over `ALLOYPORT_SERVER_CONFIG`; individual environment
+values override file values and then defaults. File paths are relative to the configuration file.
+See [server configuration](docs/server-configuration.md) and the checked-in
+[example](docs/server-config.example.json).
 
 The worker's single JSON configuration carries its server connection, TLS paths, worker ID, journal,
 backend environment, local image identity, device-selection policy, and execution limits. Loopback
@@ -95,8 +101,8 @@ rejected. See [worker configuration](docs/worker-configuration.md) and the check
 [CUDA](docs/cuda-worker-config.example.json) and
 [Ascend](docs/ascend-worker-config.example.json) examples.
 
-Remote server mode requires `ALLOYPORT_TLS_CERT`, `ALLOYPORT_TLS_KEY`, and
-`ALLOYPORT_TLS_CLIENT_CA`.
+Remote server mode requires a complete JSON `tls` block or `ALLOYPORT_TLS_CERT`,
+`ALLOYPORT_TLS_KEY`, and `ALLOYPORT_TLS_CLIENT_CA`.
 The server database is selected with `ALLOYPORT_DATABASE` and defaults to
 `alloyport-control.sqlite3`; the worker journal path is explicit in `worker.journal`. Artifact state
 is rooted at `ALLOYPORT_ARTIFACT_ROOT` (default

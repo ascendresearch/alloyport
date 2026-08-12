@@ -30,6 +30,7 @@ stable identifier.
 | 0020 | [Worker supervisor placement and per-attempt isolation](0020-worker-supervisor-placement-and-attempt-isolation.md) | Accepted |
 | 0021 | [Fixed Ascend worker execution contract](0021-fixed-ascend-worker-contract.md) | Accepted; fixed runtime and outbound gate implemented |
 | 0022 | [Standalone worker configuration and shared device selection](0022-standalone-worker-configuration-and-device-selection.md) | Accepted; first implementation slice complete |
+| 0023 | [Versioned server configuration](0023-versioned-server-configuration.md) | Accepted; first implementation slice complete |
 
 ## Convention
 
