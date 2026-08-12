@@ -4,15 +4,11 @@ use super::*;
 use crate::upload::{
     ArtifactReferenceKind, GarbageCollectionReport, GrantArtifactReference, QuotaScope,
 };
-use crate::{
-    ArtifactReader, ArtifactRetentionStore, ArtifactStore, ArtifactStoreError,
-    FilesystemArtifactStore, IngestResult,
-};
+use crate::{ArtifactRetentionStore, ArtifactStore, ArtifactStoreError, FilesystemArtifactStore};
 use ring::digest::{Context, SHA256};
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 
@@ -57,63 +53,6 @@ fn upload_resumes_after_reopen_and_finalizes_into_the_cas() -> Result<(), Box<dy
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes)?;
     assert_eq!(bytes, b"hello world");
-    Ok(())
-}
-
-#[test]
-fn zero_byte_upload_finalizes_without_an_append_file() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
-    let uploads = SqliteUploadStore::open(
-        directory.path().join("uploads.sqlite3"),
-        directory.path().join("uploads"),
-        1_024,
-        8,
-    )?;
-    let artifacts = FilesystemArtifactStore::open(directory.path().join("cas"), 1_024)?;
-    let digest = Sha256Digest::digest_bytes(&[]);
-    let session = uploads.begin(&BeginUpload {
-        owner_id: "worker-1".into(),
-        upload_key: "attempt-1:stderr".into(),
-        expected_digest: digest,
-        expected_size_bytes: 0,
-        media_type: "application/vnd.alloyport.stderr".into(),
-        now_ms: 1,
-        expires_at_ms: 1_001,
-    })?;
-
-    assert_eq!(
-        uploads.finalize("worker-1", &session.upload_id, &artifacts, 2)?,
-        ArtifactIdentity {
-            digest,
-            size_bytes: 0,
-        }
-    );
-    assert!(artifacts.contains(digest)?);
-    Ok(())
-}
-
-#[test]
-fn begin_is_idempotent_per_owner_key_and_rejects_changed_metadata() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
-    let uploads = SqliteUploadStore::open(
-        directory.path().join("uploads.sqlite3"),
-        directory.path().join("uploads"),
-        1_024,
-        8,
-    )?;
-    let request = request(b"content");
-    let first = uploads.begin(&request)?;
-    assert_eq!(uploads.begin(&request)?, first);
-    let mut changed = request;
-    changed.media_type = "application/changed".to_owned();
-    assert!(matches!(
-        uploads.begin(&changed),
-        Err(UploadError::ConflictingUploadKey)
-    ));
-    assert!(matches!(
-        uploads.status("other-worker", &first.upload_id),
-        Err(UploadError::OwnerMismatch)
-    ));
     Ok(())
 }
 
@@ -163,67 +102,6 @@ fn expired_sessions_are_pruned_with_their_partial_bytes() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn digest_failure_is_terminal_and_never_publishes_expected_key() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
-    let uploads = SqliteUploadStore::open(
-        directory.path().join("uploads.sqlite3"),
-        directory.path().join("uploads"),
-        1_024,
-        8,
-    )?;
-    let cas = FilesystemArtifactStore::open(directory.path().join("cas"), 1_024)?;
-    let mut request = request(b"right");
-    request.expected_digest = digest(b"wrong");
-    let session = uploads.begin(&request)?;
-    uploads.append("worker-1", &session.upload_id, 0, b"right", 2)?;
-    assert!(matches!(
-        uploads.finalize("worker-1", &session.upload_id, &cas, 3),
-        Err(UploadError::Artifact(
-            ArtifactStoreError::DigestMismatch { .. }
-        ))
-    ));
-    assert_eq!(
-        uploads.status("worker-1", &session.upload_id)?.state,
-        UploadState::Failed
-    );
-    assert!(!cas.contains(request.expected_digest)?);
-    Ok(())
-}
-
-#[test]
-fn transient_cas_failure_leaves_finalization_retryable() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
-    let uploads = SqliteUploadStore::open(
-        directory.path().join("uploads.sqlite3"),
-        directory.path().join("uploads"),
-        1_024,
-        8,
-    )?;
-    let cas = FlakyStore {
-        inner: FilesystemArtifactStore::open(directory.path().join("cas"), 1_024)?,
-        fail_next: AtomicBool::new(true),
-    };
-    let request = request(b"retry");
-    let session = uploads.begin(&request)?;
-    uploads.append("worker-1", &session.upload_id, 0, b"retry", 2)?;
-    assert!(matches!(
-        uploads.finalize("worker-1", &session.upload_id, &cas, 3),
-        Err(UploadError::Artifact(ArtifactStoreError::Io { .. }))
-    ));
-    assert_eq!(
-        uploads.status("worker-1", &session.upload_id)?.state,
-        UploadState::Finalizing
-    );
-    assert_eq!(
-        uploads
-            .finalize("worker-1", &session.upload_id, &cas, 4)?
-            .digest,
-        request.expected_digest
-    );
-    Ok(())
-}
-
-#[test]
 fn quota_reservation_is_idempotent_and_survives_restart() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("uploads.sqlite3");
@@ -249,22 +127,6 @@ fn quota_reservation_is_idempotent_and_survives_restart() -> Result<(), Box<dyn 
             ..
         })
     ));
-    Ok(())
-}
-
-#[test]
-fn per_owner_quota_does_not_block_another_owner() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
-    let uploads = quota_store(directory.path(), 12, 6)?;
-    uploads.begin(&quota_request("worker-1", "first", b"123456", 1, 100))?;
-    assert!(matches!(
-        uploads.begin(&quota_request("worker-1", "second", b"x", 1, 100)),
-        Err(UploadError::QuotaExceeded {
-            scope: QuotaScope::Owner,
-            ..
-        })
-    ));
-    uploads.begin(&quota_request("worker-2", "first", b"abcdef", 1, 100))?;
     Ok(())
 }
 
@@ -304,52 +166,6 @@ fn concurrent_begin_cannot_overcommit_total_quota() -> Result<(), Box<dyn Error>
             .count(),
         1
     );
-    Ok(())
-}
-
-#[test]
-fn terminal_failure_and_expiry_release_reservations() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
-    let uploads = quota_store(directory.path(), 5, 5)?;
-    let cas = FilesystemArtifactStore::open(directory.path().join("cas"), 100)?;
-    let mut invalid = quota_request("worker-1", "invalid", b"right", 1, 100);
-    invalid.expected_digest = digest(b"wrong");
-    let session = uploads.begin(&invalid)?;
-    uploads.append("worker-1", &session.upload_id, 0, b"right", 2)?;
-    assert!(matches!(
-        uploads.finalize("worker-1", &session.upload_id, &cas, 3),
-        Err(UploadError::Artifact(
-            ArtifactStoreError::DigestMismatch { .. }
-        ))
-    ));
-    uploads.begin(&quota_request("worker-2", "after-failure", b"12345", 4, 10))?;
-
-    let expiry_directory = tempfile::tempdir()?;
-    let expiring = quota_store(expiry_directory.path(), 5, 5)?;
-    expiring.begin(&quota_request("worker-1", "expired", b"12345", 1, 10))?;
-    expiring.begin(&quota_request(
-        "worker-2",
-        "after-expiry",
-        b"abcde",
-        10,
-        100,
-    ))?;
-    assert_eq!(expiring.prune_expired(10)?, 1);
-    Ok(())
-}
-
-#[test]
-fn completed_duplicate_digest_is_not_counted_twice() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
-    let uploads = quota_store(directory.path(), 10, 10)?;
-    let cas = FilesystemArtifactStore::open(directory.path().join("cas"), 100)?;
-    for key in ["first", "duplicate"] {
-        let request = quota_request("worker-1", key, b"12345", 1, 100);
-        let session = uploads.begin(&request)?;
-        uploads.append("worker-1", &session.upload_id, 0, b"12345", 2)?;
-        uploads.finalize("worker-1", &session.upload_id, &cas, 3)?;
-    }
-    uploads.begin(&quota_request("worker-1", "remaining", b"abcde", 4, 100))?;
     Ok(())
 }
 
@@ -407,93 +223,6 @@ fn pre_quota_schema_is_migrated_and_backfilled() -> Result<(), Box<dyn Error>> {
             ..
         })
     ));
-    Ok(())
-}
-
-#[test]
-fn controller_references_are_idempotent_typed_and_revocable() -> Result<(), Box<dyn Error>> {
-    let directory = tempfile::tempdir()?;
-    let uploads = Arc::new(SqliteUploadStore::open_with_quotas(
-        directory.path().join("uploads.sqlite3"),
-        directory.path().join("uploads"),
-        100,
-        100,
-        UploadQuotas {
-            total_bytes: 10,
-            per_owner_bytes: 5,
-        },
-    )?);
-    let cas = FilesystemArtifactStore::open(directory.path().join("cas"), 100)?;
-    let (session, artifact) = complete_upload(&uploads, &cas, "worker-1", "source", b"data")?;
-    let grant = GrantArtifactReference {
-        owner_id: "worker-2".into(),
-        reference_key: "assignment:attempt-1:input".into(),
-        digest: artifact.digest,
-        kind: ArtifactReferenceKind::AssignmentInput,
-        purpose: "attempt input bundle".into(),
-        now_ms: 10,
-        retained_until_ms: None,
-    };
-    uploads.begin(&quota_request("worker-3", "reserved", b"xx", 9, 100))?;
-    let quota_blocked = GrantArtifactReference {
-        owner_id: "worker-3".into(),
-        reference_key: "assignment:quota-blocked".into(),
-        ..grant.clone()
-    };
-    assert!(matches!(
-        uploads.grant_reference(&quota_blocked),
-        Err(UploadError::QuotaExceeded {
-            scope: QuotaScope::Owner,
-            ..
-        })
-    ));
-    let barrier = Arc::new(Barrier::new(2));
-    let mut handles = Vec::new();
-    for _ in 0..2 {
-        let uploads = Arc::clone(&uploads);
-        let barrier = Arc::clone(&barrier);
-        let grant = grant.clone();
-        handles.push(thread::spawn(move || {
-            barrier.wait();
-            uploads.grant_reference(&grant)
-        }));
-    }
-    for handle in handles {
-        assert_eq!(
-            handle.join().expect("grant thread must not panic")?,
-            uploads.reference("worker-2", &grant.reference_key)?
-        );
-    }
-    assert!(uploads.can_read_artifact("worker-2", artifact.digest)?);
-    let mut conflicting = grant.clone();
-    conflicting.purpose = "different purpose".into();
-    assert!(matches!(
-        uploads.grant_reference(&conflicting),
-        Err(UploadError::ConflictingReferenceKey)
-    ));
-
-    let second = GrantArtifactReference {
-        reference_key: "receipt:attempt-1".into(),
-        kind: ArtifactReferenceKind::Receipt,
-        purpose: "attempt receipt evidence".into(),
-        ..grant
-    };
-    uploads.grant_reference(&second)?;
-    uploads.revoke_reference("worker-2", "assignment:attempt-1:input", 20)?;
-    assert!(uploads.can_read_artifact("worker-2", artifact.digest)?);
-    let revoked = uploads.revoke_reference("worker-2", "receipt:attempt-1", 21)?;
-    assert_eq!(
-        uploads.revoke_reference("worker-2", "receipt:attempt-1", 22)?,
-        revoked
-    );
-    assert!(!uploads.can_read_artifact("worker-2", artifact.digest)?);
-    assert!(uploads.can_read_artifact("worker-1", artifact.digest)?);
-    assert_eq!(
-        uploads
-            .reference("worker-1", &format!("upload:{}", session.upload_id))?
-            .kind,
-        ArtifactReferenceKind::Upload
-    );
     Ok(())
 }
 
@@ -713,12 +442,6 @@ fn digest(bytes: &[u8]) -> Sha256Digest {
     Sha256Digest::from_bytes(value)
 }
 
-#[derive(Debug)]
-struct FlakyStore {
-    inner: FilesystemArtifactStore,
-    fail_next: AtomicBool,
-}
-
 #[derive(Debug, Default)]
 struct RecordingRetentionStore {
     removed: Mutex<Vec<Sha256Digest>>,
@@ -734,29 +457,5 @@ impl ArtifactRetentionStore for RecordingRetentionStore {
             })?
             .push(digest);
         Ok(true)
-    }
-}
-
-impl ArtifactStore for FlakyStore {
-    fn ingest(
-        &self,
-        source: &mut dyn Read,
-        request: IngestRequest,
-    ) -> Result<IngestResult, ArtifactStoreError> {
-        if self.fail_next.swap(false, Ordering::Relaxed) {
-            return Err(ArtifactStoreError::Io {
-                operation: "fixture transient failure",
-                source: io::Error::other("fixture"),
-            });
-        }
-        self.inner.ingest(source, request)
-    }
-
-    fn open(&self, digest: Sha256Digest) -> Result<ArtifactReader, ArtifactStoreError> {
-        self.inner.open(digest)
-    }
-
-    fn contains(&self, digest: Sha256Digest) -> Result<bool, ArtifactStoreError> {
-        self.inner.contains(digest)
     }
 }

@@ -133,6 +133,11 @@ pub struct UploadSession {
 }
 
 /// Mutable upload-session and staging operations required by the Artifact application service.
+///
+/// An `(owner_id, upload_key)` is an immutable idempotency identity. Appends commit only at the
+/// exact reported offset, and every operation is owner scoped. Finalization publishes metadata only
+/// after verified immutable ingestion: transient Artifact-store failures remain retryable, while
+/// verification failures make the session terminal without granting read access.
 #[allow(clippy::missing_errors_doc)]
 pub trait ArtifactUploadRepository: Debug + Send + Sync {
     fn begin(&self, request: &BeginUpload) -> Result<UploadSession, UploadError>;
@@ -161,6 +166,10 @@ pub trait ArtifactUploadRepository: Debug + Send + Sync {
 }
 
 /// Published-object metadata and durable reference operations used by authorization/controllers.
+///
+/// Completed-session lookup is owner scoped. Read authorization exists only while that owner has an
+/// active reference to the digest. Reference keys are immutable and idempotent for identical
+/// grants; a reused key with different metadata must fail rather than silently change authority.
 #[allow(clippy::missing_errors_doc)]
 pub trait ArtifactMetadataStore: Debug + Send + Sync {
     fn completed_upload_session_by_key(

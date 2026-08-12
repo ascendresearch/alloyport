@@ -171,3 +171,6 @@ impl Error for ArtifactStoreError {
 
 #[cfg(test)]
 mod artifact_store_contract_tests;
+
+#[cfg(test)]
+mod upload_metadata_contract_tests;

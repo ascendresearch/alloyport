@@ -37,10 +37,15 @@ not considered compatible merely because it implements the Rust trait.
    reads, preparation visibility and defer ordering, dispatchability/replay, reassignment linkage,
    and the atomic state/lease/outbox permission boundary including conflict rollback. SQLite-only
    tests retain reopen durability, schema migration, and connection-sequence rollback evidence.
-5. **Artifact upload metadata — next.** Cover idempotent sessions, exact offsets, finalize retry
-   classes, ownership, quota reservation, references, and reachability independently of
-   SQLite-specific SQL.
-6. **Interaction persistence and replay.** Cover per-run sequence, deduplication/conflict, cursors,
+5. **Artifact upload metadata — implemented.** `ArtifactUploadRepository` and
+   `ArtifactMetadataStore`, plus the narrow administrative test harness, run one contract against
+   SQLite and a focused memory reference. The suite covers immutable idempotency keys, exact
+   offsets, owner isolation, zero-byte publication, retryable versus terminal finalization, quota
+   reservation/release, typed reference idempotency/conflict/revocation, retention, and reachability
+   through garbage collection. SQLite-only tests retain reopen/migration, crash-tail repair,
+   concurrent quota admission, reader leases, and pending-GC recovery.
+6. **Interaction persistence and replay — next.** Cover per-run sequence,
+   deduplication/conflict, cursors,
    run grants/revocation, and replay-to-live boundaries without folding transport delivery into the
    persistence Port.
 7. **Execution backends and gRPC adapters.** Preserve typed failure classes, immutable assignment

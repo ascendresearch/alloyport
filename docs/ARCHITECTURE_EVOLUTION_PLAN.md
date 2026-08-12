@@ -138,8 +138,11 @@ canonical Interaction events, wire messages, and durable audit/evidence as separ
   expiry, stale-result, and cancellation semantics against SQLite and a focused reference.
 - [x] Server assignment contract runs immutable admission, preparation/defer, dispatch/replay,
   conflict rollback, and reassignment semantics against SQLite and a focused reference.
+- [x] Artifact upload and metadata contract runs session identity, exact-offset publication,
+  finalize failure classes, ownership, quota, reference, retention, and reachability semantics
+  against SQLite and a focused reference.
 - [ ] Remaining high-value Port contract suites implemented in the order recorded in
-  `PORT_CONTRACTS.md`, beginning with Artifact upload metadata.
+  `PORT_CONTRACTS.md`, beginning with Interaction persistence and replay.
 - [ ] Common gRPC middleware/error policy established.
 - [x] Strict schema-1 server configuration, explicit locator precedence, file-relative paths, and a
   shared serving/identity-administration command boundary introduced.

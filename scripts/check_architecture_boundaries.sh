@@ -128,6 +128,14 @@ if ! rg -q '^pub struct InMemoryArtifactStore' \
         crates/alloyport-artifacts/src/artifact_store_contract_tests.rs; then
     violations+=("immutable Artifact adapters no longer share one Port contract suite")
 fi
+if ! rg -q '^fn upload_metadata_port_contract' \
+    crates/alloyport-artifacts/src/upload_metadata_contract_tests.rs \
+    || ! rg -q '^fn sqlite_upload_metadata_satisfies_shared_port_contract' \
+        crates/alloyport-artifacts/src/upload_metadata_contract_tests.rs \
+    || ! rg -q '^fn memory_upload_metadata_satisfies_shared_port_contract' \
+        crates/alloyport-artifacts/src/upload_metadata_contract_tests.rs; then
+    violations+=("Artifact upload-metadata implementations no longer share one Port contract suite")
+fi
 if ephemeral_artifact_composition=$(rg -n 'InMemoryArtifactStore' \
     crates/alloyport-server/src/application/assembly.rs \
     crates/alloyport-worker/src/application/assembly.rs); then

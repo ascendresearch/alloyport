@@ -766,7 +766,11 @@ acknowledgement remains a control receipt; only the terminal observation proves 
 The server assignment contract is complete as well: SQLite and a focused reference share immutable
 admission, preparation/defer ordering, dispatch/replay, conflict rollback, and reassignment rules.
 SQLite-specific tests retain reopen, migration, and connection-sequence rollback evidence. Artifact
-upload metadata is the next Port contract slice.
+upload metadata now has the same substitutability evidence: SQLite and a focused memory reference
+share owner-scoped idempotency, exact offsets, publication failure classes, quotas, references,
+retention, and reachability semantics. Reopen/migration, crash-tail repair, concurrent quota
+admission, active readers, and pending-GC recovery remain SQLite-specific. Interaction persistence
+and replay is the next Port contract slice.
 
 The real GB10 gate is explicit and remains ignored during normal test runs:
 
