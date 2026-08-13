@@ -31,6 +31,10 @@ pub(super) fn run(directory: &Path) -> Result<(), Box<dyn Error>> {
         "workers/ascend-worker-1",
         "state/artifacts",
         "state/migrations",
+        "state/candidate-workspace",
+        "example-project/input/include",
+        "example-project/input/src",
+        "example-project/input/tests",
     ] {
         fs::create_dir_all(root.join(relative))?;
     }
@@ -227,6 +231,11 @@ fn write_runtime_assets(root: &Path) -> Result<(), Box<dyn Error>> {
         "../../../../docs/candidate-episode-config.example.json"
     ))?;
     candidate["model_catalog"] = Value::String("provider.json".to_owned());
+    candidate["migration_spec"] =
+        Value::String("example-project/migration-spec-v1.json".to_owned());
+    candidate["reference_root"] = Value::String("example-project".to_owned());
+    candidate["workspace_root"] = Value::String("state/candidate-workspace".to_owned());
+    candidate["episode_database"] = Value::String("state/candidate-episode.sqlite3".to_owned());
     candidate["episode"]["system_prompt"] = Value::String("system-prompt.md".to_owned());
     candidate["episode"]["initial_user_text"] = Value::String("user-prompt.md".to_owned());
     write_json(&root.join("candidate.json"), &candidate)?;
@@ -242,6 +251,46 @@ fn write_runtime_assets(root: &Path) -> Result<(), Box<dyn Error>> {
         &root.join("user-prompt.md"),
         include_bytes!("../../../../docs/candidate-user-prompt.example.md"),
     )?;
+    for (relative, contents) in [
+        (
+            "example-project/migration-spec-v1.json",
+            include_bytes!(
+                "../../../../fixtures/migrations/cuda-reduction-v1/migration-spec-v1.json"
+            ) as &[u8],
+        ),
+        (
+            "example-project/input/CMakeLists.txt",
+            include_bytes!(
+                "../../../../fixtures/migrations/cuda-reduction-v1/input/CMakeLists.txt"
+            ),
+        ),
+        (
+            "example-project/input/include/reduce_sum.h",
+            include_bytes!(
+                "../../../../fixtures/migrations/cuda-reduction-v1/input/include/reduce_sum.h"
+            ),
+        ),
+        (
+            "example-project/input/src/reduce_sum_kernel.cu",
+            include_bytes!(
+                "../../../../fixtures/migrations/cuda-reduction-v1/input/src/reduce_sum_kernel.cu"
+            ),
+        ),
+        (
+            "example-project/input/src/reduce_sum_launch.cu",
+            include_bytes!(
+                "../../../../fixtures/migrations/cuda-reduction-v1/input/src/reduce_sum_launch.cu"
+            ),
+        ),
+        (
+            "example-project/input/tests/reference_main.cpp",
+            include_bytes!(
+                "../../../../fixtures/migrations/cuda-reduction-v1/input/tests/reference_main.cpp"
+            ),
+        ),
+    ] {
+        write_public(&root.join(relative), contents)?;
+    }
     Ok(())
 }
 
@@ -286,6 +335,15 @@ mod tests {
         let config = ServerConfig::load(Some(root.join("server.json")))?;
         assert!(config.tls.is_some());
         assert!(config.migration_runtime.is_some());
+        let candidate: Value = serde_json::from_slice(&fs::read(root.join("candidate.json"))?)?;
+        assert_eq!(
+            candidate["migration_spec"],
+            Value::String("example-project/migration-spec-v1.json".to_owned())
+        );
+        assert!(
+            root.join("example-project/migration-spec-v1.json")
+                .is_file()
+        );
         assert_eq!(
             fs::metadata(root.join("pki/server-key.pem"))?
                 .permissions()
