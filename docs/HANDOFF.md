@@ -80,6 +80,8 @@ Read these documents before changing architecture or implementation:
     output, and correctness runtime registration.
 26. [`design/0031-standalone-correctness-worker-configuration.md`](design/0031-standalone-correctness-worker-configuration.md)
     for strict correctness-only worker files and production process composition.
+27. [`design/0032-pinned-correctness-images-and-cuda-diagnostic.md`](design/0032-pinned-correctness-images-and-cuda-diagnostic.md)
+    for RepoDigest-pinned runner images and the real CUDA diagnostic/calibration boundary.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -684,7 +686,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 272 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 274 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1121,16 +1123,29 @@ Standalone correctness-worker composition is complete under
 now has separate `cuda_correctness` and `ascend_correctness` variants with no fixture ID or fixed
 bundle digest. Their production assembly retains strict local image/device/environment authority,
 device lifecycle, CAS transfer, generic receipt publication, and outbound control behavior while
-advertising only the matching correctness feature. Checked-in examples are parsed by tests. Real
+advertising only the matching correctness feature. Checked-in examples are parsed by tests. Paired
 device evidence remains unimplemented.
+
+The pinned-image and first hardware diagnostic slice is complete under
+[Design 0032](design/0032-pinned-correctness-images-and-cuda-diagnostic.md). Separate CUDA and
+Ascend correctness Dockerfiles contain only their pinned build/runtime environments. Real attempts
+on the idle GB10 exposed and then closed missing Python-standard-library and CMake dependencies.
+The final image executed all 24 frozen CUDA observations under the offline/read-only container
+boundary, and the production oracle detected all ten mutants. The exact diagnostic run and
+calibration receipts plus image/base identities are in
+[`evidence/reduction-correctness-harness-diagnostic-20260812.md`](evidence/reduction-correctness-harness-diagnostic-20260812.md).
+The Ascend image is built and toolchain-checked, but no developer-authored target was substituted
+for the still-missing generated candidate.
 
 ## Suggested first task for the next Codex session
 
-The next action remains product-plan item 5, now narrowed to hardware acceptance for Designs 0030
-and 0031:
+The next action remains product-plan item 5, now narrowed to the first genuine candidate and paired
+hardware acceptance for Designs 0030 through 0032:
 
-> Execute the exact frozen corpus through the standalone CUDA-reference and Ascend-candidate
-> workers on both pinned devices and capture real run, calibration, and
-> Correctness receipts. Keep comparison and hidden corpus authority on the controller. Do not yet
+> Run the configuration-selected model through the existing durable Source/Build correction loop
+> until it produces a genuine Source- and Build-Gate-passing Ascend reduction candidate. Then
+> execute the exact frozen corpus through both standalone correctness workers and capture the paired
+> run and Correctness receipts. Keep comparison and hidden corpus authority on the controller. Do
+> not yet
 > add performance optimization, release automation, live provider validation, API, scheduler, UI,
 > retention policy, or generalized execution.

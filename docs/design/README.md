@@ -39,6 +39,7 @@ stable identifier.
 | 0029 | [Paired correctness worker dispatch](0029-paired-correctness-worker-dispatch.md) | Implemented control-plane slice |
 | 0030 | [Trusted reduction correctness worker harness](0030-trusted-reduction-correctness-worker-harness.md) | Implemented runtime slice |
 | 0031 | [Standalone correctness worker configuration](0031-standalone-correctness-worker-configuration.md) | Implemented |
+| 0032 | [Pinned correctness images and CUDA hardware diagnostic](0032-pinned-correctness-images-and-cuda-diagnostic.md) | Implemented diagnostic slice |
 
 ## Convention
 

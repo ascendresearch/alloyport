@@ -189,7 +189,10 @@ research report and complete Design 0025 now precede provider refactoring or Sou
    - [x] Implement policy-bound CUDA-reference and Ascend-candidate bundle materialization, trusted
      harnesses, fixed container plans, runtime registration, and structured receipt publication.
    - [x] Add strict standalone correctness-worker configuration and production runtime composition.
-   - [ ] Capture real CUDA/Ascend run, calibration, and Correctness receipts for the frozen corpus.
+   - [x] Build RepoDigest-pinned CUDA/Ascend correctness images and capture a real CUDA diagnostic
+     run plus ten-mutant calibration for the frozen corpus.
+   - [ ] Capture a Build-Gate-authorized paired CUDA/Ascend run and Correctness receipt for a real
+     generated candidate.
 6. Produce the first complete release and evidence bundle.
 7. Add two-stage optimization and value-backed memory.
 8. Attempt a second specimen before expanding platform scope.

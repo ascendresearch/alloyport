@@ -2,10 +2,12 @@ use super::*;
 use alloyport_artifacts::{ArtifactStore, InMemoryArtifactStore, IngestRequest};
 use alloyport_core::{
     ArtifactDescriptor, AssignmentContract, AssignmentId, AttemptId, BundlePath, CandidateId,
-    ExecutionContract, ReductionCorpus, ReductionCorrectnessExperiment, ReductionExecutionFile,
-    ResourceContract, TaskId,
+    ExecutionContract, ReductionCalibrationReceipt, ReductionCorpus,
+    ReductionCorrectnessExperiment, ReductionExecutionFile, ReductionRunReceipt, ResourceContract,
+    TaskId,
 };
 use std::io::Cursor;
+use std::str::FromStr;
 
 fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::digest_bytes(label.as_bytes())
@@ -276,5 +278,46 @@ fn role_and_network_cannot_cross_local_policy() -> Result<(), Box<dyn Error>> {
         .expect("limits")
         .network = NetworkPolicy::DependencyFetch;
     assert!(policy.validate_assignment(&assignment).is_err());
+    Ok(())
+}
+
+#[test]
+fn trusted_images_declare_the_complete_runner_toolchain() {
+    let cuda = include_str!("../../../fixtures/reduction-correctness-v1/cuda-image/Dockerfile");
+    for required in ["python3", "cmake", "g++", "make", "/usr/local/cuda/bin"] {
+        assert!(cuda.contains(required), "CUDA image omits {required}");
+    }
+    let ascend = include_str!("../../../fixtures/reduction-correctness-v1/ascend-image/Dockerfile");
+    for required in [
+        "python3",
+        "ASCEND_TOOLKIT_HOME",
+        "ccec_compiler",
+        "/usr/local/Ascend/driver/lib64",
+    ] {
+        assert!(ascend.contains(required), "Ascend image omits {required}");
+    }
+    assert!(!cuda.contains("COPY "));
+    assert!(!ascend.contains("COPY "));
+}
+
+#[test]
+fn real_cuda_diagnostic_evidence_remains_schema_valid_and_complete() -> Result<(), Box<dyn Error>> {
+    let receipt: ReductionRunReceipt = serde_json::from_slice(include_bytes!(
+        "../../../docs/evidence/cuda-reduction-correctness-diagnostic-20260812.json"
+    ))?;
+    assert_eq!(receipt.role(), ReductionRunRole::CudaReference);
+    assert_eq!(receipt.observations().len(), 24);
+    assert_eq!(
+        receipt.implementation_digest(),
+        Sha256Digest::from_str(
+            "sha256:b495ea483e83b074eb71a559a85a6d5c1644c271b144625c5ca430d6a24579ed"
+        )?
+    );
+    let calibration: ReductionCalibrationReceipt = serde_json::from_slice(include_bytes!(
+        "../../../docs/evidence/cuda-reduction-calibration-diagnostic-20260812.json"
+    ))?;
+    assert!(calibration.passed());
+    assert_eq!(calibration.detections().len(), 10);
+    assert!(calibration.detections().iter().all(|item| item.detected));
     Ok(())
 }
