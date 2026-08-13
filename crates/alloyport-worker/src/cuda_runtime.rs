@@ -131,6 +131,11 @@ impl CudaExecutionRuntime {
         &self.environment
     }
 
+    #[must_use]
+    pub fn executor_kind(&self) -> alloyport_core::ExecutionKind {
+        self.supervisor.executor_kind()
+    }
+
     /// Runs one CUDA attempt without a remote Artifact publisher.
     ///
     /// # Errors

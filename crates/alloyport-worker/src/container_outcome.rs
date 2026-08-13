@@ -2,7 +2,7 @@
 
 use crate::container_engine::{ContainerExit, ContainerLogs};
 use crate::executor::ExecutorResult;
-use alloyport_core::AttemptOutcome;
+use alloyport_core::{AttemptOutcome, ReductionRunReceipt};
 
 #[derive(Clone, Copy)]
 pub(crate) enum ContainerTermination {
@@ -18,6 +18,13 @@ pub(crate) struct FixtureOutcomePolicy {
     pub exited_detail: &'static str,
     pub nonzero_detail: &'static str,
     pub missing_marker_detail: &'static str,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct CorrectnessOutcomePolicy {
+    pub exited: &'static str,
+    pub nonzero: &'static str,
+    pub invalid_receipt: &'static str,
 }
 
 pub(crate) fn enforce_output_limit(mut logs: ContainerLogs, limit: u64) -> ContainerLogs {
@@ -41,8 +48,45 @@ pub(crate) fn classify_fixture_outcome(
     timeout_ms: u64,
     policy: FixtureOutcomePolicy,
 ) -> ExecutorResult {
+    classify_verified_outcome(
+        termination,
+        logs,
+        timeout_ms,
+        policy.exited_detail,
+        policy.nonzero_detail,
+        policy.missing_marker_detail,
+        |stdout| has_verification_marker(stdout, policy.fixture_id),
+    )
+}
+
+pub(crate) fn classify_correctness_outcome(
+    termination: ContainerTermination,
+    logs: ContainerLogs,
+    timeout_ms: u64,
+    policy: CorrectnessOutcomePolicy,
+) -> ExecutorResult {
+    classify_verified_outcome(
+        termination,
+        logs,
+        timeout_ms,
+        policy.exited,
+        policy.nonzero,
+        policy.invalid_receipt,
+        |stdout| serde_json::from_slice::<ReductionRunReceipt>(stdout).is_ok(),
+    )
+}
+
+fn classify_verified_outcome(
+    termination: ContainerTermination,
+    logs: ContainerLogs,
+    timeout_ms: u64,
+    exited_detail: &'static str,
+    nonzero_detail: &'static str,
+    missing_evidence_detail: &'static str,
+    has_success_evidence: impl FnOnce(&[u8]) -> bool,
+) -> ExecutorResult {
     let (exit, forced_outcome, detail) = match termination {
-        ContainerTermination::Exited(exit) => (exit, None, policy.exited_detail),
+        ContainerTermination::Exited(exit) => (exit, None, exited_detail),
         ContainerTermination::Cancelled(exit) => {
             (exit, Some(AttemptOutcome::Cancelled), "execution cancelled")
         }
@@ -78,14 +122,14 @@ pub(crate) fn classify_fixture_outcome(
             AttemptOutcome::CandidateFailed,
             Some(exit.exit_code),
             exit.elapsed_ms,
-            policy.nonzero_detail,
+            nonzero_detail,
         )
-    } else if !has_verification_marker(&logs.stdout, policy.fixture_id) {
+    } else if !has_success_evidence(&logs.stdout) {
         (
             AttemptOutcome::IntegrityViolation,
             Some(0),
             exit.elapsed_ms,
-            policy.missing_marker_detail,
+            missing_evidence_detail,
         )
     } else {
         (AttemptOutcome::Succeeded, Some(0), exit.elapsed_ms, detail)
@@ -110,6 +154,7 @@ fn has_verification_marker(stdout: &[u8], fixture_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloyport_core::{CandidateId, ReductionObservation, ReductionRunRole, Sha256Digest};
 
     const POLICIES: [FixtureOutcomePolicy; 2] = [
         FixtureOutcomePolicy {
@@ -131,6 +176,56 @@ mod tests {
         for policy in POLICIES {
             fixture_terminal_outcome_contract(policy);
         }
+    }
+
+    #[test]
+    fn correctness_requires_one_valid_structured_receipt() {
+        let digest = Sha256Digest::digest_bytes(b"correctness");
+        let receipt = ReductionRunReceipt::new(
+            digest,
+            ReductionRunRole::AscendCandidate,
+            Some(CandidateId::try_from("candidate-1").expect("candidate ID")),
+            digest,
+            digest,
+            digest,
+            true,
+            true,
+            vec![ReductionObservation {
+                case_id: "zero".into(),
+                repetition: 1,
+                elements: 0,
+                input_digest: digest,
+                status: 0,
+                output_bits: Some(0),
+            }],
+        )
+        .expect("valid run receipt");
+        let policy = CorrectnessOutcomePolicy {
+            exited: "correctness exited",
+            nonzero: "correctness failed",
+            invalid_receipt: "invalid receipt",
+        };
+        let valid = classify_correctness_outcome(
+            ContainerTermination::Exited(ContainerExit {
+                exit_code: 0,
+                elapsed_ms: 8,
+            }),
+            logs(serde_json::to_vec(&receipt).expect("serialize receipt")),
+            100,
+            policy,
+        );
+        assert_eq!(valid.outcome, AttemptOutcome::Succeeded);
+
+        let invalid = classify_correctness_outcome(
+            ContainerTermination::Exited(ContainerExit {
+                exit_code: 0,
+                elapsed_ms: 8,
+            }),
+            logs(br#"{"schema_version":1}"#.to_vec()),
+            100,
+            policy,
+        );
+        assert_eq!(invalid.outcome, AttemptOutcome::IntegrityViolation);
     }
 
     fn fixture_terminal_outcome_contract(policy: FixtureOutcomePolicy) {

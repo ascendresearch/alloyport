@@ -8,7 +8,10 @@ use crate::cuda::{
 use crate::journal::{StoredArtifact, StoredExecution, StoredLimits};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
 use alloyport_core::{
-    AssignmentId, AttemptId, AttemptOutcome, CandidateId, ExecutionKind, NetworkPolicy, TaskId,
+    AssignmentId, AttemptId, AttemptOutcome, BundlePath, CUDA_REDUCTION_CORRECTNESS_FEATURE,
+    CandidateId, ExecutionKind, NetworkPolicy, REDUCTION_EXECUTION_BUNDLE_MEDIA_TYPE,
+    ReductionCorpus, ReductionCorrectnessExperiment, ReductionExecutionBundle,
+    ReductionExecutionFile, ReductionObservation, ReductionRunReceipt, ReductionRunRole, TaskId,
 };
 use std::io::Cursor;
 use std::sync::Mutex;
@@ -130,6 +133,28 @@ async fn image_mismatch_fails_closed_before_container_creation()
     Ok(())
 }
 
+#[tokio::test]
+async fn correctness_supervisor_requires_structured_stdout_from_fake_engine()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (fixture, receipt) = correctness_fixture()?;
+    let engine = FakeEngine::new(fixture.image_id.to_string());
+    engine.set_stdout(receipt);
+    let result = fixture
+        .supervisor
+        .run(&fixture.assignment, &engine, &CancellationToken::new())
+        .await?;
+    assert_eq!(result.outcome, AttemptOutcome::Succeeded);
+    assert_eq!(engine.counts(), (1, 1, 0));
+
+    let marker_only = FakeEngine::new(fixture.image_id.to_string());
+    let rejected = fixture
+        .supervisor
+        .run(&fixture.assignment, &marker_only, &CancellationToken::new())
+        .await?;
+    assert_eq!(rejected.outcome, AttemptOutcome::IntegrityViolation);
+    Ok(())
+}
+
 struct Fixture {
     _directory: tempfile::TempDir,
     supervisor: CudaContainerSupervisor,
@@ -224,6 +249,128 @@ fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     })
 }
 
+#[allow(clippy::too_many_lines)]
+fn correctness_fixture() -> Result<(Fixture, Vec<u8>), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let artifacts = Arc::new(FilesystemArtifactStore::open(
+        directory.path().join("cas"),
+        64 * 1024 * 1024,
+    )?);
+    let corpus = ReductionCorpus::fixture_v1();
+    let corpus_digest = corpus.digest()?;
+    let experiment = ReductionCorrectnessExperiment::new(
+        TaskId::try_from("task-correctness")?,
+        CandidateId::try_from("candidate-correctness")?,
+        Sha256Digest::digest_bytes(b"migration"),
+        Sha256Digest::digest_bytes(b"manifest"),
+        Sha256Digest::digest_bytes(b"source-gate"),
+        Sha256Digest::digest_bytes(b"build-gate"),
+        corpus_digest,
+        Sha256Digest::digest_bytes(b"policy"),
+    );
+    let bundle = ReductionExecutionBundle::new(
+        experiment.clone(),
+        ReductionRunRole::CudaReference,
+        corpus,
+        vec![ReductionExecutionFile::new(
+            BundlePath::try_from("input/CMakeLists.txt")?,
+            "add_library(reduce_sum STATIC source.cpp)",
+        )?],
+    )?;
+    let bytes = serde_json::to_vec(&bundle)?;
+    let stored = artifacts.ingest(&mut Cursor::new(bytes), IngestRequest::unverified())?;
+    let image_manifest = Sha256Digest::digest_bytes(b"correctness-manifest");
+    let image_id = Sha256Digest::digest_bytes(b"correctness-image");
+    let environment = crate::cuda_runtime::CudaEnvironmentFacts::new("sm_90", "580", "13.0")?;
+    let ceilings = crate::reduction_correctness::CorrectnessResourceCeilings {
+        timeout_ms: 60_000,
+        cpu_millis: 2_000,
+        memory_bytes: 2 * 1024 * 1024 * 1024,
+        disk_bytes: 512 * 1024 * 1024,
+        process_count: 64,
+        output_bytes: 1024 * 1024,
+    };
+    let reference = format!("example.invalid/cuda@{image_manifest}");
+    let policy = Arc::new(
+        crate::reduction_correctness::ReductionCorrectnessPolicy::new_cuda(
+            image_manifest,
+            &reference,
+            image_id,
+            "0",
+            directory.path().join("sandboxes"),
+            ceilings,
+            &environment,
+        )?,
+    );
+    let assignment = StoredAssignment {
+        assignment_id: AssignmentId::try_from("assignment-correctness")?,
+        attempt_id: AttemptId::try_from("attempt-correctness")?,
+        attempt_number: 1,
+        idempotency_key: "correctness:cuda".into(),
+        task_id: experiment.task_id().clone(),
+        candidate_id: experiment.candidate_id().clone(),
+        execution: StoredExecution {
+            executor_kind: ExecutionKind::CudaCorrectness,
+            argv: vec!["reduction-correctness-v1".into()],
+            working_directory: ".".into(),
+            environment: Vec::new(),
+            timeout_ms: ceilings.timeout_ms,
+            bundle: StoredArtifact {
+                digest: stored.artifact.digest,
+                size_bytes: stored.artifact.size_bytes,
+                media_type: REDUCTION_EXECUTION_BUNDLE_MEDIA_TYPE.into(),
+            },
+            image: StoredArtifact {
+                digest: image_manifest,
+                size_bytes: 512,
+                media_type: crate::container_engine::image_artifact_media_type(
+                    &reference,
+                    image_manifest,
+                    image_id,
+                )?
+                .into(),
+            },
+            limits: Some(StoredLimits {
+                cpu_millis: ceilings.cpu_millis,
+                memory_bytes: ceilings.memory_bytes,
+                disk_bytes: ceilings.disk_bytes,
+                process_count: ceilings.process_count,
+                output_bytes: ceilings.output_bytes,
+                device_count: 1,
+                network: NetworkPolicy::Disabled,
+            }),
+        },
+        required_features: vec![CUDA_REDUCTION_CORRECTNESS_FEATURE.into()],
+    };
+    let receipt = ReductionRunReceipt::new(
+        experiment.experiment_digest(),
+        ReductionRunRole::CudaReference,
+        None,
+        bundle.implementation_digest(),
+        corpus_digest,
+        Sha256Digest::digest_bytes(&serde_json::to_vec(&environment)?),
+        true,
+        true,
+        vec![ReductionObservation {
+            case_id: "zero".into(),
+            repetition: 1,
+            elements: 0,
+            input_digest: Sha256Digest::digest_bytes(b"input"),
+            status: 0,
+            output_bits: Some(0),
+        }],
+    )?;
+    Ok((
+        Fixture {
+            _directory: directory,
+            supervisor: CudaContainerSupervisor::new_correctness(policy, artifacts),
+            assignment,
+            image_id,
+        },
+        serde_json::to_vec(&receipt)?,
+    ))
+}
+
 #[derive(Debug)]
 struct FakeEngine {
     image_id: String,
@@ -240,6 +387,7 @@ struct FakeState {
     wait_calls: usize,
     block_first_wait: bool,
     output_limit_exceeded: bool,
+    stdout: Vec<u8>,
 }
 
 impl FakeEngine {
@@ -258,6 +406,8 @@ impl FakeEngine {
                 wait_calls: 0,
                 block_first_wait: false,
                 output_limit_exceeded: false,
+                stdout: b"PASS fixture=cuda-vectoradd-v1 elements=1048576 checksum=670562424\n"
+                    .to_vec(),
             }),
         }
     }
@@ -283,6 +433,10 @@ impl FakeEngine {
             .lock()
             .expect("fake engine lock")
             .output_limit_exceeded = true;
+    }
+
+    fn set_stdout(&self, stdout: Vec<u8>) {
+        self.state.lock().expect("fake engine lock").stdout = stdout;
     }
 }
 
@@ -351,9 +505,9 @@ impl CudaContainerEngine for FakeEngine {
         Box::pin(async {
             let output_limit_exceeded =
                 self.state.lock().map_err(|_| "lock")?.output_limit_exceeded;
+            let stdout = self.state.lock().map_err(|_| "lock")?.stdout.clone();
             Ok(ContainerLogs {
-                stdout: b"PASS fixture=cuda-vectoradd-v1 elements=1048576 checksum=670562424\n"
-                    .to_vec(),
+                stdout,
                 stderr: Vec::new(),
                 output_limit_exceeded,
             })

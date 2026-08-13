@@ -35,13 +35,17 @@ pub mod journal;
 #[cfg(test)]
 mod journal_contract_tests;
 pub mod nvidia_smi;
+pub mod reduction_correctness;
 mod wire_mapping;
 mod worker_delivery;
 mod worker_state;
 use worker_state::WorkerPersistence;
 
-use alloyport_core::ASCEND_BUILD_FEATURE;
 use alloyport_core::AcceleratorDevice;
+use alloyport_core::{
+    ASCEND_BUILD_FEATURE, ASCEND_REDUCTION_CORRECTNESS_FEATURE, CUDA_REDUCTION_CORRECTNESS_FEATURE,
+    ExecutionKind,
+};
 use alloyport_proto::v1::{AcceleratorDevice as WireDevice, Backend, WorkerHello};
 use alloyport_proto::{ValidationError, validate_worker_hello};
 use artifact_download::RemoteArtifactDownloader;
@@ -431,20 +435,28 @@ impl OutboundWorker {
                 "CUDA runtime environment facts do not match worker capabilities".into(),
             ));
         }
-        if !self
-            .hello
-            .features
-            .iter()
-            .any(|feature| feature == CUDA_FIXTURE_FEATURE)
-        {
-            self.hello.features.push(CUDA_FIXTURE_FEATURE.into());
+        let (feature, correctness) = match runtime.executor_kind() {
+            ExecutionKind::CudaFixture => (CUDA_FIXTURE_FEATURE, false),
+            ExecutionKind::CudaCorrectness => (CUDA_REDUCTION_CORRECTNESS_FEATURE, true),
+            _ => {
+                return Err(WorkerError::Execution(
+                    "CUDA runtime exposes an unsupported executor kind".into(),
+                ));
+            }
+        };
+        if !self.hello.features.iter().any(|item| item == feature) {
+            self.hello.features.push(feature.into());
         }
         let state = Arc::get_mut(&mut self.state).ok_or_else(|| {
             WorkerError::Execution(
                 "CUDA runtime must be attached before sharing the worker state".into(),
             )
         })?;
-        state.policy = state.policy.cuda_fixture_only();
+        state.policy = if correctness {
+            state.policy.cuda_correctness_only()
+        } else {
+            state.policy.cuda_fixture_only()
+        };
         self.with_execution_backend(Arc::new(CudaExecutionBackend::new(runtime)))
     }
 
@@ -494,19 +506,16 @@ impl OutboundWorker {
                 "Ascend runtime device identity is not advertised by worker capabilities".into(),
             ));
         }
-        let build_runtime = match runtime.executor_kind() {
-            alloyport_core::ExecutionKind::AscendFixture => false,
-            alloyport_core::ExecutionKind::AscendBuild => true,
+        let executor_kind = runtime.executor_kind();
+        let feature = match executor_kind {
+            ExecutionKind::AscendFixture => ASCEND_FIXTURE_FEATURE,
+            ExecutionKind::AscendBuild => ASCEND_BUILD_FEATURE,
+            ExecutionKind::AscendCorrectness => ASCEND_REDUCTION_CORRECTNESS_FEATURE,
             _ => {
                 return Err(WorkerError::Execution(
                     "Ascend runtime exposes an unsupported executor kind".into(),
                 ));
             }
-        };
-        let feature = if build_runtime {
-            ASCEND_BUILD_FEATURE
-        } else {
-            ASCEND_FIXTURE_FEATURE
         };
         if !self.hello.features.iter().any(|item| item == feature) {
             self.hello.features.push(feature.into());
@@ -516,10 +525,11 @@ impl OutboundWorker {
                 "Ascend runtime must be attached before sharing the worker state".into(),
             )
         })?;
-        state.policy = if build_runtime {
-            state.policy.ascend_build_only()
-        } else {
-            state.policy.ascend_fixture_only()
+        state.policy = match executor_kind {
+            ExecutionKind::AscendFixture => state.policy.ascend_fixture_only(),
+            ExecutionKind::AscendBuild => state.policy.ascend_build_only(),
+            ExecutionKind::AscendCorrectness => state.policy.ascend_correctness_only(),
+            _ => unreachable!("executor kind was validated before policy composition"),
         };
         self.with_execution_backend(Arc::new(AscendExecutionBackend::new(runtime)))
     }

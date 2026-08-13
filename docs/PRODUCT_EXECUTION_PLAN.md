@@ -186,8 +186,10 @@ research report and complete Design 0025 now precede provider refactoring or Sou
      candidate ABI required by trusted worker harnesses.
    - [x] Connect the paired-execution Port to two typed, idempotent worker-control assignments and
      validate their generic and structured terminal receipt chain.
-   - [ ] Implement the policy-bound CUDA-reference and Ascend-candidate worker harnesses, then
-     capture real hardware receipts for the frozen corpus.
+   - [x] Implement policy-bound CUDA-reference and Ascend-candidate bundle materialization, trusted
+     harnesses, fixed container plans, runtime registration, and structured receipt publication.
+   - [ ] Add strict standalone correctness-worker configuration and capture real CUDA/Ascend run,
+     calibration, and Correctness receipts for the frozen corpus.
 6. Produce the first complete release and evidence bundle.
 7. Add two-stage optimization and value-backed memory.
 8. Attempt a second specimen before expanding platform scope.

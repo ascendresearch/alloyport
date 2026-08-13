@@ -37,6 +37,7 @@ stable identifier.
 | 0027 | [Reduction differential oracle and mutation calibration](0027-reduction-differential-oracle-and-calibration.md) | Implemented first bounded slice |
 | 0028 | [Controller-authored correctness execution bundles](0028-controller-authored-correctness-execution-bundles.md) | Implemented prerequisite slice |
 | 0029 | [Paired correctness worker dispatch](0029-paired-correctness-worker-dispatch.md) | Implemented control-plane slice |
+| 0030 | [Trusted reduction correctness worker harness](0030-trusted-reduction-correctness-worker-harness.md) | Implemented runtime slice |
 
 ## Convention
 

@@ -3,7 +3,7 @@
 - Handoff date: 2026-08-12
 - Repository: `/data/projects/shinesheep/alloyport`
 - Branch: `main`
-- Baseline: the 2026-08-12 closeout includes `2137b85` (calibrated reduction correctness gate);
+- Baseline: the 2026-08-12 closeout includes `8382ab5` (paired correctness worker dispatch);
   run `git log --oneline` for the handoff commit and later local history
 - Project state: modular-monolith architecture evolution with working fixed CUDA and fixed Ascend
   runtime composition
@@ -75,6 +75,9 @@ Read these documents before changing architecture or implementation:
 24. [`design/0029-paired-correctness-worker-dispatch.md`](design/0029-paired-correctness-worker-dispatch.md)
     for protocol-minor-6 execution kinds, dual assignment/reconciliation, and the worker-to-run
     Artifact trust chain.
+25. [`design/0030-trusted-reduction-correctness-worker-harness.md`](design/0030-trusted-reduction-correctness-worker-harness.md)
+    for role-bound bundle materialization, fixed CUDA/Ascend container plans, trusted structured
+    output, and correctness runtime registration.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -675,7 +678,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 265 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 269 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1097,16 +1100,24 @@ default-deny CUDA-reference and Ascend-candidate correctness executors with back
 assignments on distinct configured workers, idempotently recovers partial dispatch, and waits for
 both durable terminal observations. It validates each generic worker receipt, its stdout digest,
 and the structured `ReductionRunReceipt` against the assigned bundle before returning run
-descriptors. The server grants each worker only its role bundle. Trusted worker harnesses and real
-device evidence remain unimplemented.
+descriptors. The server grants each worker only its role bundle.
+
+The trusted worker runtime slice is complete under
+[Design 0030](design/0030-trusted-reduction-correctness-worker-harness.md). A shared role-bound
+policy now verifies and create-only materializes exact execution bundles, derives shell-free pinned
+CUDA and Ascend Docker plans, and installs a trusted harness that invokes the fixed reduction ABI
+over the frozen corpus. CUDA/Ascend supervisors and generic runtimes publish the corresponding
+exclusive feature and accept exit zero only with a validated structured run receipt; a fake Docker
+engine proves that fixture markers cannot cross into correctness evidence. Standalone worker-file
+configuration and real-device evidence remain unimplemented.
 
 ## Suggested first task for the next Codex session
 
-The next action remains product-plan item 5, now narrowed to the worker execution half of Designs
-0028 and 0029:
+The next action remains product-plan item 5, now narrowed to production assembly and hardware
+acceptance for Design 0030:
 
-> Implement policy-bound CUDA-reference and Ascend-candidate worker harnesses, deliver the exact
-> frozen corpus to both paths, and capture real run/calibration/
+> Add strict standalone CUDA-reference and Ascend-candidate correctness-worker configuration, then
+> execute the exact frozen corpus on both pinned devices and capture real run, calibration, and
 > Correctness receipts. Keep comparison and hidden corpus authority on the controller. Do not yet
 > add performance optimization, release automation, live provider validation, API, scheduler, UI,
 > retention policy, or generalized execution.

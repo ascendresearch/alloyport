@@ -175,7 +175,11 @@ impl CudaExecutionBackend {
 
 impl ExecutionBackend for CudaExecutionBackend {
     fn executor_kinds(&self) -> &'static [ExecutionKind] {
-        &[ExecutionKind::CudaFixture]
+        match self.runtime.executor_kind() {
+            ExecutionKind::CudaFixture => &[ExecutionKind::CudaFixture],
+            ExecutionKind::CudaCorrectness => &[ExecutionKind::CudaCorrectness],
+            _ => unreachable!("CUDA runtime owns only fixed CUDA execution kinds"),
+        }
     }
 
     fn execute<'a>(&'a self, request: BackendExecutionRequest<'a>) -> BackendExecutionFuture<'a> {
@@ -248,6 +252,7 @@ impl ExecutionBackend for AscendExecutionBackend {
         match self.runtime.executor_kind() {
             ExecutionKind::AscendFixture => &[ExecutionKind::AscendFixture],
             ExecutionKind::AscendBuild => &[ExecutionKind::AscendBuild],
+            ExecutionKind::AscendCorrectness => &[ExecutionKind::AscendCorrectness],
             _ => unreachable!("Ascend runtime owns only fixed Ascend execution kinds"),
         }
     }
