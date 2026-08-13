@@ -21,6 +21,7 @@ pub mod interaction;
 mod interaction_contract_tests;
 pub mod interaction_service;
 pub mod management_service;
+pub mod migration_task;
 pub mod model_context;
 mod observation_ingress;
 mod persistence;

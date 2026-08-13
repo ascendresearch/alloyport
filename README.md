@@ -122,12 +122,16 @@ cargo run -p alloyport-worker -- --config /absolute/path/to/worker.json
 # terminal 3; query the persistent daemon (defaults to http://127.0.0.1:50051)
 cargo run -p alloyport-cli -- server status
 cargo run -p alloyport-cli -- workers
+cargo run -p alloyport-cli -- migrate /absolute/path/to/cuda/project
+cargo run -p alloyport-cli -- runs
 ```
 
 `alloyport-cli` is the user-facing client; it does not own the daemon or worker lifecycle. Set
-`ALLOYPORT_SERVER_ENDPOINT` only when the server is not using the local default. The initial
-management slice reports daemon and worker state; migration submission and run attachment are the
-next client operations to move behind this boundary.
+`ALLOYPORT_SERVER_ENDPOINT` only when the server is not using the local default. `migrate` skips
+`.git`, `target`, `build`, and `.cache`, uploads the remaining bounded regular files into the
+server's content-addressed store, and creates a durable `captured` task. Use `status TASK_ID`,
+`runs`, or `cancel TASK_ID` from any later CLI process. The daemon-side Episode dispatcher and live
+`attach` view are the next runtime slice.
 
 The server can use its zero-dependency loopback defaults or one strict schema-1 JSON configuration.
 `--config PATH` takes locator precedence over `ALLOYPORT_SERVER_CONFIG`; individual environment

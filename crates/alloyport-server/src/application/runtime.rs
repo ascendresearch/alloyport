@@ -4,7 +4,6 @@ use super::CandidateEpisodeApplication;
 use super::assembly::ServerApplication;
 use super::candidate_config::RequiredWorker;
 use crate::WorkerControlService;
-use crate::management_service::ManagementServiceImpl;
 use crate::storage::RepositoryError;
 use alloyport_core::{AgentLoopAdvance, EpisodeStatus};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
@@ -13,7 +12,8 @@ use alloyport_proto::management_v1::management_service_server::ManagementService
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_proto::{
     MAX_ARTIFACT_DOWNLOAD_MESSAGE_BYTES, MAX_INTERACTION_EVENT_MESSAGE_BYTES,
-    MAX_INTERACTION_REQUEST_MESSAGE_BYTES, MAX_SERVER_TO_WORKER_MESSAGE_BYTES,
+    MAX_INTERACTION_REQUEST_MESSAGE_BYTES, MAX_MANAGEMENT_REQUEST_MESSAGE_BYTES,
+    MAX_MANAGEMENT_RESPONSE_MESSAGE_BYTES, MAX_SERVER_TO_WORKER_MESSAGE_BYTES,
     MAX_WORKER_TO_SERVER_MESSAGE_BYTES,
 };
 use std::error::Error;
@@ -125,12 +125,12 @@ fn spawn_tasks(
         artifact,
         artifact_max_decoding_message_bytes,
         interaction,
+        management,
         ..
     } = application;
     let mut tasks = JoinSet::new();
 
     let grpc_control = control.clone();
-    let management = ManagementServiceImpl::new(control.clone());
     let server_shutdown = shutdown_receiver.clone();
     tasks.spawn(async move {
         let result = server
@@ -149,7 +149,11 @@ fn spawn_tasks(
                     .max_decoding_message_size(MAX_INTERACTION_REQUEST_MESSAGE_BYTES)
                     .max_encoding_message_size(MAX_INTERACTION_EVENT_MESSAGE_BYTES),
             )
-            .add_service(ManagementServiceServer::new(management))
+            .add_service(
+                ManagementServiceServer::new(management)
+                    .max_decoding_message_size(MAX_MANAGEMENT_REQUEST_MESSAGE_BYTES)
+                    .max_encoding_message_size(MAX_MANAGEMENT_RESPONSE_MESSAGE_BYTES),
+            )
             .serve_with_shutdown(address, wait_for_shutdown(server_shutdown))
             .await
             .map_err(TaskError::Transport);

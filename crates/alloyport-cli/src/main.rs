@@ -1,13 +1,23 @@
 use alloyport_core::{
-    BundlePath, Gate, GenerationStrategy, MigrationSpec, TaskState, inspect_migration_source,
+    BundlePath, Gate, GenerationStrategy, MigrationSpec, Sha256Digest, TaskState,
+    inspect_migration_source,
 };
 use alloyport_events::{
     Authority, Event, EventSequencer, FileChange, FileChangeKind, MessageRole, OutputStream,
     Producer, ProducerEvent, RunReducer, Visibility, producer_event_from_json_line, render_plain,
 };
 use alloyport_proto::management_v1::management_service_client::ManagementServiceClient;
-use alloyport_proto::management_v1::{GetServerStatusRequest, ListWorkersRequest};
+use alloyport_proto::management_v1::{
+    CancelMigrationRequest, GetMigrationRequest, GetServerStatusRequest, ListMigrationsRequest,
+    ListWorkersRequest, MigrationProjectBundle, MigrationTask, MigrationTaskState, ProjectFile,
+    SubmitMigrationRequest,
+};
 use alloyport_proto::v1::Backend;
+use alloyport_proto::{
+    MAX_MANAGEMENT_REQUEST_MESSAGE_BYTES, MAX_MANAGEMENT_RESPONSE_MESSAGE_BYTES,
+};
+use prost::Message;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -16,6 +26,8 @@ use std::process::ExitCode;
 
 const MAX_SPEC_BYTES: u64 = 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_PROJECT_BYTES: u64 = 60 * 1024 * 1024;
+const MAX_PROJECT_FILES: usize = 4_096;
 
 const DEFAULT_SERVER_ENDPOINT: &str = "http://127.0.0.1:50051";
 
@@ -46,6 +58,22 @@ async fn main() -> ExitCode {
             None => list_workers().await,
             Some(_) => Err("workers accepts no arguments".to_owned()),
         },
+        Some("migrate") => match one_path_argument(&mut arguments, "migrate") {
+            Ok(path) => submit_migration(Path::new(&path)).await,
+            Err(error) => Err(error),
+        },
+        Some("runs") => match arguments.next() {
+            None => list_migrations().await,
+            Some(_) => Err("runs accepts no arguments".to_owned()),
+        },
+        Some("status") => match one_text_argument(&mut arguments, "status", "TASK_ID") {
+            Ok(task_id) => get_migration(task_id).await,
+            Err(error) => Err(error),
+        },
+        Some("cancel") => match one_text_argument(&mut arguments, "cancel", "TASK_ID") {
+            Ok(task_id) => cancel_migration(task_id).await,
+            Err(error) => Err(error),
+        },
         Some("inspect-migration") => {
             let spec_path = arguments
                 .next()
@@ -64,7 +92,8 @@ async fn main() -> ExitCode {
             }
         }
         _ => Err(
-            "usage: alloyport-cli <server status|workers|about|lifecycle|\
+            "usage: alloyport-cli <migrate PROJECT|runs|status TASK_ID|cancel TASK_ID|\
+             server status|workers|about|lifecycle|\
              inspect-migration SPEC_PATH BUNDLE_ROOT|render-events [--jsonl]|event-demo [--jsonl]>"
                 .to_owned(),
         ),
@@ -95,7 +124,209 @@ async fn management_client() -> Result<ManagementServiceClient<tonic::transport:
     let endpoint = server_endpoint();
     ManagementServiceClient::connect(endpoint.clone())
         .await
+        .map(|client| {
+            client
+                .max_encoding_message_size(MAX_MANAGEMENT_REQUEST_MESSAGE_BYTES)
+                .max_decoding_message_size(MAX_MANAGEMENT_RESPONSE_MESSAGE_BYTES)
+        })
         .map_err(|error| format!("cannot connect to AlloyPort server at {endpoint}: {error}"))
+}
+
+fn one_path_argument(
+    arguments: &mut impl Iterator<Item = String>,
+    command: &str,
+) -> Result<String, String> {
+    one_text_argument(arguments, command, "PROJECT")
+}
+
+fn one_text_argument(
+    arguments: &mut impl Iterator<Item = String>,
+    command: &str,
+    name: &str,
+) -> Result<String, String> {
+    let value = arguments
+        .next()
+        .ok_or_else(|| format!("{command} requires {name}"))?;
+    if arguments.next().is_some() {
+        return Err(format!("{command} accepts exactly one {name}"));
+    }
+    Ok(value)
+}
+
+async fn submit_migration(project_root: &Path) -> Result<(), String> {
+    let project = load_project(project_root)?;
+    let digest = Sha256Digest::digest_bytes(&project.encode_to_vec()).hexadecimal();
+    let request = SubmitMigrationRequest {
+        request_id: format!("cli-{}", &digest[..32]),
+        project: Some(project),
+    };
+    let task = management_client()
+        .await?
+        .submit_migration(request)
+        .await
+        .map_err(|error| format!("migration submission failed: {error}"))?
+        .into_inner();
+    print_task(&task);
+    println!("Attach later with: alloyport-cli status {}", task.task_id);
+    Ok(())
+}
+
+async fn get_migration(task_id: String) -> Result<(), String> {
+    let task = management_client()
+        .await?
+        .get_migration(GetMigrationRequest { task_id })
+        .await
+        .map_err(|error| format!("migration status request failed: {error}"))?
+        .into_inner();
+    print_task(&task);
+    Ok(())
+}
+
+async fn list_migrations() -> Result<(), String> {
+    let tasks = management_client()
+        .await?
+        .list_migrations(ListMigrationsRequest { limit: 0 })
+        .await
+        .map_err(|error| format!("migration list request failed: {error}"))?
+        .into_inner()
+        .tasks;
+    if tasks.is_empty() {
+        println!("No migration tasks.");
+        return Ok(());
+    }
+    println!("TASK\tSTATE\tPROJECT\tFILES\tBYTES");
+    for task in tasks {
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            task.task_id,
+            task_state(&task),
+            task.project_name,
+            task.file_count,
+            task.project_size_bytes
+        );
+    }
+    Ok(())
+}
+
+async fn cancel_migration(task_id: String) -> Result<(), String> {
+    let task = management_client()
+        .await?
+        .cancel_migration(CancelMigrationRequest { task_id })
+        .await
+        .map_err(|error| format!("migration cancellation failed: {error}"))?
+        .into_inner();
+    print_task(&task);
+    Ok(())
+}
+
+fn print_task(task: &MigrationTask) {
+    println!("task: {}", task.task_id);
+    println!("state: {}", task_state(task));
+    println!("project: {}", task.project_name);
+    println!("files: {}", task.file_count);
+    println!("bytes: {}", task.project_size_bytes);
+    println!("bundle: {}", task.project_digest);
+}
+
+fn task_state(task: &MigrationTask) -> &'static str {
+    match MigrationTaskState::try_from(task.state).unwrap_or(MigrationTaskState::Unspecified) {
+        MigrationTaskState::Captured => "captured",
+        MigrationTaskState::Running => "running",
+        MigrationTaskState::Completed => "completed",
+        MigrationTaskState::Failed => "failed",
+        MigrationTaskState::Cancelled => "cancelled",
+        MigrationTaskState::Unspecified => "unknown",
+    }
+}
+
+fn load_project(project_root: &Path) -> Result<MigrationProjectBundle, String> {
+    let root = fs::canonicalize(project_root)
+        .map_err(|error| format!("cannot open project {}: {error}", project_root.display()))?;
+    if !root.is_dir() {
+        return Err(format!("project {} is not a directory", root.display()));
+    }
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "project directory name is not UTF-8".to_owned())?
+        .to_owned();
+    let mut files = BTreeMap::new();
+    collect_project_files(&root, &root, &mut files)?;
+    if files.is_empty() {
+        return Err("project contains no files".to_owned());
+    }
+    if files.len() > MAX_PROJECT_FILES {
+        return Err(format!(
+            "project contains more than {MAX_PROJECT_FILES} files"
+        ));
+    }
+    let mut total = 0_u64;
+    let files = files
+        .into_iter()
+        .map(|(path, contents)| {
+            total = total.saturating_add(contents.len() as u64);
+            ProjectFile { path, contents }
+        })
+        .collect::<Vec<_>>();
+    if total > MAX_PROJECT_BYTES {
+        return Err(format!(
+            "project exceeds the {MAX_PROJECT_BYTES} byte limit"
+        ));
+    }
+    Ok(MigrationProjectBundle { name, files })
+}
+
+fn collect_project_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<(), String> {
+    let entries = fs::read_dir(directory)
+        .map_err(|error| format!("cannot read {}: {error}", directory.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("cannot read directory entry: {error}"))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!("project entry {} is a symlink", path.display()));
+        }
+        if metadata.is_dir() {
+            if !ignored_directory(&entry.file_name()) {
+                collect_project_files(root, &path, files)?;
+            }
+            continue;
+        }
+        if !metadata.is_file() {
+            return Err(format!(
+                "project entry {} is not a regular file",
+                path.display()
+            ));
+        }
+        if metadata.len() > MAX_SOURCE_BYTES {
+            return Err(format!(
+                "project file {} exceeds the {MAX_SOURCE_BYTES} byte limit",
+                path.display()
+            ));
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| format!("project entry {} escapes its root", path.display()))?;
+        let relative = relative
+            .to_str()
+            .ok_or_else(|| format!("project path {} is not UTF-8", relative.display()))?
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        let relative = BundlePath::try_from(relative.as_str())
+            .map_err(|error| format!("invalid project path {relative}: {error}"))?;
+        let contents = fs::read(&path)
+            .map_err(|error| format!("cannot read project file {}: {error}", path.display()))?;
+        files.insert(relative.as_str().to_owned(), contents);
+    }
+    Ok(())
+}
+
+fn ignored_directory(name: &std::ffi::OsStr) -> bool {
+    matches!(name.to_str(), Some(".git" | "target" | "build" | ".cache"))
 }
 
 async fn server_status() -> Result<(), String> {
@@ -514,6 +745,23 @@ mod tests {
 
         assert!(report.passed, "{:?}", report.failures);
         assert_eq!(report.inspected_files, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn first_product_fixture_is_packaged_in_stable_path_order() -> Result<(), String> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/migrations/cuda-reduction-v1");
+        let project = load_project(&root)?;
+
+        assert_eq!(project.name, "cuda-reduction-v1");
+        assert!(project.files.iter().any(|file| file.path.ends_with(".cu")));
+        assert!(
+            project
+                .files
+                .windows(2)
+                .all(|pair| pair[0].path < pair[1].path)
+        );
         Ok(())
     }
 }

@@ -2,12 +2,14 @@ syntax = "proto3";
 
 package alloyport.management.v1;
 
-// Read-only daemon and executor discovery used by alloyport-cli. Mutating administration and
-// migration submission are added as separately authorized operations instead of overloading the
-// worker control stream.
+// Daemon operations used by alloyport-cli. They remain separate from the worker control stream.
 service ManagementService {
   rpc GetServerStatus(GetServerStatusRequest) returns (ServerStatus);
   rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse);
+  rpc SubmitMigration(SubmitMigrationRequest) returns (MigrationTask);
+  rpc GetMigration(GetMigrationRequest) returns (MigrationTask);
+  rpc ListMigrations(ListMigrationsRequest) returns (ListMigrationsResponse);
+  rpc CancelMigration(CancelMigrationRequest) returns (MigrationTask);
 }
 
 message GetServerStatusRequest {}
@@ -33,4 +35,57 @@ message Worker {
   uint64 last_worker_sequence = 4;
   int32 backend = 5;
   repeated string features = 6;
+}
+
+message SubmitMigrationRequest {
+  // Stable client retry identity. Reusing it with different project bytes is rejected.
+  string request_id = 1;
+  MigrationProjectBundle project = 2;
+}
+
+message MigrationProjectBundle {
+  string name = 1;
+  // Clients send files sorted by path. The server validates and stores the canonical encoding.
+  repeated ProjectFile files = 2;
+}
+
+message ProjectFile {
+  string path = 1;
+  bytes contents = 2;
+}
+
+enum MigrationTaskState {
+  MIGRATION_TASK_STATE_UNSPECIFIED = 0;
+  MIGRATION_TASK_STATE_CAPTURED = 1;
+  MIGRATION_TASK_STATE_RUNNING = 2;
+  MIGRATION_TASK_STATE_COMPLETED = 3;
+  MIGRATION_TASK_STATE_FAILED = 4;
+  MIGRATION_TASK_STATE_CANCELLED = 5;
+}
+
+message MigrationTask {
+  string task_id = 1;
+  string project_name = 2;
+  string project_digest = 3;
+  uint64 project_size_bytes = 4;
+  uint64 file_count = 5;
+  MigrationTaskState state = 6;
+  uint64 created_at_ms = 7;
+}
+
+message GetMigrationRequest {
+  string task_id = 1;
+}
+
+message ListMigrationsRequest {
+  // Zero selects the server default.
+  uint32 limit = 1;
+}
+
+message ListMigrationsResponse {
+  repeated MigrationTask tasks = 1;
+}
+
+message CancelMigrationRequest {
+  string task_id = 1;
 }

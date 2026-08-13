@@ -15,6 +15,7 @@ alloyport-core = { path = "../alloyport-core" }
 alloyport-events = { path = "../alloyport-events" }
 alloyport-llm-provider = { path = "../alloyport-llm-provider" }
 alloyport-proto = { path = "../alloyport-proto" }
+prost = "0.14.4"
 rusqlite = { version = "0.37", features = ["bundled"] }
 rustls-pemfile = "2.2"
 serde = { version = "1.0", features = ["derive"] }

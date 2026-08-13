@@ -66,6 +66,10 @@ pub const MAX_OUTPUT_PREVIEW_CHUNK_BYTES: usize = 64 * 1024;
 pub const MAX_INTERACTION_REQUEST_MESSAGE_BYTES: usize = 64 * 1024;
 /// Maximum encoded canonical Interaction event, including worst-case JSON text escaping.
 pub const MAX_INTERACTION_EVENT_MESSAGE_BYTES: usize = 512 * 1024;
+/// Maximum encoded CLI management request, including one submitted project bundle.
+pub const MAX_MANAGEMENT_REQUEST_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum encoded CLI management response.
+pub const MAX_MANAGEMENT_RESPONSE_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 /// Fixed byte count read into one Artifact download response.
 pub const ARTIFACT_DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 /// Conservative framing allowance added to bounded Protobuf byte payloads.

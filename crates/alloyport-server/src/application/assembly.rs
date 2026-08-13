@@ -9,6 +9,8 @@ use crate::identity::{
 };
 use crate::interaction::InteractionStore;
 use crate::interaction_service::{EnrolledInteractionAccessPolicy, InteractionServiceImpl};
+use crate::management_service::ManagementServiceImpl;
+use crate::migration_task::SqliteMigrationTaskStore;
 use crate::storage::SystemClock;
 use alloyport_artifacts::upload::UploadQuotas;
 use alloyport_artifacts::{FilesystemArtifactStore, SqliteUploadStore};
@@ -29,6 +31,7 @@ pub(super) struct ServerApplication {
     pub(super) artifact: ArtifactServiceImpl,
     pub(super) artifact_max_decoding_message_bytes: usize,
     pub(super) interaction: InteractionServiceImpl,
+    pub(super) management: ManagementServiceImpl,
 }
 
 pub(super) async fn assemble(config: ServerConfig) -> Result<ServerApplication, Box<dyn Error>> {
@@ -39,6 +42,7 @@ pub(super) async fn assemble(config: ServerConfig) -> Result<ServerApplication, 
     let identity_resolver: Arc<dyn ConnectionIdentityResolver> =
         Arc::new(MtlsConnectionIdentityResolver::new(identity_registry));
     let artifact = assemble_artifact(&config.artifact, Arc::clone(&identity_resolver))?;
+    let migrations = Arc::new(SqliteMigrationTaskStore::open(&config.database)?);
     let (control, interaction_hub) =
         WorkerControlService::open_sqlite_with_interaction_hub(config.database)?;
     let mut control = control.with_artifact_metadata(artifact.uploads.clone());
@@ -58,8 +62,13 @@ pub(super) async fn assemble(config: ServerConfig) -> Result<ServerApplication, 
         interaction_hub,
         Arc::new(EnrolledInteractionAccessPolicy::new(
             interaction_store,
-            identity_resolver,
+            Arc::clone(&identity_resolver),
         )),
+    );
+    let management = ManagementServiceImpl::new(control.clone()).with_migration_intake(
+        migrations,
+        artifact.artifacts.clone(),
+        require_enrollment.then_some(identity_resolver),
     );
     Ok(ServerApplication {
         address: config.address,
@@ -70,6 +79,7 @@ pub(super) async fn assemble(config: ServerConfig) -> Result<ServerApplication, 
         artifact: artifact.service,
         artifact_max_decoding_message_bytes: artifact.max_decoding_message_bytes,
         interaction,
+        management,
     })
 }
 
