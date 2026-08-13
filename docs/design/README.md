@@ -38,6 +38,7 @@ stable identifier.
 | 0028 | [Controller-authored correctness execution bundles](0028-controller-authored-correctness-execution-bundles.md) | Implemented prerequisite slice |
 | 0029 | [Paired correctness worker dispatch](0029-paired-correctness-worker-dispatch.md) | Implemented control-plane slice |
 | 0030 | [Trusted reduction correctness worker harness](0030-trusted-reduction-correctness-worker-harness.md) | Implemented runtime slice |
+| 0031 | [Standalone correctness worker configuration](0031-standalone-correctness-worker-configuration.md) | Implemented |
 
 ## Convention
 

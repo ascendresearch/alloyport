@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "server": {
+    "endpoint": "http://127.0.0.1:50051"
+  },
+  "worker": {
+    "id": "cuda-correctness-worker-1",
+    "journal": "/var/lib/alloyport/cuda-correctness-worker.sqlite3"
+  },
+  "runtime": {
+    "backend": "cuda_correctness",
+    "environment": {
+      "architecture": "REPLACE_WITH_GPU_ARCHITECTURE",
+      "driver_version": "REPLACE_WITH_HOST_DRIVER",
+      "toolkit_version": "REPLACE_WITH_PINNED_IMAGE_TOOLKIT"
+    },
+    "policy": {
+      "schema_version": 1,
+      "image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "image_reference": "alloyport-cuda-correctness-v1:local",
+      "image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "device_selection": {
+        "allowed_device_ids": [],
+        "preferred_device_id": null
+      },
+      "sandbox_root": "/var/lib/alloyport/cuda-correctness-sandboxes",
+      "ceilings": {
+        "timeout_ms": 120000,
+        "cpu_millis": 4000,
+        "memory_bytes": 8589934592,
+        "disk_bytes": 1073741824,
+        "process_count": 128,
+        "output_bytes": 8388608
+      },
+      "local_artifact_root": "/var/lib/alloyport/cuda-correctness-artifacts",
+      "local_artifact_max_bytes": 67108864,
+      "max_input_bytes": 33554432,
+      "upload_chunk_bytes": 1048576,
+      "upload_ttl_ms": 3600000,
+      "docker_binary": "/usr/bin/docker",
+      "docker_stop_timeout_seconds": 10,
+      "nvidia_smi_binary": "/usr/bin/nvidia-smi"
+    }
+  }
+}

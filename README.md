@@ -130,8 +130,10 @@ The worker's single JSON configuration carries its server connection, TLS paths,
 backend environment, local image identity, device-selection policy, and execution limits. Loopback
 HTTP may omit TLS; remote workers must provide the TLS block and remote plaintext endpoints are
 rejected. See [worker configuration](docs/worker-configuration.md) and the checked-in
-[CUDA](docs/cuda-worker-config.example.json) and
-[Ascend](docs/ascend-worker-config.example.json) examples.
+[CUDA fixture](docs/cuda-worker-config.example.json),
+[Ascend fixture](docs/ascend-worker-config.example.json),
+[CUDA correctness](docs/cuda-correctness-worker-config.example.json), and
+[Ascend correctness](docs/ascend-correctness-worker-config.example.json) examples.
 
 Remote server mode requires a complete JSON `tls` block or `ALLOYPORT_TLS_CERT`,
 `ALLOYPORT_TLS_KEY`, and `ALLOYPORT_TLS_CLIENT_CA`.

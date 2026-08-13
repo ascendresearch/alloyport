@@ -7,6 +7,7 @@
 mod assembly;
 mod backend_config;
 mod config;
+mod correctness_config;
 mod runtime;
 
 use std::error::Error;

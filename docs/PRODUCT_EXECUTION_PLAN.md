@@ -188,8 +188,8 @@ research report and complete Design 0025 now precede provider refactoring or Sou
      validate their generic and structured terminal receipt chain.
    - [x] Implement policy-bound CUDA-reference and Ascend-candidate bundle materialization, trusted
      harnesses, fixed container plans, runtime registration, and structured receipt publication.
-   - [ ] Add strict standalone correctness-worker configuration and capture real CUDA/Ascend run,
-     calibration, and Correctness receipts for the frozen corpus.
+   - [x] Add strict standalone correctness-worker configuration and production runtime composition.
+   - [ ] Capture real CUDA/Ascend run, calibration, and Correctness receipts for the frozen corpus.
 6. Produce the first complete release and evidence bundle.
 7. Add two-stage optimization and value-backed memory.
 8. Attempt a second specimen before expanding platform scope.

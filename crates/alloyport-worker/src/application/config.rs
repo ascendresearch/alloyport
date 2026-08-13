@@ -1,6 +1,7 @@
 //! One schema-validated configuration file for an outbound accelerator worker.
 
 use super::backend_config::{AscendWorkerConfig, CudaWorkerConfig};
+use super::correctness_config::{AscendCorrectnessWorkerConfig, CudaCorrectnessWorkerConfig};
 use alloyport_proto::v1::{Backend, WorkerCapabilities, WorkerHello};
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use serde::Deserialize;
@@ -53,6 +54,15 @@ enum RuntimeConfig {
     Ascend {
         policy: AscendWorkerConfig,
     },
+    #[serde(rename = "cuda_correctness")]
+    CudaCorrectness {
+        environment: CudaEnvironmentConfig,
+        policy: CudaCorrectnessWorkerConfig,
+    },
+    #[serde(rename = "ascend_correctness")]
+    AscendCorrectness {
+        policy: AscendCorrectnessWorkerConfig,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +76,8 @@ struct CudaEnvironmentConfig {
 pub(super) enum BackendPolicy {
     Cuda(CudaWorkerConfig),
     Ascend(AscendWorkerConfig),
+    CudaCorrectness(CudaCorrectnessWorkerConfig),
+    AscendCorrectness(AscendCorrectnessWorkerConfig),
 }
 
 pub(super) struct LoadedWorkerConfig {
@@ -119,15 +131,18 @@ impl WorkerFileConfig {
                 environment,
                 policy,
             } => {
-                if environment.architecture.trim().is_empty()
-                    || environment.driver_version.trim().is_empty()
-                    || environment.toolkit_version.trim().is_empty()
-                {
-                    return Err("CUDA environment facts must be nonempty".into());
-                }
+                validate_cuda_environment(environment)?;
                 policy.validate()?;
             }
             RuntimeConfig::Ascend { policy } => policy.validate()?,
+            RuntimeConfig::CudaCorrectness {
+                environment,
+                policy,
+            } => {
+                validate_cuda_environment(environment)?;
+                policy.validate()?;
+            }
+            RuntimeConfig::AscendCorrectness { policy } => policy.validate()?,
         }
         self.server.endpoint()?;
         Ok(())
@@ -166,6 +181,35 @@ impl WorkerFileConfig {
                 },
                 BackendPolicy::Ascend(policy),
             ),
+            RuntimeConfig::CudaCorrectness {
+                environment,
+                policy,
+            } => (
+                WorkerCapabilities {
+                    backend: Backend::Cuda.into(),
+                    architecture: environment.architecture,
+                    device_count: 1,
+                    max_concurrency: 1,
+                    driver_version: environment.driver_version,
+                    toolkit_version: environment.toolkit_version,
+                    container_runtime: "docker".into(),
+                    devices: Vec::new(),
+                },
+                BackendPolicy::CudaCorrectness(policy),
+            ),
+            RuntimeConfig::AscendCorrectness { policy } => (
+                WorkerCapabilities {
+                    backend: Backend::Ascend.into(),
+                    architecture: policy.environment.architecture.clone(),
+                    device_count: 1,
+                    max_concurrency: 1,
+                    driver_version: policy.environment.driver_version.clone(),
+                    toolkit_version: policy.environment.cann_version.clone(),
+                    container_runtime: "docker".into(),
+                    devices: vec![policy.wire_device()],
+                },
+                BackendPolicy::AscendCorrectness(policy),
+            ),
         };
         Ok(LoadedWorkerConfig {
             endpoint,
@@ -183,6 +227,16 @@ impl WorkerFileConfig {
             backend,
         })
     }
+}
+
+fn validate_cuda_environment(environment: &CudaEnvironmentConfig) -> Result<(), Box<dyn Error>> {
+    if environment.architecture.trim().is_empty()
+        || environment.driver_version.trim().is_empty()
+        || environment.toolkit_version.trim().is_empty()
+    {
+        return Err("CUDA environment facts must be nonempty".into());
+    }
+    Ok(())
 }
 
 impl ServerConfig {
@@ -262,6 +316,100 @@ mod tests {
         let loaded = WorkerFileConfig::parse(config.as_bytes())?.into_loaded()?;
         assert_eq!(loaded.hello.worker_id, "cuda-demo");
         assert!(matches!(loaded.backend, BackendPolicy::Cuda(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn correctness_backends_parse_without_fixture_bundle_authority() -> Result<(), Box<dyn Error>> {
+        let digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        let cuda = format!(
+            r#"{{
+              "schema_version": 1,
+              "server": {{"endpoint": "http://127.0.0.1:50051"}},
+              "worker": {{"id": "cuda-correctness", "journal": "cuda.sqlite3"}},
+              "runtime": {{
+                "backend": "cuda_correctness",
+                "environment": {{
+                  "architecture": "sm_90", "driver_version": "580", "toolkit_version": "13.0"
+                }},
+                "policy": {{
+                  "schema_version": 1, "image_digest": "{digest}",
+                  "image_reference": "alloyport-cuda-correctness:local", "image_id": "{digest}",
+                  "device_selection": {{"allowed_device_ids": ["0"], "preferred_device_id": "0"}},
+                  "sandbox_root": "/tmp/cuda-correctness-sandboxes",
+                  "ceilings": {{"timeout_ms": 60000, "cpu_millis": 2000,
+                    "memory_bytes": 2147483648, "disk_bytes": 536870912,
+                    "process_count": 64, "output_bytes": 1048576}},
+                  "local_artifact_root": "/tmp/cuda-correctness-artifacts",
+                  "local_artifact_max_bytes": 67108864, "max_input_bytes": 33554432,
+                  "upload_chunk_bytes": 1048576, "upload_ttl_ms": 3600000,
+                  "docker_binary": "/usr/bin/docker", "docker_stop_timeout_seconds": 10,
+                  "nvidia_smi_binary": "/usr/bin/nvidia-smi"
+                }}
+              }}
+            }}"#
+        );
+        let loaded = WorkerFileConfig::parse(cuda.as_bytes())?.into_loaded()?;
+        assert!(matches!(loaded.backend, BackendPolicy::CudaCorrectness(_)));
+
+        let ascend = format!(
+            r#"{{
+              "schema_version": 1,
+              "server": {{"endpoint": "http://127.0.0.1:50051"}},
+              "worker": {{"id": "ascend-correctness", "journal": "ascend.sqlite3"}},
+              "runtime": {{
+                "backend": "ascend_correctness",
+                "policy": {{
+                  "schema_version": 1, "image_digest": "{digest}",
+                  "image_reference": "alloyport-ascend-correctness:local", "image_id": "{digest}",
+                  "device": {{"device_id": "3", "product_name": "Ascend950PR",
+                    "serial_number": "serial-3", "firmware_version": "9.0"}},
+                  "device_nodes": ["/dev/davinci3", "/dev/davinci_manager", "/dev/hisi_hdc"],
+                  "driver_path": "/usr/local/Ascend/driver",
+                  "sandbox_root": "/tmp/ascend-correctness-sandboxes",
+                  "environment": {{"architecture": "Ascend950PR", "cann_version": "9.1",
+                    "driver_version": "25.7", "firmware_version": "9.0"}},
+                  "ceilings": {{"timeout_ms": 60000, "cpu_millis": 4000,
+                    "memory_bytes": 8589934592, "disk_bytes": 1073741824,
+                    "process_count": 128, "output_bytes": 1048576}},
+                  "local_artifact_root": "/tmp/ascend-correctness-artifacts",
+                  "local_artifact_max_bytes": 67108864, "max_input_bytes": 33554432,
+                  "upload_chunk_bytes": 1048576, "upload_ttl_ms": 3600000,
+                  "docker_binary": "/usr/bin/docker", "docker_stop_timeout_seconds": 10,
+                  "npu_smi_binary": "/usr/local/Ascend/driver/tools/npu-smi"
+                }}
+              }}
+            }}"#
+        );
+        let loaded = WorkerFileConfig::parse(ascend.as_bytes())?.into_loaded()?;
+        assert!(matches!(
+            loaded.backend,
+            BackendPolicy::AscendCorrectness(_)
+        ));
+        let crossed = ascend.replace(
+            "\"backend\": \"ascend_correctness\"",
+            "\"backend\": \"cuda_correctness\"",
+        );
+        assert!(WorkerFileConfig::parse(crossed.as_bytes()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn checked_in_correctness_worker_examples_match_the_strict_schema() -> Result<(), Box<dyn Error>>
+    {
+        let cuda = WorkerFileConfig::parse(include_bytes!(
+            "../../../../docs/cuda-correctness-worker-config.example.json"
+        ))?
+        .into_loaded()?;
+        assert!(matches!(cuda.backend, BackendPolicy::CudaCorrectness(_)));
+        let ascend = WorkerFileConfig::parse(include_bytes!(
+            "../../../../docs/ascend-correctness-worker-config.example.json"
+        ))?
+        .into_loaded()?;
+        assert!(matches!(
+            ascend.backend,
+            BackendPolicy::AscendCorrectness(_)
+        ));
         Ok(())
     }
 }

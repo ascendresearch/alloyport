@@ -78,6 +78,8 @@ Read these documents before changing architecture or implementation:
 25. [`design/0030-trusted-reduction-correctness-worker-harness.md`](design/0030-trusted-reduction-correctness-worker-harness.md)
     for role-bound bundle materialization, fixed CUDA/Ascend container plans, trusted structured
     output, and correctness runtime registration.
+26. [`design/0031-standalone-correctness-worker-configuration.md`](design/0031-standalone-correctness-worker-configuration.md)
+    for strict correctness-only worker files and production process composition.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -616,13 +618,17 @@ device count, occupancy, utilization, and health cannot be collapsed. Login mate
 the separate legacy project/operator environment and was not copied into AlloyPort.
 
 The worker binary does not attach the fake runtime. CUDA and Ascend remain mutually exclusive and
-default-deny. `alloyport-worker --config PATH` loads one complete schema-1 JSON file containing the
-server/TLS connection, worker ID, journal path, backend facts, and local policy;
+default-deny. Fixture and correctness modes are also explicit, mutually exclusive backend variants.
+`alloyport-worker --config PATH` loads one complete schema-1 JSON file containing the server/TLS
+connection, worker ID, journal path, backend facts, and local policy;
 `ALLOYPORT_WORKER_CONFIG` is only an equivalent file locator.
-[The CUDA template](cuda-worker-config.example.json) and
-[the Ascend template](ascend-worker-config.example.json)
+[The CUDA fixture template](cuda-worker-config.example.json),
+[the Ascend fixture template](ascend-worker-config.example.json),
+[the CUDA correctness template](cuda-correctness-worker-config.example.json), and
+[the Ascend correctness template](ascend-correctness-worker-config.example.json)
 contain deliberately unusable all-zero digests that operators must replace with the exact granted
-bundle and image identities. A standalone tag is accepted only when `image_digest == image_id` and
+image identities; only fixture variants also pin one bundle identity. A standalone tag is accepted
+only when `image_digest == image_id` and
 the assignment declares the OCI image-config media type; a registry-backed manifest-pinned reference
 remains optional. The templates also declare local device selection, absolute non-overlapping
 sandbox/CAS roots, resource ceilings, bounded Artifact
@@ -678,7 +684,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 269 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 272 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1108,16 +1114,23 @@ policy now verifies and create-only materializes exact execution bundles, derive
 CUDA and Ascend Docker plans, and installs a trusted harness that invokes the fixed reduction ABI
 over the frozen corpus. CUDA/Ascend supervisors and generic runtimes publish the corresponding
 exclusive feature and accept exit zero only with a validated structured run receipt; a fake Docker
-engine proves that fixture markers cannot cross into correctness evidence. Standalone worker-file
-configuration and real-device evidence remain unimplemented.
+engine proves that fixture markers cannot cross into correctness evidence.
+
+Standalone correctness-worker composition is complete under
+[Design 0031](design/0031-standalone-correctness-worker-configuration.md). The unified worker file
+now has separate `cuda_correctness` and `ascend_correctness` variants with no fixture ID or fixed
+bundle digest. Their production assembly retains strict local image/device/environment authority,
+device lifecycle, CAS transfer, generic receipt publication, and outbound control behavior while
+advertising only the matching correctness feature. Checked-in examples are parsed by tests. Real
+device evidence remains unimplemented.
 
 ## Suggested first task for the next Codex session
 
-The next action remains product-plan item 5, now narrowed to production assembly and hardware
-acceptance for Design 0030:
+The next action remains product-plan item 5, now narrowed to hardware acceptance for Designs 0030
+and 0031:
 
-> Add strict standalone CUDA-reference and Ascend-candidate correctness-worker configuration, then
-> execute the exact frozen corpus on both pinned devices and capture real run, calibration, and
+> Execute the exact frozen corpus through the standalone CUDA-reference and Ascend-candidate
+> workers on both pinned devices and capture real run, calibration, and
 > Correctness receipts. Keep comparison and hidden corpus authority on the controller. Do not yet
 > add performance optimization, release automation, live provider validation, API, scheduler, UI,
 > retention policy, or generalized execution.
