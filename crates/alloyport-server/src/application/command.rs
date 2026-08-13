@@ -6,6 +6,9 @@ use std::path::PathBuf;
 
 #[derive(Debug)]
 pub(super) enum ServerCommand {
+    Bootstrap {
+        directory: PathBuf,
+    },
     Serve {
         config_path: Option<PathBuf>,
     },
@@ -58,6 +61,14 @@ impl ServerCommand {
         };
         match command.as_deref() {
             None => Ok(Self::Serve { config_path }),
+            Some(command) if command == "bootstrap" && config_path.is_none() => {
+                let directory =
+                    PathBuf::from(required_argument(&mut arguments, "bootstrap directory")?);
+                if arguments.next().is_some() {
+                    return Err(usage().into());
+                }
+                Ok(Self::Bootstrap { directory })
+            }
             Some(command) if command == "identity" => Ok(Self::Identity {
                 config_path,
                 action: parse_identity_action(&mut arguments)?,
@@ -138,7 +149,7 @@ fn required_utf8_argument(
 }
 
 const fn usage() -> &'static str {
-    "usage: alloyport-server [--config PATH] [identity enroll OWNER CERT | identity rotate OWNER OLD_CERT NEW_CERT | identity revoke CERT | candidate-episode validate CANDIDATE_CONFIG | candidate-episode run CANDIDATE_CONFIG --authorize-provider-dispatch]"
+    "usage: alloyport-server bootstrap DIRECTORY | alloyport-server [--config PATH] [identity enroll OWNER CERT | identity rotate OWNER OLD_CERT NEW_CERT | identity revoke CERT | candidate-episode validate CANDIDATE_CONFIG | candidate-episode run CANDIDATE_CONFIG --authorize-provider-dispatch]"
 }
 
 #[cfg(test)]
@@ -216,6 +227,18 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn bootstrap_requires_exactly_one_directory() -> Result<(), Box<dyn Error>> {
+        let command = ServerCommand::parse(["bootstrap", "/srv/alloyport"].map(OsString::from))?;
+        assert!(matches!(
+            command,
+            ServerCommand::Bootstrap { directory }
+                if directory == std::path::Path::new("/srv/alloyport")
+        ));
+        assert!(ServerCommand::parse(["bootstrap"].map(OsString::from)).is_err());
         Ok(())
     }
 }

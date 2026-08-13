@@ -113,6 +113,9 @@ Rust 1.88.0 and verifies that neither result is dynamically linked.
 Start the server locally, then run a configured GPU or NPU worker:
 
 ```bash
+# one-time deployment bootstrap: state directories, PKI, identities, and config templates
+alloyport-server bootstrap ./alloyport-deployment
+
 # terminal 1; the checked-in server example uses loopback and local SQLite/filesystem state
 cargo run -p alloyport-server -- --config docs/server-config.example.json
 
@@ -126,6 +129,11 @@ cargo run -p alloyport-cli -- migrate /absolute/path/to/cuda/project
 cargo run -p alloyport-cli -- runs
 cargo run -p alloyport-cli -- attach TASK_ID
 ```
+
+For a TLS deployment, start the generated daemon with
+`alloyport-server --config ./alloyport-deployment/server.json` and query it with
+`alloyport-cli --config ./alloyport-deployment/clients/admin/client.json server status`. Bootstrap is
+create-only and refuses a nonempty destination; it never overwrites certificates or state.
 
 `alloyport-cli` is the user-facing client; it does not own the daemon or worker lifecycle. Set
 `ALLOYPORT_SERVER_ENDPOINT` only when the server is not using the local default. `migrate` skips

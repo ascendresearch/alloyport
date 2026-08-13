@@ -16,6 +16,7 @@ alloyport-events = { path = "../alloyport-events" }
 alloyport-llm-provider = { path = "../alloyport-llm-provider" }
 alloyport-proto = { path = "../alloyport-proto" }
 prost = "0.14.4"
+rcgen = "0.13.2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 rustls-pemfile = "2.2"
 serde = { version = "1.0", features = ["derive"] }
@@ -26,5 +27,4 @@ tonic = { version = "0.14.6", features = ["tls-ring", "transport"] }
 
 [dev-dependencies]
 alloyport-worker = { path = "../alloyport-worker" }
-rcgen = "0.13.2"
 tempfile = "3.27"

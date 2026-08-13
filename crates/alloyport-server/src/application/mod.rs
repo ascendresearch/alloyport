@@ -1,6 +1,7 @@
 //! Server process composition root.
 
 mod assembly;
+mod bootstrap;
 mod candidate_bootstrap;
 mod candidate_config;
 mod candidate_episode;
@@ -27,6 +28,7 @@ pub use episode::{ControllerEpisodeApplication, ControllerEpisodeError, Controll
 /// the thin binary entry point.
 pub async fn run_from_args() -> Result<(), Box<dyn Error>> {
     match command::ServerCommand::from_process_args()? {
+        command::ServerCommand::Bootstrap { directory } => bootstrap::run(&directory),
         command::ServerCommand::Serve { config_path } => {
             let config = config::ServerConfig::load(config_path)?;
             let application = assembly::assemble(config).await?;
