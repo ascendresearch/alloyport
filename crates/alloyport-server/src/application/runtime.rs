@@ -237,7 +237,11 @@ async fn drive_candidate_inner(
     runtime: &mut CandidateRuntime,
     cancellation: Option<(&SqliteMigrationTaskStore, &str)>,
 ) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + runtime.ready_timeout;
+    // One-shot operator validation remains bounded, while a submitted migration is durable work:
+    // it stays queued until its workers report capacity or the user cancels it.
+    let deadline = cancellation
+        .is_none()
+        .then(|| tokio::time::Instant::now() + runtime.ready_timeout);
     loop {
         check_cancelled(cancellation)?;
         let mut missing = Vec::new();
@@ -265,7 +269,7 @@ async fn drive_candidate_inner(
         if missing.is_empty() {
             break;
         }
-        if tokio::time::Instant::now() >= deadline {
+        if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
             return Err(format!(
                 "required workers were not ready before timeout: {}",
                 missing.join(", ")
