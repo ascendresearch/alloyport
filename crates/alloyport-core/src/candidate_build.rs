@@ -415,6 +415,63 @@ pub struct AscendBuildReceipt {
     stderr: Option<ArtifactDescriptor>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AscendBuildReceiptDocument {
+    schema_version: u16,
+    gate_revision: String,
+    candidate_id: CandidateId,
+    manifest_digest: Sha256Digest,
+    source_gate_receipt_digest: Sha256Digest,
+    assignment: AssignmentContract,
+    passed: bool,
+    outcome: AttemptOutcome,
+    exit_code: Option<i32>,
+    elapsed_ms: u64,
+    detail: String,
+    environment: AscendBuildEnvironment,
+    worker_receipt: Option<ArtifactDescriptor>,
+    stdout: Option<ArtifactDescriptor>,
+    stderr: Option<ArtifactDescriptor>,
+}
+
+impl<'de> Deserialize<'de> for AscendBuildReceipt {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let document = AscendBuildReceiptDocument::deserialize(deserializer)?;
+        if document.schema_version != ASCEND_BUILD_RECEIPT_SCHEMA_V1
+            || document.gate_revision != ASCEND_BUILD_GATE_REVISION_V1
+            || document.assignment.candidate_id != document.candidate_id
+            || !document.environment.is_complete()
+            || document.passed
+                && !(document.outcome == AttemptOutcome::Succeeded && document.exit_code == Some(0))
+        {
+            return Err(serde::de::Error::custom(
+                "invalid Ascend Build Gate receipt",
+            ));
+        }
+        Ok(Self {
+            schema_version: document.schema_version,
+            gate_revision: document.gate_revision,
+            candidate_id: document.candidate_id,
+            manifest_digest: document.manifest_digest,
+            source_gate_receipt_digest: document.source_gate_receipt_digest,
+            assignment: document.assignment,
+            passed: document.passed,
+            outcome: document.outcome,
+            exit_code: document.exit_code,
+            elapsed_ms: document.elapsed_ms,
+            detail: document.detail,
+            environment: document.environment,
+            worker_receipt: document.worker_receipt,
+            stdout: document.stdout,
+            stderr: document.stderr,
+        })
+    }
+}
+
 impl AscendBuildReceipt {
     /// Authors a receipt only from terminal facts bound to the exact assignment.
     ///
@@ -468,6 +525,26 @@ impl AscendBuildReceipt {
     #[must_use]
     pub const fn outcome(&self) -> AttemptOutcome {
         self.outcome
+    }
+
+    #[must_use]
+    pub const fn candidate_id(&self) -> &CandidateId {
+        &self.candidate_id
+    }
+
+    #[must_use]
+    pub const fn manifest_digest(&self) -> Sha256Digest {
+        self.manifest_digest
+    }
+
+    #[must_use]
+    pub const fn source_gate_receipt_digest(&self) -> Sha256Digest {
+        self.source_gate_receipt_digest
+    }
+
+    #[must_use]
+    pub const fn task_id(&self) -> &TaskId {
+        &self.assignment.task_id
     }
 
     /// Computes the canonical serialized receipt identity.

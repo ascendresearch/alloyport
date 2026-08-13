@@ -176,8 +176,14 @@ research report and complete Design 0025 now precede provider refactoring or Sou
      same-episode failure/correction turn.
    - [x] Only after the Source Gate passes, dispatch one bounded, independently receipted Ascend
      build attempt and return compiler failure to the same Episode.
-5. Add the independent differential oracle and calibration battery. This is now the only active
+5. Add the independent differential oracle and calibration battery. This remains the only active
    item.
+   - [x] Implement the reduction run/experiment/verdict contracts, ten-mutant calibration battery,
+     paired-execution Port, and Build-Gate-authorized Agent tool.
+   - [x] Prove a Build-passing candidate reaches calibrated Correctness PASS through a durable fake
+     Episode without device or provider access.
+   - [ ] Connect the paired-execution Port to policy-bound CUDA-reference and Ascend-candidate worker
+     runners, then capture real hardware receipts for the frozen corpus.
 6. Produce the first complete release and evidence bundle.
 7. Add two-stage optimization and value-backed memory.
 8. Attempt a second specimen before expanding platform scope.

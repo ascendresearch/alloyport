@@ -9,6 +9,8 @@ mod artifact;
 mod assignment;
 mod candidate_build;
 mod candidate_source;
+mod correctness;
+mod correctness_attempt;
 mod device;
 mod execution;
 mod generation;
@@ -58,6 +60,20 @@ pub use candidate_source::{
     CandidateSourceManifest, CandidateSourceManifestSpec, SOURCE_GATE_RECEIPT_SCHEMA_V1,
     SOURCE_GATE_REVISION_V1, SourceGateFailure, SourceGateFailureKind, SourceGateReceipt,
     evaluate_source_gate,
+};
+pub use correctness::{
+    CorrectnessVerdict, REDUCTION_CALIBRATION_RECEIPT_SCHEMA_V1, REDUCTION_CORPUS_REVISION_V1,
+    REDUCTION_CORRECTNESS_RECEIPT_SCHEMA_V1, REDUCTION_ORACLE_REVISION_V1,
+    REDUCTION_RUN_RECEIPT_SCHEMA_V1, ReductionCalibrationReceipt, ReductionCorrectnessExperiment,
+    ReductionCorrectnessReceipt, ReductionMutantKind, ReductionMutationDetection,
+    ReductionObservation, ReductionOracleFailure, ReductionOracleFailureKind,
+    ReductionOraclePolicy, ReductionRunReceipt, ReductionRunRole, calibrate_reduction_oracle,
+    evaluate_reduction_correctness,
+};
+pub use correctness_attempt::{
+    ReductionCorrectnessAttemptError, ReductionCorrectnessAttemptFuture,
+    ReductionCorrectnessAttemptObservation, ReductionCorrectnessAttemptPort,
+    ReductionCorrectnessError,
 };
 pub use device::{
     AcceleratorDevice, DeviceHealth, DeviceHealthError, DeviceLease, DeviceObservation,

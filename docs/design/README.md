@@ -34,6 +34,7 @@ stable identifier.
 | 0024 | [MigrationSpec v1 and the first product slice](0024-migration-spec-v1-and-first-product-slice.md) | Accepted; contract, fixture, inspection, and authoring boundary implemented |
 | 0025 | [Durable iterative agent runtime and pluggable LLM protocols](0025-pluggable-llm-provider-architecture.md) | Accepted; domain/catalog/durable-fake-loop/codec slices implemented |
 | 0026 | [Ascend Build Gate connection](0026-ascend-build-gate-connection.md) | Implemented |
+| 0027 | [Reduction differential oracle and mutation calibration](0027-reduction-differential-oracle-and-calibration.md) | Implemented first bounded slice |
 
 ## Convention
 

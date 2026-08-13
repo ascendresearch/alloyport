@@ -67,6 +67,9 @@ Read these documents before changing architecture or implementation:
 21. [`research/agent-runtime-and-provider-study.md`](research/agent-runtime-and-provider-study.md)
     for the completed evidence ledger covering `ascend-factory`, EvoKernel, three provider
     protocols, durable runtimes, and the design choices carried into 0025.
+22. [`design/0027-reduction-differential-oracle-and-calibration.md`](design/0027-reduction-differential-oracle-and-calibration.md)
+    for reduction run/experiment identities, mutation calibration, verdict semantics, the paired
+    execution Port, and the Build-to-Correctness Agent tool.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -1061,11 +1064,22 @@ marker before success. A deterministic full Episode proves compiler failure, mod
 feedback, child-candidate submission, a second stable build attempt, and final Build Gate success;
 it makes no Correctness or Performance claim.
 
+The seventh bounded slice is complete under
+[Design 0027](design/0027-reduction-differential-oracle-and-calibration.md). `alloyport-core` now
+owns structured CUDA-reference/Ascend-candidate run receipts, stable paired experiment identity,
+the four correctness verdicts, a frozen fp32 comparator policy, and a ten-mutant calibration
+battery. Candidate tools accept only the exact passing Build Gate receipt, dispatch/reconcile one
+stable `ReductionCorrectnessAttemptPort` experiment, independently persist calibration and
+Correctness receipts, and satisfy an Episode only on calibrated `PASS`. Deterministic tests prove
+Build-to-Correctness connection and durable Episode completion without a device or provider. The
+production paired CUDA/Ascend worker adapter and real hardware receipts remain unimplemented.
+
 ## Suggested first task for the next Codex session
 
-The next action is the first bounded correctness slice from product-plan item 5:
+The next action is the production execution slice from product-plan item 5:
 
-> Design the independent differential-oracle contract and its mutation calibration battery for the
-> reduction specimen, then connect one Build-Gate-passing candidate to it. Do not yet add
-> performance optimization, release automation, live provider validation, API, scheduler, UI,
+> Connect `ReductionCorrectnessAttemptPort` to policy-bound CUDA-reference and Ascend-candidate
+> worker runners, deliver the exact frozen corpus to both paths, and capture real run/calibration/
+> Correctness receipts. Keep comparison and hidden corpus authority on the controller. Do not yet
+> add performance optimization, release automation, live provider validation, API, scheduler, UI,
 > retention policy, or generalized execution.

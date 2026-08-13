@@ -1,4 +1,7 @@
 use crate::build_tool::{CandidateBuildTool, CandidateBuildToolConfig, REQUEST_ASCEND_BUILD_TOOL};
+use crate::correctness_tool::{
+    CandidateCorrectnessTool, CandidateCorrectnessToolConfig, REQUEST_REDUCTION_CORRECTNESS_TOOL,
+};
 use crate::materialization::{CandidateMaterialization, CandidateMaterializationError};
 use alloyport_artifacts::{ArtifactStore, ArtifactStoreError, IngestRequest};
 use alloyport_core::{
@@ -69,6 +72,14 @@ impl CandidateToolConfig {
     pub(crate) fn target_architecture(&self) -> &str {
         &self.target_architecture
     }
+
+    pub(crate) const fn task_id(&self) -> &TaskId {
+        &self.task_id
+    }
+
+    pub(crate) const fn migration_spec_digest(&self) -> Sha256Digest {
+        self.migration_spec_digest
+    }
 }
 
 /// Real local Agent tool adapter for candidate submission and the structural Source Gate.
@@ -77,6 +88,7 @@ pub struct CandidateToolGateway {
     artifacts: Arc<dyn ArtifactStore>,
     workspace_root: PathBuf,
     build: Option<CandidateBuildTool>,
+    correctness: Option<CandidateCorrectnessTool>,
 }
 
 impl Debug for CandidateToolGateway {
@@ -86,6 +98,7 @@ impl Debug for CandidateToolGateway {
             .field("config", &self.config)
             .field("workspace_root", &self.workspace_root)
             .field("build_enabled", &self.build.is_some())
+            .field("correctness_enabled", &self.correctness.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -121,6 +134,7 @@ impl CandidateToolGateway {
             artifacts,
             workspace_root,
             build: None,
+            correctness: None,
         })
     }
 
@@ -132,6 +146,17 @@ impl CandidateToolGateway {
         attempts: Box<dyn alloyport_core::AscendBuildAttemptPort>,
     ) -> Self {
         self.build = Some(CandidateBuildTool::new(config, attempts));
+        self
+    }
+
+    /// Enables the independent reduction Correctness Gate downstream of Build Gate.
+    #[must_use]
+    pub fn with_reduction_correctness(
+        mut self,
+        config: CandidateCorrectnessToolConfig,
+        attempts: Box<dyn alloyport_core::ReductionCorrectnessAttemptPort>,
+    ) -> Self {
+        self.correctness = Some(CandidateCorrectnessTool::new(config, attempts));
         self
     }
 
@@ -273,7 +298,7 @@ impl CandidateToolGateway {
             },
             result_digest: artifact.digest,
             receipt_digests: vec![artifact.digest],
-            satisfies_subtask: passed && self.build.is_none(),
+            satisfies_subtask: passed && self.build.is_none() && self.correctness.is_none(),
         })
     }
 
@@ -307,6 +332,14 @@ impl AgentToolGateway for CandidateToolGateway {
                 effect_class: ToolEffectClass::RemoteExecution,
                 result_authority: ToolResultAuthority::VerifiedReference,
             }),
+            REQUEST_REDUCTION_CORRECTNESS_TOOL if self.correctness.is_some() => {
+                Some(RuntimeToolDescriptor {
+                    name: name.to_owned(),
+                    version: "1".to_owned(),
+                    effect_class: ToolEffectClass::AuthorityRequest,
+                    result_authority: ToolResultAuthority::VerifiedReference,
+                })
+            }
             _ => None,
         }
     }
@@ -314,17 +347,28 @@ impl AgentToolGateway for CandidateToolGateway {
     fn execute<'a>(&'a mut self, request: &'a ToolInvocation) -> ToolGatewayFuture<'a> {
         Box::pin(async move {
             if request.call.name == REQUEST_ASCEND_BUILD_TOOL {
+                let has_correctness = self.correctness.is_some();
                 let build = self
                     .build
                     .as_mut()
                     .ok_or(ToolGatewayError::UnexpectedRequest)?;
-                return build
+                let outcome = build
                     .execute(
                         &self.config,
                         self.artifacts.as_ref(),
                         &self.workspace_root,
                         request,
                     )
+                    .await?;
+                return Ok(require_downstream_gate(outcome, has_correctness));
+            }
+            if request.call.name == REQUEST_REDUCTION_CORRECTNESS_TOOL {
+                let correctness = self
+                    .correctness
+                    .as_mut()
+                    .ok_or(ToolGatewayError::UnexpectedRequest)?;
+                return correctness
+                    .execute(&self.config, self.artifacts.as_ref(), request)
                     .await;
             }
             self.invoke(request)
@@ -334,21 +378,52 @@ impl AgentToolGateway for CandidateToolGateway {
     fn reconcile<'a>(&'a mut self, request: &'a ToolInvocation) -> ToolGatewayFuture<'a> {
         Box::pin(async move {
             if request.call.name == REQUEST_ASCEND_BUILD_TOOL {
+                let has_correctness = self.correctness.is_some();
                 let build = self
                     .build
                     .as_mut()
                     .ok_or(ToolGatewayError::UnexpectedRequest)?;
-                return build
+                let outcome = build
                     .reconcile(
                         &self.config,
                         self.artifacts.as_ref(),
                         &self.workspace_root,
                         request,
                     )
+                    .await?;
+                return Ok(require_downstream_gate(outcome, has_correctness));
+            }
+            if request.call.name == REQUEST_REDUCTION_CORRECTNESS_TOOL {
+                let correctness = self
+                    .correctness
+                    .as_mut()
+                    .ok_or(ToolGatewayError::UnexpectedRequest)?;
+                return correctness
+                    .reconcile(&self.config, self.artifacts.as_ref(), request)
                     .await;
             }
             self.invoke(request)
         })
+    }
+}
+
+fn require_downstream_gate(
+    outcome: ToolGatewayOutcome,
+    downstream_enabled: bool,
+) -> ToolGatewayOutcome {
+    match outcome {
+        ToolGatewayOutcome::Completed {
+            status,
+            result_digest,
+            receipt_digests,
+            satisfies_subtask,
+        } => ToolGatewayOutcome::Completed {
+            status,
+            result_digest,
+            receipt_digests,
+            satisfies_subtask: satisfies_subtask && !downstream_enabled,
+        },
+        pending => pending,
     }
 }
 

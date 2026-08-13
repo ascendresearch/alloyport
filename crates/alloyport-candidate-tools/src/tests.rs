@@ -733,6 +733,9 @@ fn same_episode_consumes_real_source_failure_and_submits_a_correction() -> Resul
 #[path = "build_episode_tests.rs"]
 mod build_episode_tests;
 
+#[path = "correctness_tests.rs"]
+mod correctness_tests;
+
 fn complete_immediate<F: std::future::Future>(future: F) -> F::Output {
     use std::task::{Context, Poll, Waker};
     let waker = Waker::noop();
