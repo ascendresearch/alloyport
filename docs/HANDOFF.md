@@ -88,6 +88,8 @@ Read these documents before changing architecture or implementation:
     for recoverable native continuation, exact exchange Artifacts, and tool-result input binding.
 30. [`design/0035-controller-episode-application.md`](design/0035-controller-episode-application.md)
     for catalog-derived runtime identities, exact recovery, and controller runner ownership.
+31. [`design/0036-gated-candidate-episode-composition.md`](design/0036-gated-candidate-episode-composition.md)
+    for the fixed Candidate/Source/Build/Correctness tool and worker-control assembly.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -692,7 +694,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 281 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 282 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1162,9 +1164,16 @@ deployment, profile, tool-catalog, and loop-policy identities, creates or exactl
 stores, owns the provider gateway/tool recorder/runner, and offers the bounded production HTTPS
 composition. Durable Episode schema 2 separately retains the immutable initial input identity so a
 progressed Episode can be checked on recovery. Deterministic tests run a complete provider turn to
-terminal state, reopen it without another dispatch, and reject changed prompt context. The
-remaining bootstrap work is explicit operator configuration: assemble the real Candidate gateway,
-worker/image targets, specimen prompt, catalog path, CAS/database/workspace paths, and run budget.
+terminal state, reopen it without another dispatch, and reject changed prompt context.
+
+The Candidate gateway assembly itself is now complete under
+[Design 0036](design/0036-gated-candidate-episode-composition.md). It binds the existing Build and
+paired Correctness worker-control adapters, derives Candidate authority from the MigrationSpec, and
+replaces caller tool definitions with the fixed four strict schemas. Model arguments cannot choose
+workers, images, devices, commands, corpus, or tolerance policy. The remaining bootstrap is a
+deliberate operator process/configuration path and bounded polling owner. No non-example runtime
+model catalog, secret file, or relevant key/token environment variable was present in the workspace
+or process environment during this session, so no provider dispatch was attempted.
 
 ## Suggested first task for the next Codex session
 

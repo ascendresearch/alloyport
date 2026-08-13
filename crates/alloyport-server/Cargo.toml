@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 alloyport-artifacts = { path = "../alloyport-artifacts" }
+alloyport-candidate-tools = { path = "../alloyport-candidate-tools" }
 alloyport-core = { path = "../alloyport-core" }
 alloyport-events = { path = "../alloyport-events" }
 alloyport-llm-provider = { path = "../alloyport-llm-provider" }

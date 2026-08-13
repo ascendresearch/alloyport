@@ -43,6 +43,7 @@ stable identifier.
 | 0033 | [Durable Agent Episode repository](0033-durable-agent-episode-repository.md) | Implemented persistence slice |
 | 0034 | [Durable provider turn context](0034-durable-provider-turn-context.md) | Implemented persistence slice |
 | 0035 | [Controller Episode application](0035-controller-episode-application.md) | Implemented application slice |
+| 0036 | [Gated Candidate Episode composition](0036-gated-candidate-episode-composition.md) | Implemented composition slice |
 
 ## Convention
 

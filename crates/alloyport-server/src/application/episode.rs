@@ -221,6 +221,12 @@ where
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControllerEpisodeError(String);
 
+impl ControllerEpisodeError {
+    pub(super) fn adapter(error: impl Display) -> Self {
+        Self(error.to_string())
+    }
+}
+
 impl Display for ControllerEpisodeError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)

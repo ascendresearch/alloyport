@@ -196,6 +196,8 @@ research report and complete Design 0025 now precede provider refactoring or Sou
      with the same next-input identity derived by the Agent reducer.
    - [x] Compose the production controller Episode use case with catalog-derived identities,
      exact recovery checks, bounded HTTPS transport, and narrow Candidate-tool injection.
+   - [x] Compose the fixed four-tool Candidate/Source/Build/Correctness gateway with durable
+     worker-control adapters and controller-owned strict schemas.
    - [ ] Add the explicit operator bootstrap/configuration and run the first real candidate.
    - [ ] Capture a Build-Gate-authorized paired CUDA/Ascend run and Correctness receipt for a real
      generated candidate.

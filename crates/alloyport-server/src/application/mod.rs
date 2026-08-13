@@ -1,6 +1,7 @@
 //! Server process composition root.
 
 mod assembly;
+mod candidate_episode;
 mod command;
 mod config;
 mod episode;
@@ -9,6 +10,10 @@ mod runtime;
 
 use std::error::Error;
 
+pub use candidate_episode::{
+    CandidateEpisodeApplication, CandidateEpisodeToolSpec, candidate_episode_tool_definitions,
+    open_candidate_episode_https,
+};
 pub use episode::{ControllerEpisodeApplication, ControllerEpisodeError, ControllerEpisodeSpec};
 
 /// Runs an offline identity command or starts the configured server process.
