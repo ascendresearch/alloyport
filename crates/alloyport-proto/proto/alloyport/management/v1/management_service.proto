@@ -35,6 +35,15 @@ message Worker {
   uint64 last_worker_sequence = 4;
   int32 backend = 5;
   repeated string features = 6;
+  int32 health = 7;
+  uint32 available_slots = 8;
+  repeated WorkerDevice devices = 9;
+}
+
+message WorkerDevice {
+  string device_id = 1;
+  int32 health = 2;
+  uint32 process_count = 3;
 }
 
 message SubmitMigrationRequest {

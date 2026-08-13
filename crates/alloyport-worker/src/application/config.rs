@@ -499,7 +499,7 @@ mod tests {
                   "local_artifact_max_bytes": 67108864, "max_input_bytes": 33554432,
                   "upload_chunk_bytes": 1048576, "upload_ttl_ms": 3600000,
                   "docker_binary": "/usr/bin/docker", "docker_stop_timeout_seconds": 10,
-                  "npu_smi_binary": "/usr/local/Ascend/driver/tools/npu-smi"
+                  "npu_smi_binary": "/usr/local/bin/npu-smi"
                 }}
               }}
             }}"#
@@ -602,7 +602,7 @@ mod tests {
                   "upload_ttl_ms": 3600000,
                   "docker_binary": "/usr/bin/docker",
                   "docker_stop_timeout_seconds": 10,
-                  "npu_smi_binary": "/usr/local/Ascend/driver/tools/npu-smi"
+                  "npu_smi_binary": "/usr/local/bin/npu-smi"
                 }}
               }}
             }}"#

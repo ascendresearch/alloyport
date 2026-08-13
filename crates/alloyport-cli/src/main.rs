@@ -15,7 +15,7 @@ use alloyport_proto::management_v1::{
     ListWorkersRequest, MigrationProjectBundle, MigrationTask, MigrationTaskState, ProjectFile,
     SubmitMigrationRequest,
 };
-use alloyport_proto::v1::Backend;
+use alloyport_proto::v1::{Backend, WorkerHealth};
 use alloyport_proto::{
     MAX_MANAGEMENT_REQUEST_MESSAGE_BYTES, MAX_MANAGEMENT_RESPONSE_MESSAGE_BYTES,
 };
@@ -581,13 +581,22 @@ async fn list_workers() -> Result<(), String> {
         println!("No workers registered.");
         return Ok(());
     }
-    println!("WORKER\tINSTANCE\tSTATE\tBACKEND\tSEQUENCE\tFEATURES");
+    println!("WORKER\tINSTANCE\tSTATE\tHEALTH\tSLOTS\tDEVICE\tBACKEND\tSEQUENCE\tFEATURES");
     for worker in response.workers {
         let backend = Backend::try_from(worker.backend)
             .unwrap_or(Backend::Unspecified)
             .as_str_name();
+        let health = WorkerHealth::try_from(worker.health)
+            .unwrap_or(WorkerHealth::Unspecified)
+            .as_str_name();
+        let devices = worker
+            .devices
+            .iter()
+            .map(|device| format!("{}:{}proc", device.device_id, device.process_count))
+            .collect::<Vec<_>>()
+            .join(",");
         println!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             worker.worker_id,
             worker.instance_id,
             if worker.connected {
@@ -595,6 +604,9 @@ async fn list_workers() -> Result<(), String> {
             } else {
                 "offline"
             },
+            health,
+            worker.available_slots,
+            devices,
             backend,
             worker.last_worker_sequence,
             worker.features.join(",")

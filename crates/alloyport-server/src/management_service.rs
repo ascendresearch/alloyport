@@ -15,7 +15,7 @@ use alloyport_proto::management_v1::management_service_server::ManagementService
 use alloyport_proto::management_v1::{
     CancelMigrationRequest, GetMigrationRequest, GetServerStatusRequest, ListMigrationsRequest,
     ListMigrationsResponse, ListWorkersRequest, ListWorkersResponse, MigrationProjectBundle,
-    MigrationTask, MigrationTaskState, ServerStatus, SubmitMigrationRequest, Worker,
+    MigrationTask, MigrationTaskState, ServerStatus, SubmitMigrationRequest, Worker, WorkerDevice,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use prost::Message;
@@ -107,6 +107,25 @@ impl ManagementService for ManagementServiceImpl {
             .await
             .into_iter()
             .map(|snapshot| Worker {
+                health: snapshot
+                    .heartbeat
+                    .as_ref()
+                    .map_or(0, |heartbeat| heartbeat.health),
+                available_slots: snapshot
+                    .heartbeat
+                    .as_ref()
+                    .map_or(0, |heartbeat| heartbeat.available_slots),
+                devices: snapshot.heartbeat.map_or_else(Vec::new, |heartbeat| {
+                    heartbeat
+                        .devices
+                        .into_iter()
+                        .map(|device| WorkerDevice {
+                            device_id: device.device_id,
+                            health: device.health,
+                            process_count: device.process_count,
+                        })
+                        .collect()
+                }),
                 worker_id: snapshot.worker_id,
                 instance_id: snapshot.instance_id,
                 connected: snapshot.connected,

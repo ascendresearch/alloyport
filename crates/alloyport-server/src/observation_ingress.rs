@@ -87,6 +87,9 @@ impl WorkerControlService {
         }
         worker.last_worker_sequence = frame.sequence;
         worker.last_server_sequence_acknowledged = frame.acknowledges_server_through;
+        if let Some(worker_to_server::Message::Heartbeat(heartbeat)) = frame.message {
+            worker.heartbeat = Some(heartbeat);
+        }
         let last_server_sequence = worker.next_server_sequence.saturating_sub(1);
         drop(state);
 
@@ -242,6 +245,7 @@ mod tests {
         AcceleratorDevice, Backend, DeviceHealth, DeviceLease, DeviceObservation,
         WorkerCapabilities,
     };
+    use std::error::Error;
 
     fn hello() -> WorkerHello {
         WorkerHello {
@@ -307,5 +311,53 @@ mod tests {
         let mut missing_attempt = heartbeat;
         missing_attempt.device_leases[0].attempt_id = "attempt-missing".to_owned();
         assert!(validate_heartbeat_against_hello(&missing_attempt, &hello()).is_err());
+    }
+
+    #[tokio::test]
+    async fn latest_busy_heartbeat_is_visible_in_the_worker_snapshot() -> Result<(), Box<dyn Error>>
+    {
+        let service = WorkerControlService::new();
+        let (sender, _receiver) = mpsc::channel(4);
+        let (connection_id, _) = service.register(hello(), sender).await?;
+        let heartbeat = Heartbeat {
+            active_attempts: Vec::new(),
+            available_slots: 0,
+            health: WorkerHealth::Degraded.into(),
+            devices: vec![DeviceObservation {
+                device_id: "3".to_owned(),
+                health: DeviceHealth::Ready.into(),
+                process_count: 2,
+                utilization_percent: 0,
+                memory_used_bytes: 1,
+                memory_total_bytes: 2,
+                temperature_millicelsius: 1,
+                power_milliwatts: 1,
+                observed_at_ms: 1,
+                detail: "occupied by an external process".to_owned(),
+            }],
+            device_leases: Vec::new(),
+        };
+        service
+            .ingest(
+                "ascend-1",
+                &connection_id,
+                WorkerToServer {
+                    sequence: 2,
+                    acknowledges_server_through: 1,
+                    message_id: String::new(),
+                    message: Some(worker_to_server::Message::Heartbeat(heartbeat.clone())),
+                },
+            )
+            .await?;
+
+        assert_eq!(
+            service
+                .worker_snapshot("ascend-1")
+                .await
+                .expect("registered worker")
+                .heartbeat,
+            Some(heartbeat)
+        );
+        Ok(())
     }
 }

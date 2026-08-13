@@ -61,6 +61,7 @@ impl WorkerControlService {
                     last_server_sequence_acknowledged: 0,
                     next_server_sequence: 2,
                     sender,
+                    heartbeat: None,
                 },
             );
         }

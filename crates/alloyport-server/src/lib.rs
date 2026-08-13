@@ -88,7 +88,7 @@ pub use correctness_attempt::{CorrectnessWorkerTarget, WorkerCorrectnessAttemptA
 pub use storage::{AttemptState as AssignmentState, LeaseRecord, ManualClock};
 
 /// Read-only worker registry view for scheduling and diagnostics.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorkerSnapshot {
     pub worker_id: String,
     pub instance_id: String,
@@ -97,6 +97,7 @@ pub struct WorkerSnapshot {
     pub last_worker_sequence: u64,
     pub backend: i32,
     pub features: Vec<String>,
+    pub heartbeat: Option<Heartbeat>,
 }
 
 /// Result of submitting an immutable attempt to one worker.
@@ -200,6 +201,7 @@ struct WorkerRecord {
     last_server_sequence_acknowledged: u64,
     next_server_sequence: u64,
     sender: mpsc::Sender<Result<ServerToWorker, Status>>,
+    heartbeat: Option<Heartbeat>,
 }
 
 #[derive(Debug, Default)]
@@ -442,6 +444,7 @@ impl WorkerControlService {
                 .as_ref()
                 .map_or(0, |capabilities| capabilities.backend),
             features: worker.hello.features.clone(),
+            heartbeat: worker.heartbeat.clone(),
         })
     }
 
@@ -463,6 +466,7 @@ impl WorkerControlService {
                     .as_ref()
                     .map_or(0, |capabilities| capabilities.backend),
                 features: worker.hello.features.clone(),
+                heartbeat: worker.heartbeat.clone(),
             })
             .collect()
     }

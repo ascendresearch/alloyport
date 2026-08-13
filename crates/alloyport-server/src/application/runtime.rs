@@ -248,6 +248,10 @@ async fn drive_candidate_inner(
                 .await
                 .is_some_and(|snapshot| {
                     snapshot.connected
+                        && snapshot.heartbeat.as_ref().is_some_and(|heartbeat| {
+                            heartbeat.health == alloyport_proto::v1::WorkerHealth::Ready as i32
+                                && heartbeat.available_slots > 0
+                        })
                         && snapshot.backend == i32::from(required.backend)
                         && snapshot
                             .features
