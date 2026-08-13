@@ -47,6 +47,16 @@ impl ReqwestModelTransport {
         Self { dispatcher }
     }
 
+    /// Verifies the deployment credential file and protocol headers without making a request.
+    ///
+    /// # Errors
+    ///
+    /// Returns a sanitized diagnostic when the secret file or derived headers violate policy.
+    pub async fn preflight(&self, deployment: &ResolvedRuntimeModel) -> Result<(), String> {
+        let secret = read_secret(secret_path(deployment.auth())).await?;
+        protocol_headers(deployment, &secret).map(|_| ())
+    }
+
     async fn dispatch_once(
         &self,
         deployment: &ResolvedRuntimeModel,

@@ -69,3 +69,37 @@ cargo run -p alloyport-server -- --config server.json identity revoke client.pem
 
 When `--config` is omitted, `ALLOYPORT_SERVER_CONFIG` and then the normal defaults apply. The
 configuration option precedes the `identity` subcommand.
+
+## Explicit Candidate Episode command
+
+The normal server command never starts an Agent Episode. A Candidate run requires a second strict
+schema-1 file and an exact command-line authorization token. Start from
+[the Candidate example](candidate-episode-config.example.json); its zero digests and sizes are
+deliberately invalid placeholders.
+
+First perform the network-free configuration and credential preflight:
+
+```bash
+cargo run -p alloyport-server -- --config server.json \
+  candidate-episode validate candidate.json
+```
+
+This checks the complete runtime-model catalog, secure secret file and protocol headers,
+MigrationSpec and reference sources, prompt bounds, durable paths, three distinct worker targets,
+OCI image descriptors, resource ceilings, and loop/codec budgets. It does not bind a listener,
+contact a worker, or send a provider request.
+
+The live command starts the normal worker-control/Artifact/Interaction services, waits for the
+configured Build, CUDA Correctness, and Ascend Correctness workers to be connected with their exact
+features, and only then advances the Episode:
+
+```bash
+cargo run -p alloyport-server -- --config server.json \
+  candidate-episode run candidate.json --authorize-provider-dispatch
+```
+
+The final flag is intentionally not configurable through JSON or environment variables. It is the
+operator's per-invocation acknowledgement that advancing the Episode may make billable external
+provider calls. Relative paths in `candidate.json` resolve from that file. Candidate image and
+resource fields are controller-owned and are never exposed as model tool arguments. Network policy
+inside all three assignment contracts is always forced to `Disabled`.

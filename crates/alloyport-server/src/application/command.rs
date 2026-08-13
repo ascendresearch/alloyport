@@ -13,6 +13,17 @@ pub(super) enum ServerCommand {
         config_path: Option<PathBuf>,
         action: IdentityAction,
     },
+    CandidateEpisode {
+        config_path: Option<PathBuf>,
+        candidate_config_path: PathBuf,
+        action: CandidateEpisodeAction,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CandidateEpisodeAction {
+    Validate,
+    RunAuthorized,
 }
 
 #[derive(Debug)]
@@ -51,6 +62,33 @@ impl ServerCommand {
                 config_path,
                 action: parse_identity_action(&mut arguments)?,
             }),
+            Some(command) if command == "candidate-episode" => {
+                let action = required_argument(&mut arguments, "candidate Episode action")?;
+                let candidate_config_path = PathBuf::from(required_argument(
+                    &mut arguments,
+                    "candidate Episode configuration path",
+                )?);
+                let action = match action.to_str() {
+                    Some("validate") => CandidateEpisodeAction::Validate,
+                    Some("run") => {
+                        if required_argument(&mut arguments, "provider dispatch authorization")?
+                            != "--authorize-provider-dispatch"
+                        {
+                            return Err(usage().into());
+                        }
+                        CandidateEpisodeAction::RunAuthorized
+                    }
+                    _ => return Err(usage().into()),
+                };
+                if arguments.next().is_some() {
+                    return Err(usage().into());
+                }
+                Ok(Self::CandidateEpisode {
+                    config_path,
+                    candidate_config_path,
+                    action,
+                })
+            }
             _ => Err(usage().into()),
         }
     }
@@ -100,7 +138,7 @@ fn required_utf8_argument(
 }
 
 const fn usage() -> &'static str {
-    "usage: alloyport-server [--config PATH] [identity enroll OWNER CERT | identity rotate OWNER OLD_CERT NEW_CERT | identity revoke CERT]"
+    "usage: alloyport-server [--config PATH] [identity enroll OWNER CERT | identity rotate OWNER OLD_CERT NEW_CERT | identity revoke CERT | candidate-episode validate CANDIDATE_CONFIG | candidate-episode run CANDIDATE_CONFIG --authorize-provider-dispatch]"
 }
 
 #[cfg(test)]
@@ -141,5 +179,43 @@ mod tests {
     fn unknown_or_partial_commands_fail_instead_of_starting_the_server() {
         assert!(ServerCommand::parse([OsString::from("unknown")]).is_err());
         assert!(ServerCommand::parse(["identity", "enroll", "owner"].map(OsString::from)).is_err());
+    }
+
+    #[test]
+    fn candidate_run_requires_the_exact_dispatch_authorization() -> Result<(), Box<dyn Error>> {
+        let validate = ServerCommand::parse(
+            ["candidate-episode", "validate", "candidate.json"].map(OsString::from),
+        )?;
+        assert!(matches!(
+            validate,
+            ServerCommand::CandidateEpisode {
+                action: CandidateEpisodeAction::Validate,
+                candidate_config_path,
+                ..
+            } if candidate_config_path == std::path::Path::new("candidate.json")
+        ));
+        assert!(
+            ServerCommand::parse(
+                ["candidate-episode", "run", "candidate.json"].map(OsString::from)
+            )
+            .is_err()
+        );
+        let run = ServerCommand::parse(
+            [
+                "candidate-episode",
+                "run",
+                "candidate.json",
+                "--authorize-provider-dispatch",
+            ]
+            .map(OsString::from),
+        )?;
+        assert!(matches!(
+            run,
+            ServerCommand::CandidateEpisode {
+                action: CandidateEpisodeAction::RunAuthorized,
+                ..
+            }
+        ));
+        Ok(())
     }
 }

@@ -94,6 +94,7 @@ pub struct WorkerSnapshot {
     pub connected: bool,
     pub last_worker_sequence: u64,
     pub backend: i32,
+    pub features: Vec<String>,
 }
 
 /// Result of submitting an immutable attempt to one worker.
@@ -425,6 +426,7 @@ impl WorkerControlService {
                 .capabilities
                 .as_ref()
                 .map_or(0, |capabilities| capabilities.backend),
+            features: worker.hello.features.clone(),
         })
     }
 

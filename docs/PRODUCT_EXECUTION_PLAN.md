@@ -198,7 +198,10 @@ research report and complete Design 0025 now precede provider refactoring or Sou
      exact recovery checks, bounded HTTPS transport, and narrow Candidate-tool injection.
    - [x] Compose the fixed four-tool Candidate/Source/Build/Correctness gateway with durable
      worker-control adapters and controller-owned strict schemas.
-   - [ ] Add the explicit operator bootstrap/configuration and run the first real candidate.
+   - [x] Add strict explicit operator bootstrap/configuration, local credential preflight, a
+     per-run provider-dispatch authorization, exact worker readiness, and bounded polling.
+   - [ ] Deploy the three exact workers and run the first real candidate through Source/Build
+     correction.
    - [ ] Capture a Build-Gate-authorized paired CUDA/Ascend run and Correctness receipt for a real
      generated candidate.
 6. Produce the first complete release and evidence bundle.

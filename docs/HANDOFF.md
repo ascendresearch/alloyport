@@ -90,6 +90,9 @@ Read these documents before changing architecture or implementation:
     for catalog-derived runtime identities, exact recovery, and controller runner ownership.
 31. [`design/0036-gated-candidate-episode-composition.md`](design/0036-gated-candidate-episode-composition.md)
     for the fixed Candidate/Source/Build/Correctness tool and worker-control assembly.
+32. [`design/0037-explicit-candidate-episode-bootstrap.md`](design/0037-explicit-candidate-episode-bootstrap.md)
+    for strict operator preflight, per-run provider authorization, worker readiness, and supervised
+    Candidate execution.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -694,7 +697,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 282 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 285 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1175,13 +1178,23 @@ deliberate operator process/configuration path and bounded polling owner. No non
 model catalog, secret file, or relevant key/token environment variable was present in the workspace
 or process environment during this session, so no provider dispatch was attempted.
 
+The explicit process boundary is now complete under
+[Design 0037](design/0037-explicit-candidate-episode-bootstrap.md). Normal `serve` remains inert.
+`candidate-episode validate` performs strict local catalog/credential/spec/reference/prompt/path and
+worker-policy preflight without binding or network dispatch. The live form requires the literal
+`--authorize-provider-dispatch`, starts the shared services, waits for three distinct connected
+workers with exact advertised features, and polls pending Gate work under bounded configuration.
+The example remains deliberately unrunnable until real digests, image descriptor sizes, context
+digests, a secure catalog secret, and runtime paths are supplied.
+
 ## Suggested first task for the next Codex session
 
-The next action remains product-plan item 5, now narrowed to the first genuine candidate and paired
-hardware acceptance for Designs 0030 through 0032:
+The next action remains product-plan item 5, now narrowed to worker deployment and the first genuine
+candidate plus paired hardware acceptance:
 
-> Add the explicit candidate-Episode operator bootstrap, then run the configuration-selected model
-> through the Source/Build correction loop until it produces a
+> Add the missing standalone `ascend_build` worker application mode, prepare all three exact worker
+> deployment files, then run the configuration-selected model through the Source/Build correction
+> loop until it produces a
 > genuine Source- and Build-Gate-passing Ascend reduction candidate. Then
 > execute the exact frozen corpus through both standalone correctness workers and capture the paired
 > run and Correctness receipts. Keep comparison and hidden corpus authority on the controller. Do

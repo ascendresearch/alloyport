@@ -1,6 +1,8 @@
 //! Server process composition root.
 
 mod assembly;
+mod candidate_bootstrap;
+mod candidate_config;
 mod candidate_episode;
 mod command;
 mod config;
@@ -35,6 +37,14 @@ pub async fn run_from_args() -> Result<(), Box<dyn Error>> {
         } => {
             let config = config::ServerConfig::load(config_path)?;
             identity_admin::run(action, &config.identity_database)
+        }
+        command::ServerCommand::CandidateEpisode {
+            config_path,
+            candidate_config_path,
+            action,
+        } => {
+            let config = config::ServerConfig::load(config_path)?;
+            candidate_bootstrap::run(config, candidate_config_path, action).await
         }
     }
 }

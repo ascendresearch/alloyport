@@ -1,0 +1,657 @@
+//! Strict operator configuration and network-free Candidate Episode assembly.
+
+use super::{CandidateEpisodeToolSpec, ControllerEpisodeSpec};
+use crate::CorrectnessWorkerTarget;
+use alloyport_candidate_tools::{CandidateBuildToolConfig, CandidateCorrectnessToolConfig};
+use alloyport_core::{
+    ASCEND_BUILD_FEATURE, ASCEND_REDUCTION_CORRECTNESS_FEATURE, AgentLoopPolicy,
+    ArtifactDescriptor, BundlePath, CUDA_REDUCTION_CORRECTNESS_FEATURE, CandidateId, CodecLimits,
+    EpisodeId, GenerationStrategy, MigrationSpec, NetworkPolicy, ResourceContract,
+    RuntimeModelCatalog, SearchRunId, Sha256Digest, TaskId,
+};
+use alloyport_llm_provider::ReqwestModelTransport;
+use alloyport_proto::v1::Backend;
+use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+const CANDIDATE_EPISODE_CONFIG_SCHEMA_V1: u16 = 1;
+const MAX_REFERENCE_BYTES: usize = 16 * 1024 * 1024;
+const OCI_IMAGE_CONFIG_MEDIA_TYPE: &str = "application/vnd.oci.image.config.v1+json";
+const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+
+pub(super) struct CandidateEpisodeConfig {
+    pub(super) episode: ControllerEpisodeSpec,
+    pub(super) catalog: RuntimeModelCatalog,
+    pub(super) codec_limits: CodecLimits,
+    pub(super) database: PathBuf,
+    pub(super) tools: CandidateEpisodeToolSpec,
+    pub(super) worker_poll_interval: Duration,
+    pub(super) worker_ready_timeout: Duration,
+    pub(super) required_workers: Vec<RequiredWorker>,
+}
+
+pub(super) struct RequiredWorker {
+    pub(super) id: String,
+    pub(super) backend: Backend,
+    pub(super) feature: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CandidateEpisodeFileConfig {
+    schema_version: u16,
+    model_catalog: PathBuf,
+    migration_spec: PathBuf,
+    reference_root: PathBuf,
+    workspace_root: PathBuf,
+    episode_database: PathBuf,
+    generation_strategy: GenerationStrategy,
+    episode: EpisodeFileConfig,
+    build: BuildTargetFileConfig,
+    correctness: CorrectnessFileConfig,
+    codec_limits: Option<CodecLimitsFileConfig>,
+    worker_poll_interval_ms: u64,
+    worker_ready_timeout_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EpisodeFileConfig {
+    episode_id: EpisodeId,
+    task_id: TaskId,
+    search_run_id: SearchRunId,
+    parent_candidate_id: Option<CandidateId>,
+    subtask_contract_digest: Sha256Digest,
+    context_projection_digest: Sha256Digest,
+    input_artifact_root_digest: Sha256Digest,
+    runtime_model_alias: Option<String>,
+    prompt_revision: String,
+    loop_policy: AgentLoopPolicy,
+    data_boundary_policy_digest: Sha256Digest,
+    budget_snapshot_digest: Sha256Digest,
+    request_budget_digest: Sha256Digest,
+    system_prompt: PathBuf,
+    initial_user_text: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageFileConfig {
+    digest: Sha256Digest,
+    size_bytes: u64,
+    media_type: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResourceFileConfig {
+    cpu_millis: u64,
+    memory_bytes: u64,
+    disk_bytes: u64,
+    process_count: u32,
+    output_bytes: u64,
+    device_count: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuildTargetFileConfig {
+    worker_id: String,
+    image: ImageFileConfig,
+    timeout_ms: u64,
+    limits: ResourceFileConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CorrectnessFileConfig {
+    cuda: CorrectnessTargetFileConfig,
+    ascend: CorrectnessTargetFileConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CorrectnessTargetFileConfig {
+    worker_id: String,
+    image: ImageFileConfig,
+    timeout_ms: u64,
+    limits: ResourceFileConfig,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CodecLimitsFileConfig {
+    #[serde(rename = "max_response_bytes")]
+    response_bytes: usize,
+    #[serde(rename = "max_request_bytes")]
+    request_bytes: usize,
+    #[serde(rename = "max_continuation_bytes")]
+    continuation_bytes: usize,
+    #[serde(rename = "max_tool_argument_bytes")]
+    tool_argument_bytes: usize,
+    #[serde(rename = "max_tool_result_bytes")]
+    tool_result_bytes: usize,
+    #[serde(rename = "max_narrative_bytes")]
+    narrative_bytes: usize,
+    #[serde(rename = "max_tool_calls")]
+    tool_calls: usize,
+}
+
+struct LoadedInputs {
+    catalog: RuntimeModelCatalog,
+    migration_spec: MigrationSpec,
+    reference_root: PathBuf,
+    workspace_root: PathBuf,
+    database: PathBuf,
+    codec_limits: CodecLimits,
+    system_prompt: String,
+    initial_user_text: String,
+}
+
+struct LoadedWorkerPolicies {
+    build_worker_id: String,
+    build_policy: CandidateBuildToolConfig,
+    correctness_policy: CandidateCorrectnessToolConfig,
+    cuda_correctness: CorrectnessWorkerTarget,
+    ascend_correctness: CorrectnessWorkerTarget,
+    required_workers: Vec<RequiredWorker>,
+}
+
+impl CandidateEpisodeConfig {
+    pub(super) fn load(path: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
+        let path = fs::canonicalize(path)?;
+        let base = path
+            .parent()
+            .ok_or("candidate Episode config has no parent directory")?;
+        let file: CandidateEpisodeFileConfig = serde_json::from_slice(&fs::read(&path)?)?;
+        if file.schema_version != CANDIDATE_EPISODE_CONFIG_SCHEMA_V1 {
+            return Err(format!(
+                "unsupported candidate Episode config schema {}; expected 1",
+                file.schema_version
+            )
+            .into());
+        }
+        if file.worker_poll_interval_ms == 0
+            || file.worker_ready_timeout_ms < file.worker_poll_interval_ms
+        {
+            return Err("worker polling must be positive and fit inside the ready timeout".into());
+        }
+
+        let inputs = load_inputs(&file, base)?;
+        let workers = load_worker_policies(&file, &inputs.reference_root, &inputs.migration_spec)?;
+        let episode = file.episode;
+        Ok(Self {
+            episode: ControllerEpisodeSpec {
+                episode_id: episode.episode_id,
+                task_id: episode.task_id,
+                search_run_id: episode.search_run_id,
+                parent_candidate_id: episode.parent_candidate_id,
+                subtask_contract_digest: episode.subtask_contract_digest,
+                context_projection_digest: episode.context_projection_digest,
+                input_artifact_root_digest: episode.input_artifact_root_digest,
+                runtime_model_alias: episode.runtime_model_alias,
+                prompt_revision: episode.prompt_revision,
+                tools: Vec::new(),
+                loop_policy: episode.loop_policy,
+                data_boundary_policy_digest: episode.data_boundary_policy_digest,
+                budget_snapshot_digest: episode.budget_snapshot_digest,
+                request_budget_digest: episode.request_budget_digest,
+                system_prompt: inputs.system_prompt,
+                initial_user_text: inputs.initial_user_text,
+            },
+            catalog: inputs.catalog,
+            codec_limits: inputs.codec_limits,
+            database: inputs.database,
+            tools: CandidateEpisodeToolSpec {
+                migration_spec: inputs.migration_spec,
+                generation_strategy: file.generation_strategy,
+                workspace_root: inputs.workspace_root,
+                build_worker_id: workers.build_worker_id,
+                build_policy: workers.build_policy,
+                correctness_policy: workers.correctness_policy,
+                cuda_correctness: workers.cuda_correctness,
+                ascend_correctness: workers.ascend_correctness,
+            },
+            worker_poll_interval: Duration::from_millis(file.worker_poll_interval_ms),
+            worker_ready_timeout: Duration::from_millis(file.worker_ready_timeout_ms),
+            required_workers: workers.required_workers,
+        })
+    }
+
+    pub(super) async fn preflight_provider(&self) -> Result<(), Box<dyn Error>> {
+        let deployment = self
+            .catalog
+            .resolve(self.episode.runtime_model_alias.as_deref())?;
+        ReqwestModelTransport::default()
+            .preflight(&deployment)
+            .await
+            .map_err(|error| format!("model credential preflight failed: {error}"))?;
+        Ok(())
+    }
+}
+
+fn load_inputs(
+    file: &CandidateEpisodeFileConfig,
+    base: &Path,
+) -> Result<LoadedInputs, Box<dyn Error>> {
+    let catalog_path = resolve(base, &file.model_catalog);
+    let catalog: RuntimeModelCatalog = read_json_file(&catalog_path, "runtime model catalog")?;
+    catalog.validate()?;
+    let migration_path = resolve(base, &file.migration_spec);
+    let migration_spec: MigrationSpec = read_json_file(&migration_path, "MigrationSpec")?;
+    let reference_root = real_directory(&resolve(base, &file.reference_root), "reference root")?;
+    let workspace_root = real_directory(&resolve(base, &file.workspace_root), "workspace root")?;
+    let database = resolve(base, &file.episode_database);
+    require_safe_output_file(&database, "episode database")?;
+    if database.starts_with(&workspace_root) {
+        return Err("episode database must not be inside the candidate workspace".into());
+    }
+
+    let codec_limits = file
+        .codec_limits
+        .map_or_else(CodecLimits::default, Into::into);
+    codec_limits.validate()?;
+    let system_prompt = read_text_file(
+        &resolve(base, &file.episode.system_prompt),
+        "system prompt",
+        codec_limits.max_request_bytes,
+    )?;
+    let initial_user_text = read_text_file(
+        &resolve(base, &file.episode.initial_user_text),
+        "initial user text",
+        codec_limits.max_request_bytes,
+    )?;
+    if system_prompt.len().saturating_add(initial_user_text.len()) > codec_limits.max_request_bytes
+    {
+        return Err("initial prompt text exceeds the configured request bound".into());
+    }
+    require_text("prompt revision", &file.episode.prompt_revision)?;
+    if file
+        .episode
+        .runtime_model_alias
+        .as_deref()
+        .is_some_and(|alias| alias.trim().is_empty())
+    {
+        return Err("runtime model alias must be nonempty when supplied".into());
+    }
+    file.episode.loop_policy.validate()?;
+    catalog.resolve(file.episode.runtime_model_alias.as_deref())?;
+
+    Ok(LoadedInputs {
+        catalog,
+        migration_spec,
+        reference_root,
+        workspace_root,
+        database,
+        codec_limits,
+        system_prompt,
+        initial_user_text,
+    })
+}
+
+fn load_worker_policies(
+    file: &CandidateEpisodeFileConfig,
+    reference_root: &Path,
+    migration_spec: &MigrationSpec,
+) -> Result<LoadedWorkerPolicies, Box<dyn Error>> {
+    let build_worker_id = required_owned_text("build worker ID", file.build.worker_id.clone())?;
+    let cuda_worker_id = required_owned_text(
+        "CUDA correctness worker ID",
+        file.correctness.cuda.worker_id.clone(),
+    )?;
+    let ascend_worker_id = required_owned_text(
+        "Ascend correctness worker ID",
+        file.correctness.ascend.worker_id.clone(),
+    )?;
+    let unique_workers = BTreeSet::from([
+        build_worker_id.as_str(),
+        cuda_worker_id.as_str(),
+        ascend_worker_id.as_str(),
+    ]);
+    if unique_workers.len() != 3 {
+        return Err(
+            "build, CUDA correctness, and Ascend correctness workers must be distinct".into(),
+        );
+    }
+
+    let build_policy = CandidateBuildToolConfig::new(
+        file.build.image.clone().into_descriptor()?,
+        file.build.timeout_ms,
+        file.build.limits.into_contract(),
+    )?;
+    let cuda_correctness = CorrectnessWorkerTarget::new(
+        cuda_worker_id.clone(),
+        file.correctness.cuda.image.clone().into_descriptor()?,
+        file.correctness.cuda.limits.into_contract(),
+        file.correctness.cuda.timeout_ms,
+    )?;
+    let ascend_correctness = CorrectnessWorkerTarget::new(
+        ascend_worker_id.clone(),
+        file.correctness.ascend.image.clone().into_descriptor()?,
+        file.correctness.ascend.limits.into_contract(),
+        file.correctness.ascend.timeout_ms,
+    )?;
+    let reference_sources = read_reference_sources(reference_root, migration_spec)?;
+    let correctness_policy =
+        CandidateCorrectnessToolConfig::reduction_fixture_v1(reference_sources)?;
+    let required_workers = vec![
+        RequiredWorker {
+            id: build_worker_id.clone(),
+            backend: Backend::Ascend,
+            feature: ASCEND_BUILD_FEATURE,
+        },
+        RequiredWorker {
+            id: cuda_worker_id.clone(),
+            backend: Backend::Cuda,
+            feature: CUDA_REDUCTION_CORRECTNESS_FEATURE,
+        },
+        RequiredWorker {
+            id: ascend_worker_id.clone(),
+            backend: Backend::Ascend,
+            feature: ASCEND_REDUCTION_CORRECTNESS_FEATURE,
+        },
+    ];
+
+    Ok(LoadedWorkerPolicies {
+        build_worker_id,
+        build_policy,
+        correctness_policy,
+        cuda_correctness,
+        ascend_correctness,
+        required_workers,
+    })
+}
+
+impl ImageFileConfig {
+    fn into_descriptor(self) -> Result<ArtifactDescriptor, Box<dyn Error>> {
+        if self.size_bytes == 0
+            || self.digest.hexadecimal().bytes().all(|byte| byte == b'0')
+            || !matches!(
+                self.media_type.as_str(),
+                OCI_IMAGE_CONFIG_MEDIA_TYPE | OCI_IMAGE_MANIFEST_MEDIA_TYPE
+            )
+        {
+            return Err(
+                "image must have a non-placeholder digest, positive size, and OCI media type"
+                    .into(),
+            );
+        }
+        Ok(ArtifactDescriptor {
+            digest: self.digest,
+            size_bytes: self.size_bytes,
+            media_type: self.media_type,
+        })
+    }
+}
+
+impl ResourceFileConfig {
+    const fn into_contract(self) -> ResourceContract {
+        ResourceContract {
+            cpu_millis: self.cpu_millis,
+            memory_bytes: self.memory_bytes,
+            disk_bytes: self.disk_bytes,
+            process_count: self.process_count,
+            output_bytes: self.output_bytes,
+            device_count: self.device_count,
+            network: NetworkPolicy::Disabled,
+        }
+    }
+}
+
+impl From<CodecLimitsFileConfig> for CodecLimits {
+    fn from(value: CodecLimitsFileConfig) -> Self {
+        Self {
+            max_response_bytes: value.response_bytes,
+            max_request_bytes: value.request_bytes,
+            max_continuation_bytes: value.continuation_bytes,
+            max_tool_argument_bytes: value.tool_argument_bytes,
+            max_tool_result_bytes: value.tool_result_bytes,
+            max_narrative_bytes: value.narrative_bytes,
+            max_tool_calls: value.tool_calls,
+        }
+    }
+}
+
+fn read_reference_sources(
+    root: &Path,
+    migration: &MigrationSpec,
+) -> Result<BTreeMap<BundlePath, Vec<u8>>, Box<dyn Error>> {
+    let mut total = 0_usize;
+    let mut sources = BTreeMap::new();
+    for path in migration
+        .sources()
+        .device_sources()
+        .iter()
+        .chain(migration.sources().host_sources())
+        .chain(migration.sources().build_files())
+    {
+        let file = root.join(path.as_str());
+        let metadata = fs::symlink_metadata(&file)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!("reference source {} is not a regular file", path.as_str()).into());
+        }
+        let canonical = fs::canonicalize(&file)?;
+        if !canonical.starts_with(root) {
+            return Err(format!("reference source {} escapes its root", path.as_str()).into());
+        }
+        total = total.saturating_add(usize::try_from(metadata.len())?);
+        if total > MAX_REFERENCE_BYTES {
+            return Err("reference source set exceeds 16 MiB".into());
+        }
+        sources.insert(path.clone(), fs::read(canonical)?);
+    }
+    Ok(sources)
+}
+
+fn read_json_file<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    label: &str,
+) -> Result<T, Box<dyn Error>> {
+    let bytes = read_regular_file(path, label, MAX_REFERENCE_BYTES)?;
+    serde_json::from_slice(&bytes).map_err(Into::into)
+}
+
+fn read_text_file(path: &Path, label: &str, max: usize) -> Result<String, Box<dyn Error>> {
+    String::from_utf8(read_regular_file(path, label, max)?)
+        .map_err(|_| format!("{label} must be UTF-8").into())
+}
+
+fn read_regular_file(path: &Path, label: &str, max: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!("{label} must be a regular non-symlink file").into());
+    }
+    if usize::try_from(metadata.len()).map_or(true, |length| length > max) {
+        return Err(format!("{label} exceeds its configured bound").into());
+    }
+    Ok(fs::read(path)?)
+}
+
+fn real_directory(path: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!("{label} must be a real directory").into());
+    }
+    Ok(fs::canonicalize(path)?)
+}
+
+fn require_safe_output_file(path: &Path, label: &str) -> Result<(), Box<dyn Error>> {
+    if path.as_os_str().is_empty() || path.file_name().is_none() {
+        return Err(format!("{label} path is invalid").into());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{label} has no parent"))?;
+    let parent = real_directory(parent, &format!("{label} parent"))?;
+    if let Ok(metadata) = fs::symlink_metadata(path)
+        && (metadata.file_type().is_symlink() || !metadata.is_file())
+    {
+        return Err(format!("{label} must be a regular non-symlink file").into());
+    }
+    if !path.starts_with(parent) {
+        return Err(format!("{label} must stay inside its resolved parent").into());
+    }
+    Ok(())
+}
+
+fn resolve(base: &Path, path: &Path) -> PathBuf {
+    if path.is_relative() {
+        base.join(path)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn require_text(label: &str, value: &str) -> Result<(), Box<dyn Error>> {
+    if value.trim().is_empty() {
+        Err(format!("{label} must be nonempty").into())
+    } else {
+        Ok(())
+    }
+}
+
+fn required_owned_text(label: &str, value: String) -> Result<String, Box<dyn Error>> {
+    require_text(label, &value)?;
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[tokio::test]
+    async fn strict_config_preflights_without_provider_dispatch() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let config_path = write_fixture(directory.path(), false)?;
+        let config = CandidateEpisodeConfig::load(config_path)?;
+        config.preflight_provider().await?;
+        assert_eq!(config.required_workers.len(), 3);
+        assert_eq!(
+            config.tools.workspace_root,
+            directory.path().join("workspace")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_fields_and_placeholder_images_fail_closed() -> Result<(), Box<dyn Error>> {
+        let unknown = tempfile::tempdir()?;
+        let path = write_fixture(unknown.path(), true)?;
+        assert!(CandidateEpisodeConfig::load(path).is_err());
+
+        let placeholder = ImageFileConfig {
+            digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                .parse()?,
+            size_bytes: 1,
+            media_type: OCI_IMAGE_CONFIG_MEDIA_TYPE.to_owned(),
+        };
+        assert!(placeholder.into_descriptor().is_err());
+        Ok(())
+    }
+
+    fn write_fixture(root: &Path, unknown: bool) -> Result<PathBuf, Box<dyn Error>> {
+        fs::create_dir(root.join("workspace"))?;
+        fs::write(root.join("system.txt"), "You are a migration agent.")?;
+        fs::write(
+            root.join("user.txt"),
+            "Produce the gated reduction candidate.",
+        )?;
+        let secret = root.join("model-key");
+        fs::write(&secret, "test_secret")?;
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o600))?;
+
+        let mut catalog: Value = serde_json::from_slice(include_bytes!(
+            "../../../../docs/runtime-model-catalog.example.json"
+        ))?;
+        catalog["deployments"]["configured-chat-endpoint"]["auth"]["path"] =
+            Value::String(secret.to_string_lossy().into_owned());
+        fs::write(root.join("catalog.json"), serde_json::to_vec(&catalog)?)?;
+
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/migrations/cuda-reduction-v1");
+        let digest = |label: &str| Sha256Digest::digest_bytes(label.as_bytes()).to_string();
+        let image = |label: &str| {
+            json!({
+                "digest": digest(label),
+                "size_bytes": 1,
+                "media_type": OCI_IMAGE_CONFIG_MEDIA_TYPE
+            })
+        };
+        let limits = json!({
+            "cpu_millis": 4000,
+            "memory_bytes": 8_589_934_592_u64,
+            "disk_bytes": 1_073_741_824_u64,
+            "process_count": 128,
+            "output_bytes": 8_388_608_u64,
+            "device_count": 1
+        });
+        let mut config = json!({
+            "schema_version": 1,
+            "model_catalog": "catalog.json",
+            "migration_spec": fixture.join("migration-spec-v1.json"),
+            "reference_root": fixture,
+            "workspace_root": "workspace",
+            "episode_database": "episode.sqlite3",
+            "generation_strategy": "direct_ascend_c",
+            "episode": {
+                "episode_id": "episode-test",
+                "task_id": "task-test",
+                "search_run_id": "search-test",
+                "parent_candidate_id": null,
+                "subtask_contract_digest": digest("subtask"),
+                "context_projection_digest": digest("context"),
+                "input_artifact_root_digest": digest("input"),
+                "runtime_model_alias": null,
+                "prompt_revision": "candidate-v1",
+                "loop_policy": {
+                    "max_model_turns": 8,
+                    "max_model_attempts": 12,
+                    "max_ambiguous_model_attempts": 1,
+                    "max_tool_calls_per_turn": 4,
+                    "max_total_tool_operations": 16,
+                    "max_stop_feedback_turns": 2
+                },
+                "data_boundary_policy_digest": digest("boundary"),
+                "budget_snapshot_digest": digest("budget"),
+                "request_budget_digest": digest("request-budget"),
+                "system_prompt": "system.txt",
+                "initial_user_text": "user.txt"
+            },
+            "build": {
+                "worker_id": "ascend-build-1",
+                "image": image("build-image"),
+                "timeout_ms": 120_000,
+                "limits": limits.clone()
+            },
+            "correctness": {
+                "cuda": {
+                    "worker_id": "cuda-correctness-1",
+                    "image": image("cuda-image"),
+                    "timeout_ms": 120_000,
+                    "limits": limits.clone()
+                },
+                "ascend": {
+                    "worker_id": "ascend-correctness-1",
+                    "image": image("ascend-image"),
+                    "timeout_ms": 120_000,
+                    "limits": limits
+                }
+            },
+            "codec_limits": null,
+            "worker_poll_interval_ms": 1000,
+            "worker_ready_timeout_ms": 10000
+        });
+        if unknown {
+            config["surprise"] = Value::Bool(true);
+        }
+        let path = root.join("candidate.json");
+        fs::write(&path, serde_json::to_vec(&config)?)?;
+        Ok(path)
+    }
+}

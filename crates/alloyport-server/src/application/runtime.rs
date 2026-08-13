@@ -1,7 +1,11 @@
 //! Server listener, background-task ownership, and bounded shutdown.
 
+use super::CandidateEpisodeApplication;
 use super::assembly::ServerApplication;
+use super::candidate_config::RequiredWorker;
+use crate::WorkerControlService;
 use crate::storage::RepositoryError;
+use alloyport_core::{AgentLoopAdvance, EpisodeStatus};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::interaction_v1::interaction_service_server::InteractionServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
@@ -21,6 +25,7 @@ enum TaskKind {
     GrpcServer,
     LeaseReaper,
     PreparationReconciler,
+    CandidateEpisode,
 }
 
 impl Display for TaskKind {
@@ -29,6 +34,7 @@ impl Display for TaskKind {
             Self::GrpcServer => formatter.write_str("gRPC server"),
             Self::LeaseReaper => formatter.write_str("lease reaper"),
             Self::PreparationReconciler => formatter.write_str("assignment preparation reconciler"),
+            Self::CandidateEpisode => formatter.write_str("Candidate Episode"),
         }
     }
 }
@@ -37,6 +43,7 @@ impl Display for TaskKind {
 enum TaskError {
     Transport(tonic::transport::Error),
     Repository(RepositoryError),
+    Candidate(String),
 }
 
 impl Display for TaskError {
@@ -44,6 +51,7 @@ impl Display for TaskError {
         match self {
             Self::Transport(error) => Display::fmt(error, formatter),
             Self::Repository(error) => Display::fmt(error, formatter),
+            Self::Candidate(error) => formatter.write_str(error),
         }
     }
 }
@@ -53,6 +61,7 @@ impl Error for TaskError {
         match self {
             Self::Transport(error) => Some(error),
             Self::Repository(error) => Some(error),
+            Self::Candidate(_) => None,
         }
     }
 }
@@ -62,7 +71,29 @@ struct TaskExit {
     result: Result<(), TaskError>,
 }
 
-pub(super) async fn run(mut application: ServerApplication) -> Result<(), Box<dyn Error>> {
+pub(super) async fn run(application: ServerApplication) -> Result<(), Box<dyn Error>> {
+    run_inner(application, None).await
+}
+
+pub(super) struct CandidateRuntime {
+    pub(super) application: CandidateEpisodeApplication,
+    pub(super) control: WorkerControlService,
+    pub(super) required_workers: Vec<RequiredWorker>,
+    pub(super) poll_interval: std::time::Duration,
+    pub(super) ready_timeout: std::time::Duration,
+}
+
+pub(super) async fn run_candidate(
+    application: ServerApplication,
+    candidate: CandidateRuntime,
+) -> Result<(), Box<dyn Error>> {
+    run_inner(application, Some(candidate)).await
+}
+
+async fn run_inner(
+    mut application: ServerApplication,
+    candidate: Option<CandidateRuntime>,
+) -> Result<(), Box<dyn Error>> {
     let address = application.address;
     let shutdown_timeout = application.shutdown_timeout;
     let ServerApplication { tls, .. } = &mut application;
@@ -72,7 +103,7 @@ pub(super) async fn run(mut application: ServerApplication) -> Result<(), Box<dy
         server = server.tls_config(tls)?;
     }
     let (shutdown, shutdown_receiver) = watch::channel(false);
-    let tasks = spawn_tasks(application, server, shutdown_receiver);
+    let tasks = spawn_tasks(application, server, shutdown_receiver, candidate);
 
     println!("AlloyPort worker control, artifact, and interaction services listening on {address}");
     supervise(tasks, shutdown, shutdown_timeout).await
@@ -82,6 +113,7 @@ fn spawn_tasks(
     application: ServerApplication,
     mut server: Server,
     shutdown_receiver: watch::Receiver<bool>,
+    candidate: Option<CandidateRuntime>,
 ) -> JoinSet<TaskExit> {
     let ServerApplication {
         address,
@@ -144,7 +176,80 @@ fn spawn_tasks(
         }
     });
 
+    if let Some(candidate) = candidate {
+        tasks.spawn(async move {
+            let result = drive_candidate(candidate)
+                .await
+                .map_err(TaskError::Candidate);
+            TaskExit {
+                kind: TaskKind::CandidateEpisode,
+                result,
+            }
+        });
+    }
+
     tasks
+}
+
+async fn drive_candidate(mut runtime: CandidateRuntime) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + runtime.ready_timeout;
+    loop {
+        let mut missing = Vec::new();
+        for required in &runtime.required_workers {
+            let ready = runtime
+                .control
+                .worker_snapshot(&required.id)
+                .await
+                .is_some_and(|snapshot| {
+                    snapshot.connected
+                        && snapshot.backend == i32::from(required.backend)
+                        && snapshot
+                            .features
+                            .iter()
+                            .any(|feature| feature == required.feature)
+                });
+            if !ready {
+                missing.push(required.id.as_str());
+            }
+        }
+        if missing.is_empty() {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "required workers were not ready before timeout: {}",
+                missing.join(", ")
+            ));
+        }
+        tokio::time::sleep(runtime.poll_interval).await;
+    }
+    println!("Candidate Episode workers are ready; authorized provider dispatch may begin");
+
+    loop {
+        match runtime
+            .application
+            .advance()
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            AgentLoopAdvance::Terminal(EpisodeStatus::Succeeded) => {
+                println!("Candidate Episode completed successfully");
+                return Ok(());
+            }
+            AgentLoopAdvance::Terminal(status) => {
+                return Err(format!(
+                    "Candidate Episode ended in terminal state {status:?}"
+                ));
+            }
+            AgentLoopAdvance::Suspended => {
+                return Err("Candidate Episode suspended for operator reconciliation".to_owned());
+            }
+            AgentLoopAdvance::Progressed(EpisodeStatus::ToolWorkPending) => {
+                tokio::time::sleep(runtime.poll_interval).await;
+            }
+            AgentLoopAdvance::Progressed(_) => tokio::task::yield_now().await,
+        }
+    }
 }
 
 async fn supervise(
@@ -161,7 +266,7 @@ async fn supervise(
     };
     let _ = shutdown.send(true);
 
-    let mut failure = first_exit.map(unexpected_exit).transpose()?;
+    let mut failure = first_exit.map(first_exit_detail).transpose()?.flatten();
     let drain = async {
         let mut drain_failure = None;
         while let Some(joined) = tasks.join_next().await {
@@ -202,12 +307,15 @@ async fn wait_for_shutdown(mut shutdown: watch::Receiver<bool>) {
     }
 }
 
-fn unexpected_exit(joined: Result<TaskExit, JoinError>) -> Result<String, Box<dyn Error>> {
+fn first_exit_detail(
+    joined: Result<TaskExit, JoinError>,
+) -> Result<Option<String>, Box<dyn Error>> {
     let exit = joined.map_err(|error| join_error_detail(&error))?;
-    Ok(match exit.result {
-        Ok(()) => format!("{} stopped unexpectedly", exit.kind),
-        Err(error) => format!("{} failed: {error}", exit.kind),
-    })
+    match (exit.kind, exit.result) {
+        (TaskKind::CandidateEpisode, Ok(())) => Ok(None),
+        (kind, Ok(())) => Ok(Some(format!("{kind} stopped unexpectedly"))),
+        (kind, Err(error)) => Ok(Some(format!("{kind} failed: {error}"))),
+    }
 }
 
 fn join_error_detail(error: &JoinError) -> String {

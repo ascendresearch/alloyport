@@ -25,6 +25,7 @@ pub(super) struct ServerApplication {
     pub(super) tls: Option<ServerTlsConfig>,
     pub(super) shutdown_timeout: Duration,
     pub(super) control: WorkerControlService,
+    pub(super) artifacts: Arc<dyn alloyport_artifacts::ArtifactStore>,
     pub(super) artifact: ArtifactServiceImpl,
     pub(super) artifact_max_decoding_message_bytes: usize,
     pub(super) interaction: InteractionServiceImpl,
@@ -65,6 +66,7 @@ pub(super) async fn assemble(config: ServerConfig) -> Result<ServerApplication, 
         tls,
         shutdown_timeout: config.shutdown_timeout,
         control,
+        artifacts: artifact.artifacts,
         artifact: artifact.service,
         artifact_max_decoding_message_bytes: artifact.max_decoding_message_bytes,
         interaction,
@@ -73,6 +75,7 @@ pub(super) async fn assemble(config: ServerConfig) -> Result<ServerApplication, 
 
 struct ArtifactAssembly {
     service: ArtifactServiceImpl,
+    artifacts: Arc<dyn alloyport_artifacts::ArtifactStore>,
     uploads: Arc<SqliteUploadStore>,
     max_decoding_message_bytes: usize,
 }
@@ -81,10 +84,9 @@ fn assemble_artifact(
     config: &ArtifactConfig,
     identity_resolver: Arc<dyn ConnectionIdentityResolver>,
 ) -> Result<ArtifactAssembly, Box<dyn Error>> {
-    let artifacts = Arc::new(FilesystemArtifactStore::open(
-        config.root.join("cas"),
-        config.max_artifact_bytes,
-    )?);
+    let artifacts: Arc<dyn alloyport_artifacts::ArtifactStore> = Arc::new(
+        FilesystemArtifactStore::open(config.root.join("cas"), config.max_artifact_bytes)?,
+    );
     let uploads = Arc::new(SqliteUploadStore::open_with_quotas(
         config.root.join("uploads.sqlite3"),
         config.root.join("upload-data"),
@@ -102,10 +104,11 @@ fn assemble_artifact(
     Ok(ArtifactAssembly {
         service: ArtifactServiceImpl::new(
             uploads.clone(),
-            artifacts,
+            artifacts.clone(),
             access,
             Arc::new(SystemClock),
         ),
+        artifacts,
         uploads,
         max_decoding_message_bytes: config
             .max_chunk_bytes

@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "model_catalog": "runtime-model-catalog.example.json",
+  "migration_spec": "../fixtures/migrations/cuda-reduction-v1/migration-spec-v1.json",
+  "reference_root": "../fixtures/migrations/cuda-reduction-v1",
+  "workspace_root": "../var/candidate-workspace",
+  "episode_database": "../var/candidate-episode.sqlite3",
+  "generation_strategy": "direct_ascend_c",
+  "episode": {
+    "episode_id": "cuda-reduction-candidate-001",
+    "task_id": "cuda-reduction-v1",
+    "search_run_id": "cuda-reduction-search-001",
+    "parent_candidate_id": null,
+    "subtask_contract_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "context_projection_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "input_artifact_root_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "runtime_model_alias": null,
+    "prompt_revision": "cuda-reduction-candidate-v1",
+    "loop_policy": {
+      "max_model_turns": 12,
+      "max_model_attempts": 16,
+      "max_ambiguous_model_attempts": 1,
+      "max_tool_calls_per_turn": 4,
+      "max_total_tool_operations": 32,
+      "max_stop_feedback_turns": 2
+    },
+    "data_boundary_policy_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "budget_snapshot_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "request_budget_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "system_prompt": "candidate-system-prompt.example.md",
+    "initial_user_text": "candidate-user-prompt.example.md"
+  },
+  "build": {
+    "worker_id": "ascend-build-worker-1",
+    "image": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "size_bytes": 0,
+      "media_type": "application/vnd.oci.image.config.v1+json"
+    },
+    "timeout_ms": 120000,
+    "limits": {
+      "cpu_millis": 4000,
+      "memory_bytes": 8589934592,
+      "disk_bytes": 1073741824,
+      "process_count": 128,
+      "output_bytes": 8388608,
+      "device_count": 1
+    }
+  },
+  "correctness": {
+    "cuda": {
+      "worker_id": "cuda-correctness-worker-1",
+      "image": {
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "size_bytes": 0,
+        "media_type": "application/vnd.oci.image.config.v1+json"
+      },
+      "timeout_ms": 120000,
+      "limits": {
+        "cpu_millis": 4000,
+        "memory_bytes": 8589934592,
+        "disk_bytes": 1073741824,
+        "process_count": 128,
+        "output_bytes": 8388608,
+        "device_count": 1
+      }
+    },
+    "ascend": {
+      "worker_id": "ascend-correctness-worker-1",
+      "image": {
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "size_bytes": 0,
+        "media_type": "application/vnd.oci.image.config.v1+json"
+      },
+      "timeout_ms": 120000,
+      "limits": {
+        "cpu_millis": 4000,
+        "memory_bytes": 8589934592,
+        "disk_bytes": 1073741824,
+        "process_count": 128,
+        "output_bytes": 8388608,
+        "device_count": 1
+      }
+    }
+  },
+  "codec_limits": null,
+  "worker_poll_interval_ms": 1000,
+  "worker_ready_timeout_ms": 120000
+}
