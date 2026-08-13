@@ -11,6 +11,7 @@ mod candidate_build;
 mod candidate_source;
 mod correctness;
 mod correctness_attempt;
+mod correctness_execution;
 mod device;
 mod execution;
 mod generation;
@@ -58,7 +59,7 @@ pub use candidate_build::{
 pub use candidate_source::{
     CANDIDATE_SOURCE_MANIFEST_SCHEMA_V1, CandidateSourceError, CandidateSourceFile,
     CandidateSourceManifest, CandidateSourceManifestSpec, SOURCE_GATE_RECEIPT_SCHEMA_V1,
-    SOURCE_GATE_REVISION_V1, SourceGateFailure, SourceGateFailureKind, SourceGateReceipt,
+    SOURCE_GATE_REVISION_V2, SourceGateFailure, SourceGateFailureKind, SourceGateReceipt,
     evaluate_source_gate,
 };
 pub use correctness::{
@@ -73,7 +74,11 @@ pub use correctness::{
 pub use correctness_attempt::{
     ReductionCorrectnessAttemptError, ReductionCorrectnessAttemptFuture,
     ReductionCorrectnessAttemptObservation, ReductionCorrectnessAttemptPort,
-    ReductionCorrectnessError,
+    ReductionCorrectnessAttemptSpec, ReductionCorrectnessError,
+};
+pub use correctness_execution::{
+    REDUCTION_EXECUTION_BUNDLE_MEDIA_TYPE, REDUCTION_EXECUTION_BUNDLE_SCHEMA_V1, ReductionCaseKind,
+    ReductionCorpus, ReductionCorpusCase, ReductionExecutionBundle, ReductionExecutionFile,
 };
 pub use device::{
     AcceleratorDevice, DeviceHealth, DeviceHealthError, DeviceLease, DeviceObservation,

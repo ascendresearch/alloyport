@@ -54,8 +54,8 @@ fn bundle(valid: bool, parent: Option<&str>) -> Value {
         "bundle": {
             "files": [
                 {"path":"generated/reduce_sum.cpp","kind":"ascend_c_device","contents":device},
-                {"path":"generated/reduce_sum_host.cpp","kind":"ascend_host","contents":"extern \"C\" int alloyport_reduce_sum_f32() { ACLRT_LAUNCH_KERNEL(reduce_sum); return 0; }"},
-                {"path":"generated/CMakeLists.txt","kind":"build_integration","contents":"add_library(port reduce_sum.cpp reduce_sum_host.cpp)"},
+                {"path":"generated/reduce_sum_host.cpp","kind":"ascend_host","contents":"#include <cstddef>\nextern \"C\" int alloyport_reduce_sum_f32(const float *input, size_t elements, float *output) { ACLRT_LAUNCH_KERNEL(reduce_sum); return 0; }"},
+                {"path":"generated/CMakeLists.txt","kind":"build_integration","contents":"add_library(alloyport_reduction_candidate reduce_sum.cpp reduce_sum_host.cpp)"},
                 {"path":"generated/component-map.txt","kind":"component_mapping","contents":mapping()}
             ],
             "author_notes": ["untrusted fixture proposal"]

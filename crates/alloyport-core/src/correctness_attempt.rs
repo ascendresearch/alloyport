@@ -19,6 +19,14 @@ pub enum ReductionCorrectnessAttemptObservation {
     },
 }
 
+/// Controller-authored paired input. Workers receive bundle Artifacts, never oracle policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReductionCorrectnessAttemptSpec {
+    pub experiment: ReductionCorrectnessExperiment,
+    pub reference_bundle: ArtifactDescriptor,
+    pub candidate_bundle: ArtifactDescriptor,
+}
+
 pub type ReductionCorrectnessAttemptFuture<'a> = Pin<
     Box<
         dyn Future<
@@ -36,13 +44,13 @@ pub trait ReductionCorrectnessAttemptPort: Debug + Send {
     #[must_use]
     fn dispatch<'a>(
         &'a mut self,
-        experiment: &'a ReductionCorrectnessExperiment,
+        spec: &'a ReductionCorrectnessAttemptSpec,
     ) -> ReductionCorrectnessAttemptFuture<'a>;
 
     #[must_use]
     fn reconcile<'a>(
         &'a mut self,
-        experiment: &'a ReductionCorrectnessExperiment,
+        spec: &'a ReductionCorrectnessAttemptSpec,
     ) -> ReductionCorrectnessAttemptFuture<'a>;
 }
 
@@ -74,6 +82,9 @@ pub enum ReductionCorrectnessError {
     DuplicateObservation,
     ReferenceRoleRequired,
     ExperimentIdentityMismatch,
+    InvalidCorpus,
+    InvalidExecutionSource,
+    InvalidExecutionBundle,
     Serialization(serde_json::Error),
 }
 
@@ -87,6 +98,9 @@ impl Display for ReductionCorrectnessError {
             Self::ExperimentIdentityMismatch => {
                 write!(formatter, "correctness experiment identity mismatch")
             }
+            Self::InvalidCorpus => write!(formatter, "invalid reduction correctness corpus"),
+            Self::InvalidExecutionSource => write!(formatter, "invalid reduction execution source"),
+            Self::InvalidExecutionBundle => write!(formatter, "invalid reduction execution bundle"),
             Self::Serialization(error) => {
                 write!(formatter, "cannot encode correctness evidence: {error}")
             }

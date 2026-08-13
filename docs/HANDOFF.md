@@ -3,9 +3,8 @@
 - Handoff date: 2026-08-12
 - Repository: `/data/projects/shinesheep/alloyport`
 - Branch: `main`
-- Baseline: the 2026-08-12 closeout includes `c6da8a8` (shared authenticated gRPC context) and
-  `96b3a01` (explicit internal gRPC message bounds); run `git log --oneline` for the handoff commit
-  and later local history
+- Baseline: the 2026-08-12 closeout includes `2137b85` (calibrated reduction correctness gate);
+  run `git log --oneline` for the handoff commit and later local history
 - Project state: modular-monolith architecture evolution with working fixed CUDA and fixed Ascend
   runtime composition
 
@@ -70,6 +69,9 @@ Read these documents before changing architecture or implementation:
 22. [`design/0027-reduction-differential-oracle-and-calibration.md`](design/0027-reduction-differential-oracle-and-calibration.md)
     for reduction run/experiment identities, mutation calibration, verdict semantics, the paired
     execution Port, and the Build-to-Correctness Agent tool.
+23. [`design/0028-controller-authored-correctness-execution-bundles.md`](design/0028-controller-authored-correctness-execution-bundles.md)
+    for exact paired-run bundle inputs, frozen-corpus coverage, implementation binding, and the
+    stable callable candidate ABI required before production worker execution.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -669,7 +671,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 182 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 260 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1074,9 +1076,21 @@ Correctness receipts, and satisfy an Episode only on calibrated `PASS`. Determin
 Build-to-Correctness connection and durable Episode completion without a device or provider. The
 production paired CUDA/Ascend worker adapter and real hardware receipts remain unimplemented.
 
+The production-execution prerequisite slice is complete under
+[Design 0028](design/0028-controller-authored-correctness-execution-bundles.md). The controller now
+authors separate immutable CUDA-reference and Ascend-candidate execution bundles containing the
+same validated 24-observation corpus and exact role-separated source trees. The attempt Port carries
+both Artifact descriptors; candidate tooling rereads the immutable manifest/materialization before
+dispatch and binds returned run receipts to the assigned implementation digests. The oracle requires
+exact corpus coverage and recomputes case input identities, so coordinated case omission cannot
+calibrate. Source Gate v2 additionally requires the fixed reduction C ABI and
+`alloyport_reduction_candidate` CMake target. Worker execution kinds, trusted harnesses, the server
+paired adapter, and real device evidence are still absent.
+
 ## Suggested first task for the next Codex session
 
-The next action is the production execution slice from product-plan item 5:
+The next action remains the production execution slice from product-plan item 5, now using the
+Design 0028 bundle and ABI prerequisites:
 
 > Connect `ReductionCorrectnessAttemptPort` to policy-bound CUDA-reference and Ascend-candidate
 > worker runners, deliver the exact frozen corpus to both paths, and capture real run/calibration/

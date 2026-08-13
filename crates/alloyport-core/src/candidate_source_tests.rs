@@ -14,8 +14,8 @@ fn file(path: &str, kind: GeneratedSourceKind, contents: &str) -> CandidateSourc
 }
 
 fn source_set(device: &str) -> (CandidateSourceManifest, BTreeMap<BundlePath, Vec<u8>>) {
-    let host = "extern \"C\" int alloyport_reduce_sum_f32() { ACLRT_LAUNCH_KERNEL(reduce_sum); }";
-    let build = "add_library(port reduce.cpp host.cpp)";
+    let host = "extern \"C\" int alloyport_reduce_sum_f32(const float *input, size_t elements, float *output) { ACLRT_LAUNCH_KERNEL(reduce_sum); }";
+    let build = "add_library(alloyport_reduction_candidate reduce.cpp host.cpp)";
     let mapping = "input/kernel.cu -> generated/reduce.cpp\ninput/host.cu -> generated/host.cpp\ngenerated/CMakeLists.txt";
     let files = vec![
         file(

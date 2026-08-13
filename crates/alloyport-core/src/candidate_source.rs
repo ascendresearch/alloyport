@@ -11,7 +11,7 @@ use std::fmt::{self, Display, Formatter};
 
 pub const CANDIDATE_SOURCE_MANIFEST_SCHEMA_V1: u16 = 1;
 pub const SOURCE_GATE_RECEIPT_SCHEMA_V1: u16 = 1;
-pub const SOURCE_GATE_REVISION_V1: &str = "source-gate-v1";
+pub const SOURCE_GATE_REVISION_V2: &str = "source-gate-v2";
 
 /// One immutable generated source Artifact with its portable candidate path.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -254,7 +254,9 @@ pub enum SourceGateFailureKind {
     ForbiddenFallback,
     MissingAscendCKernel,
     MissingHostEntryPoint,
+    MissingCorrectnessAbi,
     MissingBuildReference,
+    MissingBuildTarget,
     IncompleteComponentMapping,
 }
 
@@ -353,7 +355,7 @@ pub fn evaluate_source_gate(
     failures.sort_by(|left, right| (&left.kind, &left.path).cmp(&(&right.kind, &right.path)));
     SourceGateReceipt {
         schema_version: SOURCE_GATE_RECEIPT_SCHEMA_V1,
-        gate_revision: SOURCE_GATE_REVISION_V1.to_owned(),
+        gate_revision: SOURCE_GATE_REVISION_V2.to_owned(),
         candidate_id: manifest.candidate_id.clone(),
         manifest_digest,
         passed: failures.is_empty(),
@@ -428,6 +430,21 @@ fn inspect_host(
             "host sources do not preserve the public symbol and an Ascend C launch path",
         ));
     }
+    let abi = sources.values().any(|(kind, contents)| {
+        *kind == GeneratedSourceKind::AscendHost
+            && contents.contains("extern \"C\"")
+            && contents.contains("int alloyport_reduce_sum_f32")
+            && contents.contains("const float")
+            && contents.contains("size_t")
+            && contents.contains("float *")
+    });
+    if !abi {
+        failures.push(failure(
+            SourceGateFailureKind::MissingCorrectnessAbi,
+            None,
+            "host sources do not expose int alloyport_reduce_sum_f32(const float *, size_t, float *)",
+        ));
+    }
 }
 
 fn inspect_build(
@@ -452,6 +469,13 @@ fn inspect_build(
             SourceGateFailureKind::MissingBuildReference,
             None,
             "build integration does not reference every generated device and host source",
+        ));
+    }
+    if !build.contains("alloyport_reduction_candidate") {
+        failures.push(failure(
+            SourceGateFailureKind::MissingBuildTarget,
+            None,
+            "build integration does not define the fixed alloyport_reduction_candidate target",
         ));
     }
 }

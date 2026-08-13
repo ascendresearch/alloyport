@@ -1,13 +1,14 @@
 use super::*;
 use alloyport_artifacts::{ArtifactStore, IngestRequest};
 use alloyport_core::{
-    CandidateId, REDUCTION_CORPUS_REVISION_V1, ReductionCorrectnessAttemptError,
-    ReductionCorrectnessAttemptFuture, ReductionCorrectnessAttemptObservation,
-    ReductionCorrectnessAttemptPort, ReductionCorrectnessExperiment, ReductionObservation,
-    ReductionRunReceipt, ReductionRunRole,
+    CandidateId, REDUCTION_EXECUTION_BUNDLE_MEDIA_TYPE, ReductionCaseKind, ReductionCorpus,
+    ReductionCorrectnessAttemptError, ReductionCorrectnessAttemptFuture,
+    ReductionCorrectnessAttemptObservation, ReductionCorrectnessAttemptPort,
+    ReductionCorrectnessAttemptSpec, ReductionCorrectnessExperiment, ReductionExecutionBundle,
+    ReductionObservation, ReductionRunReceipt, ReductionRunRole,
 };
-use std::collections::VecDeque;
-use std::io::Cursor;
+use std::collections::{BTreeMap, VecDeque};
+use std::io::{Cursor, Read};
 
 #[derive(Clone, Copy, Debug)]
 enum CorrectnessStep {
@@ -25,8 +26,26 @@ struct FakeCorrectnessAttemptPort {
 impl FakeCorrectnessAttemptPort {
     fn invoke(
         &mut self,
-        experiment: &ReductionCorrectnessExperiment,
+        spec: &ReductionCorrectnessAttemptSpec,
     ) -> Result<ReductionCorrectnessAttemptObservation, ReductionCorrectnessAttemptError> {
+        let experiment = &spec.experiment;
+        let reference_bundle = read_execution_bundle(
+            self.artifacts.as_ref(),
+            &spec.reference_bundle,
+            ReductionRunRole::CudaReference,
+            experiment,
+        )?;
+        let candidate_bundle = read_execution_bundle(
+            self.artifacts.as_ref(),
+            &spec.candidate_bundle,
+            ReductionRunRole::AscendCandidate,
+            experiment,
+        )?;
+        if reference_bundle.corpus() != candidate_bundle.corpus() {
+            return Err(ReductionCorrectnessAttemptError::Integrity(
+                "paired runners received different corpora".to_owned(),
+            ));
+        }
         self.experiments
             .lock()
             .expect("experiment log")
@@ -36,12 +55,12 @@ impl FakeCorrectnessAttemptPort {
                 diagnostic_digest: digest("correctness-pending"),
             }),
             CorrectnessStep::Finished => {
-                let observations = observations();
+                let observations = observations(reference_bundle.corpus());
                 let reference = ReductionRunReceipt::new(
                     experiment.experiment_digest(),
                     ReductionRunRole::CudaReference,
                     None,
-                    digest("original-cuda-source"),
+                    reference_bundle.implementation_digest(),
                     experiment.corpus_digest(),
                     digest("cuda-environment"),
                     true,
@@ -53,7 +72,7 @@ impl FakeCorrectnessAttemptPort {
                     experiment.experiment_digest(),
                     ReductionRunRole::AscendCandidate,
                     Some(experiment.candidate_id().clone()),
-                    digest("generated-ascend-source"),
+                    candidate_bundle.implementation_digest(),
                     experiment.corpus_digest(),
                     digest("ascend-environment"),
                     true,
@@ -73,40 +92,86 @@ impl FakeCorrectnessAttemptPort {
 impl ReductionCorrectnessAttemptPort for FakeCorrectnessAttemptPort {
     fn dispatch<'a>(
         &'a mut self,
-        experiment: &'a ReductionCorrectnessExperiment,
+        spec: &'a ReductionCorrectnessAttemptSpec,
     ) -> ReductionCorrectnessAttemptFuture<'a> {
-        Box::pin(async move { self.invoke(experiment) })
+        Box::pin(async move { self.invoke(spec) })
     }
 
     fn reconcile<'a>(
         &'a mut self,
-        experiment: &'a ReductionCorrectnessExperiment,
+        spec: &'a ReductionCorrectnessAttemptSpec,
     ) -> ReductionCorrectnessAttemptFuture<'a> {
-        Box::pin(async move { self.invoke(experiment) })
+        Box::pin(async move { self.invoke(spec) })
     }
 }
 
-fn observations() -> Vec<ReductionObservation> {
-    [
-        ("zero", 0, 0, Some(0.0_f32)),
-        ("one", 1, 0, Some(1.25_f32)),
-        ("tail-257", 257, 0, Some(31.5_f32)),
-        ("maximum", 1_048_576, 0, Some(-2048.25_f32)),
-        ("invalid-null", 1, 1, None),
-        ("unsupported", 1_048_577, 3, None),
-    ]
-    .into_iter()
-    .flat_map(|(case_id, elements, status, output)| {
-        (1..=2).map(move |repetition| ReductionObservation {
-            case_id: case_id.to_owned(),
-            repetition,
-            elements,
-            input_digest: digest(&format!("input-{case_id}")),
-            status,
-            output_bits: output.map(f32::to_bits),
+fn observations(corpus: &ReductionCorpus) -> Vec<ReductionObservation> {
+    corpus
+        .cases()
+        .iter()
+        .map(|case| {
+            let (status, output) = match case.kind {
+                ReductionCaseKind::Valid => (
+                    0,
+                    Some(if case.elements == 0 {
+                        0.0
+                    } else {
+                        f32::from(u16::try_from(case.elements % 997).expect("bounded remainder"))
+                            + f32::from(u16::try_from(case.seed % 97).expect("bounded seed"))
+                                / 1_000.0
+                    }),
+                ),
+                ReductionCaseKind::NullInput | ReductionCaseKind::NullOutput => (1, None),
+                ReductionCaseKind::UnsupportedSize => (3, None),
+            };
+            ReductionObservation {
+                case_id: case.case_id.clone(),
+                repetition: case.repetition,
+                elements: case.elements,
+                input_digest: case.input_digest(),
+                status,
+                output_bits: output.map(f32::to_bits),
+            }
         })
-    })
-    .collect()
+        .collect()
+}
+
+fn read_execution_bundle(
+    artifacts: &dyn ArtifactStore,
+    descriptor: &ArtifactDescriptor,
+    role: ReductionRunRole,
+    experiment: &ReductionCorrectnessExperiment,
+) -> Result<ReductionExecutionBundle, ReductionCorrectnessAttemptError> {
+    if descriptor.media_type != REDUCTION_EXECUTION_BUNDLE_MEDIA_TYPE {
+        return Err(ReductionCorrectnessAttemptError::Integrity(
+            "unexpected execution bundle media type".to_owned(),
+        ));
+    }
+    let mut reader = artifacts
+        .open(descriptor.digest)
+        .map_err(|error| ReductionCorrectnessAttemptError::Unavailable(error.to_string()))?;
+    if reader.identity().size_bytes != descriptor.size_bytes {
+        return Err(ReductionCorrectnessAttemptError::Integrity(
+            "execution bundle size changed".to_owned(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|error| ReductionCorrectnessAttemptError::Unavailable(error.to_string()))?;
+    if Sha256Digest::digest_bytes(&bytes) != descriptor.digest {
+        return Err(ReductionCorrectnessAttemptError::Integrity(
+            "execution bundle digest changed".to_owned(),
+        ));
+    }
+    let bundle: ReductionExecutionBundle = serde_json::from_slice(&bytes)
+        .map_err(|error| ReductionCorrectnessAttemptError::Integrity(error.to_string()))?;
+    if bundle.role() != role || bundle.experiment() != experiment {
+        return Err(ReductionCorrectnessAttemptError::Integrity(
+            "execution bundle assignment identity changed".to_owned(),
+        ));
+    }
+    Ok(bundle)
 }
 
 fn ingest_json<T: serde::Serialize>(
@@ -130,6 +195,24 @@ fn ingest_json<T: serde::Serialize>(
         size_bytes,
         media_type: "application/json".to_owned(),
     }
+}
+
+fn reference_sources() -> BTreeMap<alloyport_core::BundlePath, Vec<u8>> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/migrations/cuda-reduction-v1");
+    let spec = migration_spec();
+    spec.sources()
+        .device_sources()
+        .iter()
+        .chain(spec.sources().host_sources())
+        .chain(spec.sources().build_files())
+        .map(|path| {
+            (
+                path.clone(),
+                std::fs::read(root.join(path.as_str())).expect("read reference source"),
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -211,7 +294,7 @@ fn passing_build_dispatches_one_stable_calibrated_correctness_experiment()
     };
     let mut gateway = CandidateToolGateway::new(context, artifacts.clone(), workspace.path())?
         .with_reduction_correctness(
-            CandidateCorrectnessToolConfig::reduction_fixture_v1(),
+            CandidateCorrectnessToolConfig::reduction_fixture_v1(reference_sources())?,
             Box::new(correctness),
         );
     assert!(
@@ -254,7 +337,7 @@ fn passing_build_dispatches_one_stable_calibrated_correctness_experiment()
     assert_eq!(experiments[0], experiments[1]);
     assert_eq!(
         experiments[0].corpus_digest(),
-        digest(REDUCTION_CORPUS_REVISION_V1)
+        ReductionCorpus::fixture_v1().digest()?
     );
     Ok(())
 }
@@ -279,7 +362,7 @@ fn correctness_rejects_non_build_evidence_before_dispatch() -> Result<(), Box<dy
         workspace.path(),
     )?
     .with_reduction_correctness(
-        CandidateCorrectnessToolConfig::reduction_fixture_v1(),
+        CandidateCorrectnessToolConfig::reduction_fixture_v1(reference_sources())?,
         Box::new(correctness),
     );
     let fake_receipt = ingest_json(
@@ -366,7 +449,7 @@ fn durable_episode_completes_only_after_the_calibrated_correctness_gate()
     };
     let mut tools = CandidateToolGateway::new(context, artifacts, workspace.path())?
         .with_reduction_correctness(
-            CandidateCorrectnessToolConfig::reduction_fixture_v1(),
+            CandidateCorrectnessToolConfig::reduction_fixture_v1(reference_sources())?,
             Box::new(correctness),
         );
     let continuations = [

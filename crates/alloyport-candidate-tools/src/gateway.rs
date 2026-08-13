@@ -368,7 +368,12 @@ impl AgentToolGateway for CandidateToolGateway {
                     .as_mut()
                     .ok_or(ToolGatewayError::UnexpectedRequest)?;
                 return correctness
-                    .execute(&self.config, self.artifacts.as_ref(), request)
+                    .execute(
+                        &self.config,
+                        self.artifacts.as_ref(),
+                        &self.workspace_root,
+                        request,
+                    )
                     .await;
             }
             self.invoke(request)
@@ -399,7 +404,12 @@ impl AgentToolGateway for CandidateToolGateway {
                     .as_mut()
                     .ok_or(ToolGatewayError::UnexpectedRequest)?;
                 return correctness
-                    .reconcile(&self.config, self.artifacts.as_ref(), request)
+                    .reconcile(
+                        &self.config,
+                        self.artifacts.as_ref(),
+                        &self.workspace_root,
+                        request,
+                    )
                     .await;
             }
             self.invoke(request)

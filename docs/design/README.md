@@ -35,6 +35,7 @@ stable identifier.
 | 0025 | [Durable iterative agent runtime and pluggable LLM protocols](0025-pluggable-llm-provider-architecture.md) | Accepted; domain/catalog/durable-fake-loop/codec slices implemented |
 | 0026 | [Ascend Build Gate connection](0026-ascend-build-gate-connection.md) | Implemented |
 | 0027 | [Reduction differential oracle and mutation calibration](0027-reduction-differential-oracle-and-calibration.md) | Implemented first bounded slice |
+| 0028 | [Controller-authored correctness execution bundles](0028-controller-authored-correctness-execution-bundles.md) | Implemented prerequisite slice |
 
 ## Convention
 

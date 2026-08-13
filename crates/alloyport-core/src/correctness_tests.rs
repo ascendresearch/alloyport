@@ -1,34 +1,45 @@
 use super::*;
+use crate::ReductionCaseKind;
 
 fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::digest_bytes(label.as_bytes())
 }
 
-fn observations() -> Vec<ReductionObservation> {
-    let cases = [
-        ("zero", 0, 0, Some(0.0_f32)),
-        ("one", 1, 0, Some(1.25_f32)),
-        ("tail-257", 257, 0, Some(31.5_f32)),
-        ("maximum", 1_048_576, 0, Some(-2048.25_f32)),
-        ("invalid-null", 1, 1, None),
-        ("unsupported", 1_048_577, 3, None),
-    ];
-    cases
-        .into_iter()
-        .flat_map(|(case_id, elements, status, output)| {
-            (1..=2).map(move |repetition| ReductionObservation {
-                case_id: case_id.to_owned(),
-                repetition,
-                elements,
-                input_digest: digest(&format!("input-{case_id}")),
+fn observations(corpus: &ReductionCorpus) -> Vec<ReductionObservation> {
+    corpus
+        .cases()
+        .iter()
+        .map(|case| {
+            let (status, output) = match case.kind {
+                ReductionCaseKind::Valid => (
+                    0,
+                    Some(if case.elements == 0 {
+                        0.0
+                    } else {
+                        f32::from(u16::try_from(case.elements % 997).expect("bounded remainder"))
+                            + f32::from(u16::try_from(case.seed % 97).expect("bounded seed"))
+                                / 1_000.0
+                    }),
+                ),
+                ReductionCaseKind::NullInput | ReductionCaseKind::NullOutput => (1, None),
+                ReductionCaseKind::UnsupportedSize => (3, None),
+            };
+            ReductionObservation {
+                case_id: case.case_id.clone(),
+                repetition: case.repetition,
+                elements: case.elements,
+                input_digest: case.input_digest(),
                 status,
                 output_bits: output.map(f32::to_bits),
-            })
+            }
         })
         .collect()
 }
 
-fn experiment(candidate_id: CandidateId) -> ReductionCorrectnessExperiment {
+fn experiment(
+    candidate_id: CandidateId,
+    corpus: &ReductionCorpus,
+) -> ReductionCorrectnessExperiment {
     let policy = ReductionOraclePolicy::fixture_v1();
     ReductionCorrectnessExperiment::new(
         TaskId::try_from("task-reduction-correctness").expect("task ID"),
@@ -37,7 +48,7 @@ fn experiment(candidate_id: CandidateId) -> ReductionCorrectnessExperiment {
         digest("manifest"),
         digest("source-gate"),
         digest("build-gate"),
-        digest(REDUCTION_CORPUS_REVISION_V1),
+        corpus.digest().expect("corpus digest"),
         policy.digest().expect("policy digest"),
     )
 }
@@ -46,9 +57,11 @@ fn runs() -> (
     ReductionCorrectnessExperiment,
     ReductionRunReceipt,
     ReductionRunReceipt,
+    ReductionCorpus,
 ) {
+    let corpus = ReductionCorpus::fixture_v1();
     let candidate_id = CandidateId::try_from("candidate-reduction-correctness").expect("ID");
-    let experiment = experiment(candidate_id.clone());
+    let experiment = experiment(candidate_id.clone(), &corpus);
     let reference = ReductionRunReceipt::new(
         experiment.experiment_digest(),
         ReductionRunRole::CudaReference,
@@ -58,7 +71,7 @@ fn runs() -> (
         digest("cuda-environment"),
         true,
         true,
-        observations(),
+        observations(&corpus),
     )
     .expect("reference run");
     let candidate = ReductionRunReceipt::new(
@@ -70,17 +83,18 @@ fn runs() -> (
         digest("ascend-environment"),
         true,
         true,
-        observations(),
+        observations(&corpus),
     )
     .expect("candidate run");
-    (experiment, reference, candidate)
+    (experiment, reference, candidate, corpus)
 }
 
 #[test]
 fn calibrated_oracle_passes_the_exact_independent_run_pair() {
     let policy = ReductionOraclePolicy::fixture_v1();
-    let (experiment, reference, candidate) = runs();
-    let calibration = calibrate_reduction_oracle(&reference, &policy).expect("calibration receipt");
+    let (experiment, reference, candidate, corpus) = runs();
+    let calibration =
+        calibrate_reduction_oracle(&reference, &policy, &corpus).expect("calibration receipt");
     assert!(calibration.passed());
     assert_eq!(
         calibration.detections().len(),
@@ -88,9 +102,15 @@ fn calibrated_oracle_passes_the_exact_independent_run_pair() {
     );
     assert!(calibration.detections().iter().all(|item| item.detected));
 
-    let receipt =
-        evaluate_reduction_correctness(experiment, &reference, &candidate, &policy, &calibration)
-            .expect("correctness receipt");
+    let receipt = evaluate_reduction_correctness(
+        experiment,
+        &reference,
+        &candidate,
+        &policy,
+        &corpus,
+        &calibration,
+    )
+    .expect("correctness receipt");
     assert_eq!(receipt.verdict(), CorrectnessVerdict::Pass);
     assert!(receipt.failures().is_empty());
 }
@@ -98,14 +118,16 @@ fn calibrated_oracle_passes_the_exact_independent_run_pair() {
 #[test]
 fn semantic_mismatch_fails_but_uncalibrated_policy_is_unverifiable() {
     let policy = ReductionOraclePolicy::fixture_v1();
-    let (experiment, reference, mut candidate) = runs();
+    let (experiment, reference, mut candidate, corpus) = runs();
     candidate.observations[2].output_bits = Some(9.0_f32.to_bits());
-    let calibration = calibrate_reduction_oracle(&reference, &policy).expect("calibration");
+    let calibration =
+        calibrate_reduction_oracle(&reference, &policy, &corpus).expect("calibration");
     let failed = evaluate_reduction_correctness(
         experiment.clone(),
         &reference,
         &candidate,
         &policy,
+        &corpus,
         &calibration,
     )
     .expect("failed receipt");
@@ -129,7 +151,7 @@ fn semantic_mismatch_fails_but_uncalibrated_policy_is_unverifiable() {
         digest("manifest"),
         digest("source-gate"),
         digest("build-gate"),
-        digest(REDUCTION_CORPUS_REVISION_V1),
+        corpus.digest().expect("corpus digest"),
         weak_policy.digest().expect("policy digest"),
     );
     let weak_reference = ReductionRunReceipt::new(
@@ -141,7 +163,7 @@ fn semantic_mismatch_fails_but_uncalibrated_policy_is_unverifiable() {
         digest("cuda-environment"),
         true,
         true,
-        observations(),
+        observations(&corpus),
     )
     .expect("weak reference");
     let weak_candidate = ReductionRunReceipt::new(
@@ -153,17 +175,18 @@ fn semantic_mismatch_fails_but_uncalibrated_policy_is_unverifiable() {
         digest("ascend-environment"),
         true,
         true,
-        observations(),
+        observations(&corpus),
     )
     .expect("weak candidate");
-    let weak_calibration =
-        calibrate_reduction_oracle(&weak_reference, &weak_policy).expect("weak calibration");
+    let weak_calibration = calibrate_reduction_oracle(&weak_reference, &weak_policy, &corpus)
+        .expect("weak calibration");
     assert!(!weak_calibration.passed());
     let unverifiable = evaluate_reduction_correctness(
         weak_experiment,
         &weak_reference,
         &weak_candidate,
         &weak_policy,
+        &corpus,
         &weak_calibration,
     )
     .expect("unverifiable receipt");
@@ -172,8 +195,18 @@ fn semantic_mismatch_fails_but_uncalibrated_policy_is_unverifiable() {
 
 #[test]
 fn run_receipt_deserialization_cannot_bypass_identity_validation() {
-    let (_, reference, _) = runs();
+    let (_, reference, _, _) = runs();
     let mut value = serde_json::to_value(reference).expect("serialize");
     value["observations"][1]["repetition"] = value["observations"][0]["repetition"].clone();
     assert!(serde_json::from_value::<ReductionRunReceipt>(value).is_err());
+}
+
+#[test]
+fn calibration_rejects_a_reference_that_omits_one_frozen_case() {
+    let policy = ReductionOraclePolicy::fixture_v1();
+    let (_, mut reference, _, corpus) = runs();
+    reference.observations.pop();
+    let calibration =
+        calibrate_reduction_oracle(&reference, &policy, &corpus).expect("calibration receipt");
+    assert!(!calibration.passed());
 }

@@ -1,9 +1,12 @@
 //! Independent reduction correctness, oracle calibration, and execution-port contracts.
 
 use crate::correctness_attempt::ReductionCorrectnessError;
-use crate::{CandidateId, Sha256Digest, TaskId};
+use crate::{CandidateId, ReductionCorpus, Sha256Digest, TaskId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+
+#[path = "correctness_mutation.rs"]
+mod mutation;
 
 pub const REDUCTION_RUN_RECEIPT_SCHEMA_V1: u16 = 1;
 pub const REDUCTION_CALIBRATION_RECEIPT_SCHEMA_V1: u16 = 1;
@@ -159,6 +162,11 @@ impl ReductionRunReceipt {
     #[must_use]
     pub const fn corpus_digest(&self) -> Sha256Digest {
         self.corpus_digest
+    }
+
+    #[must_use]
+    pub const fn implementation_digest(&self) -> Sha256Digest {
+        self.implementation_digest
     }
 
     #[must_use]
@@ -438,15 +446,20 @@ impl ReductionCorrectnessReceipt {
 pub fn calibrate_reduction_oracle(
     reference: &ReductionRunReceipt,
     policy: &ReductionOraclePolicy,
+    corpus: &ReductionCorpus,
 ) -> Result<ReductionCalibrationReceipt, ReductionCorrectnessError> {
     if reference.role != ReductionRunRole::CudaReference {
         return Err(ReductionCorrectnessError::ReferenceRoleRequired);
     }
-    let identity_passed = compare_runs(reference, reference, policy).is_empty();
+    if corpus.digest()? != reference.corpus_digest {
+        return Err(ReductionCorrectnessError::ExperimentIdentityMismatch);
+    }
+    let identity_passed = compare_runs(reference, reference, policy, corpus).is_empty();
     let mut detections = Vec::with_capacity(ReductionMutantKind::ALL.len());
     for mutant in ReductionMutantKind::ALL {
-        let detected = apply_mutant(reference.clone(), mutant)
-            .is_some_and(|candidate| !compare_runs(reference, &candidate, policy).is_empty());
+        let detected = mutation::apply_mutant(reference.clone(), mutant).is_some_and(|candidate| {
+            !compare_runs(reference, &candidate, policy, corpus).is_empty()
+        });
         detections.push(ReductionMutationDetection { mutant, detected });
     }
     let passed = identity_passed && detections.iter().all(|item| item.detected);
@@ -472,9 +485,10 @@ pub fn evaluate_reduction_correctness(
     reference: &ReductionRunReceipt,
     candidate: &ReductionRunReceipt,
     policy: &ReductionOraclePolicy,
+    corpus: &ReductionCorpus,
     calibration: &ReductionCalibrationReceipt,
 ) -> Result<ReductionCorrectnessReceipt, ReductionCorrectnessError> {
-    validate_experiment_runs(&experiment, reference, candidate, policy)?;
+    validate_experiment_runs(&experiment, reference, candidate, policy, corpus)?;
     let reference_run_digest = reference.digest()?;
     let candidate_run_digest = candidate.digest()?;
     let calibration_receipt_digest = calibration.digest()?;
@@ -484,7 +498,7 @@ pub fn evaluate_reduction_correctness(
         && calibration.corpus_digest == experiment.corpus_digest
         && calibration.reference_run_digest == reference_run_digest;
     let (verdict, failures) = if calibrated {
-        let failures = compare_runs(reference, candidate, policy);
+        let failures = compare_runs(reference, candidate, policy, corpus);
         (
             if failures.is_empty() {
                 CorrectnessVerdict::Pass
@@ -521,6 +535,7 @@ fn validate_experiment_runs(
     reference: &ReductionRunReceipt,
     candidate: &ReductionRunReceipt,
     policy: &ReductionOraclePolicy,
+    corpus: &ReductionCorpus,
 ) -> Result<(), ReductionCorrectnessError> {
     if reference.role != ReductionRunRole::CudaReference
         || candidate.role != ReductionRunRole::AscendCandidate
@@ -530,6 +545,7 @@ fn validate_experiment_runs(
         || reference.corpus_digest != experiment.corpus_digest
         || candidate.corpus_digest != experiment.corpus_digest
         || policy.digest()? != experiment.policy_digest
+        || corpus.digest()? != experiment.corpus_digest
     {
         return Err(ReductionCorrectnessError::ExperimentIdentityMismatch);
     }
@@ -541,6 +557,7 @@ fn compare_runs(
     reference: &ReductionRunReceipt,
     candidate: &ReductionRunReceipt,
     policy: &ReductionOraclePolicy,
+    corpus: &ReductionCorpus,
 ) -> Vec<ReductionOracleFailure> {
     let mut failures = Vec::new();
     if !reference.implementation_invoked || !reference.synchronized {
@@ -578,6 +595,20 @@ fn compare_runs(
         .iter()
         .map(|item| ((item.case_id.as_str(), item.repetition), item))
         .collect();
+    let corpus_by_key: BTreeMap<_, _> = corpus
+        .cases()
+        .iter()
+        .map(|item| ((item.case_id.as_str(), item.repetition), item))
+        .collect();
+    if reference_by_key.keys().ne(corpus_by_key.keys()) {
+        failures.push(failure(
+            ReductionOracleFailureKind::ObservationSetMismatch,
+            None,
+            None,
+            "reference observations do not cover the exact frozen corpus",
+        ));
+        return failures;
+    }
     if reference_by_key.keys().ne(candidate_by_key.keys()) {
         failures.push(failure(
             ReductionOracleFailureKind::ObservationSetMismatch,
@@ -612,7 +643,12 @@ fn compare_runs(
     }
     for (key, expected) in reference_by_key {
         let actual = candidate_by_key[&key];
-        if actual.elements != expected.elements || actual.input_digest != expected.input_digest {
+        let corpus_case = corpus_by_key[&key];
+        if expected.elements != corpus_case.elements
+            || expected.input_digest != corpus_case.input_digest()
+            || actual.elements != expected.elements
+            || actual.input_digest != expected.input_digest
+        {
             failures.push(failure(
                 ReductionOracleFailureKind::ObservationSetMismatch,
                 Some(expected.case_id.clone()),
@@ -694,83 +730,6 @@ fn within_tolerance(expected: f32, actual: f32, policy: &ReductionOraclePolicy) 
     let absolute = f64::from(policy.absolute_tolerance_nanos) / 1_000_000_000.0;
     let relative = expected.abs() * f64::from(policy.relative_tolerance_ppb) / 1_000_000_000.0;
     error <= absolute.max(relative)
-}
-
-fn apply_mutant(
-    mut run: ReductionRunReceipt,
-    mutant: ReductionMutantKind,
-) -> Option<ReductionRunReceipt> {
-    run.role = ReductionRunRole::AscendCandidate;
-    run.candidate_id = Some(CandidateId::try_from("candidate-calibration-mutant").ok()?);
-    match mutant {
-        ReductionMutantKind::FallbackBypass => run.implementation_invoked = false,
-        ReductionMutantKind::MissingSynchronization => run.synchronized = false,
-        ReductionMutantKind::ArithmeticScale => mutate_value(&mut run, |value| value * 1.1)?,
-        ReductionMutantKind::BoundaryMask => mutate_named_value(&mut run, "tail", |_| 0.0)?,
-        ReductionMutantKind::AccumulationError => mutate_value(&mut run, |value| value + 0.01)?,
-        ReductionMutantKind::InvalidStatus => {
-            let item = run.observations.iter_mut().find(|item| item.status != 0)?;
-            item.status = 0;
-            item.output_bits = Some(0);
-        }
-        ReductionMutantKind::SignedZero => {
-            let item = run
-                .observations
-                .iter_mut()
-                .find(|item| item.output_bits == Some(0))?;
-            item.output_bits = Some((-0.0_f32).to_bits());
-        }
-        ReductionMutantKind::NonFinite => {
-            let item = run.observations.iter_mut().find(|item| item.status == 0)?;
-            item.output_bits = Some(f32::INFINITY.to_bits());
-        }
-        ReductionMutantKind::Nondeterminism => {
-            let item = run
-                .observations
-                .iter_mut()
-                .find(|item| item.status == 0 && item.repetition > 1)?;
-            let value = f32::from_bits(item.output_bits?);
-            item.output_bits = Some((value + 1.0).to_bits());
-        }
-        ReductionMutantKind::IndexingSwap => {
-            let indices: Vec<_> = run
-                .observations
-                .iter()
-                .enumerate()
-                .filter(|(_, item)| item.status == 0 && item.repetition == 1)
-                .map(|(index, _)| index)
-                .take(2)
-                .collect();
-            if indices.len() != 2 {
-                return None;
-            }
-            let left = run.observations[indices[0]].output_bits;
-            run.observations[indices[0]].output_bits = run.observations[indices[1]].output_bits;
-            run.observations[indices[1]].output_bits = left;
-        }
-    }
-    Some(run)
-}
-
-fn mutate_value(run: &mut ReductionRunReceipt, mutation: impl FnOnce(f32) -> f32) -> Option<()> {
-    let item = run
-        .observations
-        .iter_mut()
-        .find(|item| item.status == 0 && item.output_bits != Some(0))?;
-    item.output_bits = Some(mutation(f32::from_bits(item.output_bits?)).to_bits());
-    Some(())
-}
-
-fn mutate_named_value(
-    run: &mut ReductionRunReceipt,
-    name_fragment: &str,
-    mutation: impl FnOnce(f32) -> f32,
-) -> Option<()> {
-    let item = run.observations.iter_mut().find(|item| {
-        item.status == 0 && item.repetition == 1 && item.case_id.contains(name_fragment)
-    })?;
-    item.output_bits = Some(mutation(f32::from_bits(item.output_bits?)).to_bits());
-    Some(())
 }
 
 fn failure(
