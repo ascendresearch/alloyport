@@ -16,7 +16,9 @@ triggering external model charges before worker policy was ready.
 `candidate-episode validate CONFIG` loads one strict schema-1 operator document. It resolves paths
 relative to the document, validates the catalog and selected alias, securely reads the configured
 credential without printing it, derives protocol headers, loads the exact MigrationSpec and CUDA
-reference files, bounds prompt/context bytes, validates three distinct fixed worker/image/resource
+reference files, deterministically appends the exact contract and declared source bytes to the
+operator task text, derives both context-projection and input-root identities, bounds prompt/context
+bytes, validates three distinct fixed worker/image/resource
 targets, and checks durable state/workspace paths. It performs no listener, worker, or provider
 network operation.
 

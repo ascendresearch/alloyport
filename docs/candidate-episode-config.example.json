@@ -12,8 +12,6 @@
     "search_run_id": "cuda-reduction-search-001",
     "parent_candidate_id": null,
     "subtask_contract_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "context_projection_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "input_artifact_root_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
     "runtime_model_alias": null,
     "prompt_revision": "cuda-reduction-candidate-v1",
     "loop_policy": {

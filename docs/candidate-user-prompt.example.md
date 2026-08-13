@@ -5,6 +5,6 @@ the supported bound `0 <= elements <= 1048576`, and the declared unsupported fal
 complete bundle under `generated/`: Ascend C device code, host wrapper, build integration, and a
 component-mapping document. Do not use a framework reduction operator as a hidden fallback.
 
-Before a real run, replace this example with the approved context projection containing the exact
-immutable CUDA source files and migration contract. Record that projection's digest in the
-Candidate Episode configuration.
+The controller appends the exact validated MigrationSpec and every declared immutable CUDA source
+file to this task text. It derives the context-projection and input-root digests from those bytes;
+do not copy source files or supply those identities manually.

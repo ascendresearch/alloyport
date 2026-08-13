@@ -1186,8 +1186,11 @@ The explicit process boundary is now complete under
 worker-policy preflight without binding or network dispatch. The live form requires the literal
 `--authorize-provider-dispatch`, starts the shared services, waits for three distinct connected
 workers with exact advertised features, and polls pending Gate work under bounded configuration.
-The example remains deliberately unrunnable until real digests, image descriptor sizes, context
-digests, a secure catalog secret, and runtime paths are supplied.
+The bootstrap also renders the validated MigrationSpec and every declared CUDA source into a
+delimited controller-owned context projection and derives both projection and input-root identities;
+operators cannot provide mismatched digest labels or omit source bytes from the model request. The
+example remains deliberately unrunnable until real image descriptors, a secure catalog secret, and
+runtime paths are supplied.
 
 The previously missing Build process role is now complete under
 [Design 0038](design/0038-standalone-ascend-build-worker.md). The unified worker schema accepts an
