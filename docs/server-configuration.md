@@ -86,7 +86,8 @@ cargo run -p alloyport-server -- --config server.json \
 
 This checks the complete runtime-model catalog, secure secret file and protocol headers,
 MigrationSpec and reference sources, derives an exact delimited source context and its input-root
-identity, enforces prompt bounds and durable paths, and validates three distinct worker targets,
+identity, derives subtask/data-boundary/episode-budget/request-budget identities from their actual
+policies, enforces prompt bounds and durable paths, and validates three distinct worker targets,
 OCI image descriptors, resource ceilings, and loop/codec budgets. It does not bind a listener,
 contact a worker, or send a provider request.
 

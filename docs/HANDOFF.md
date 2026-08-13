@@ -1189,8 +1189,10 @@ workers with exact advertised features, and polls pending Gate work under bounde
 The bootstrap also renders the validated MigrationSpec and every declared CUDA source into a
 delimited controller-owned context projection and derives both projection and input-root identities;
 operators cannot provide mismatched digest labels or omit source bytes from the model request. The
-example remains deliberately unrunnable until real image descriptors, a secure catalog secret, and
-runtime paths are supplied.
+subtask, data-boundary, Episode-budget, and provider-request-budget identities are likewise derived
+from their actual configured policies instead of operator-authored digest labels. The example
+remains deliberately unrunnable until real image descriptors, a secure catalog secret, and runtime
+paths are supplied.
 
 The previously missing Build process role is now complete under
 [Design 0038](design/0038-standalone-ascend-build-worker.md). The unified worker schema accepts an

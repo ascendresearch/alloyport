@@ -376,6 +376,11 @@ impl ResolvedRuntimeModel {
     }
 
     #[must_use]
+    pub const fn data_boundary(&self) -> ModelDataBoundary {
+        self.data_boundary
+    }
+
+    #[must_use]
     pub const fn max_output_tokens(&self) -> u32 {
         self.settings.max_output_tokens
     }

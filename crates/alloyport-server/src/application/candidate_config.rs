@@ -65,13 +65,9 @@ struct EpisodeFileConfig {
     task_id: TaskId,
     search_run_id: SearchRunId,
     parent_candidate_id: Option<CandidateId>,
-    subtask_contract_digest: Sha256Digest,
     runtime_model_alias: Option<String>,
     prompt_revision: String,
     loop_policy: AgentLoopPolicy,
-    data_boundary_policy_digest: Sha256Digest,
-    budget_snapshot_digest: Sha256Digest,
-    request_budget_digest: Sha256Digest,
     system_prompt: PathBuf,
     initial_user_text: PathBuf,
 }
@@ -150,6 +146,10 @@ struct LoadedInputs {
     initial_user_text: String,
     context_projection_digest: Sha256Digest,
     input_artifact_root_digest: Sha256Digest,
+    subtask_contract_digest: Sha256Digest,
+    data_boundary_policy_digest: Sha256Digest,
+    budget_snapshot_digest: Sha256Digest,
+    request_budget_digest: Sha256Digest,
 }
 
 #[derive(Serialize)]
@@ -197,16 +197,16 @@ impl CandidateEpisodeConfig {
                 task_id: episode.task_id,
                 search_run_id: episode.search_run_id,
                 parent_candidate_id: episode.parent_candidate_id,
-                subtask_contract_digest: episode.subtask_contract_digest,
+                subtask_contract_digest: inputs.subtask_contract_digest,
                 context_projection_digest: inputs.context_projection_digest,
                 input_artifact_root_digest: inputs.input_artifact_root_digest,
                 runtime_model_alias: episode.runtime_model_alias,
                 prompt_revision: episode.prompt_revision,
                 tools: Vec::new(),
                 loop_policy: episode.loop_policy,
-                data_boundary_policy_digest: episode.data_boundary_policy_digest,
-                budget_snapshot_digest: episode.budget_snapshot_digest,
-                request_budget_digest: episode.request_budget_digest,
+                data_boundary_policy_digest: inputs.data_boundary_policy_digest,
+                budget_snapshot_digest: inputs.budget_snapshot_digest,
+                request_budget_digest: inputs.request_budget_digest,
                 system_prompt: inputs.system_prompt,
                 initial_user_text: inputs.initial_user_text,
             },
@@ -289,7 +289,27 @@ fn load_inputs(
         return Err("runtime model alias must be nonempty when supplied".into());
     }
     file.episode.loop_policy.validate()?;
-    catalog.resolve(file.episode.runtime_model_alias.as_deref())?;
+    let resolved = catalog.resolve(file.episode.runtime_model_alias.as_deref())?;
+    let subtask_contract_digest = digest_json(&serde_json::json!({
+        "schema": "alloyport-candidate-subtask-v1",
+        "migration_spec_digest": migration_spec.digest(),
+        "generation_strategy": file.generation_strategy,
+        "prompt_revision": file.episode.prompt_revision,
+    }))?;
+    let data_boundary_policy_digest = digest_json(&serde_json::json!({
+        "schema": "alloyport-model-data-boundary-v1",
+        "data_boundary": resolved.data_boundary(),
+    }))?;
+    let budget_snapshot_digest = digest_json(&serde_json::json!({
+        "schema": "alloyport-episode-budget-v1",
+        "loop_policy": file.episode.loop_policy,
+        "codec_limits": codec_limits_json(codec_limits),
+    }))?;
+    let request_budget_digest = digest_json(&serde_json::json!({
+        "schema": "alloyport-provider-request-budget-v1",
+        "max_output_tokens": resolved.max_output_tokens(),
+        "transport": resolved.transport_policy(),
+    }))?;
 
     Ok(LoadedInputs {
         catalog,
@@ -302,6 +322,10 @@ fn load_inputs(
         initial_user_text,
         context_projection_digest,
         input_artifact_root_digest,
+        subtask_contract_digest,
+        data_boundary_policy_digest,
+        budget_snapshot_digest,
+        request_budget_digest,
     })
 }
 
@@ -511,6 +535,22 @@ fn render_context_projection(
     ))
 }
 
+fn codec_limits_json(limits: CodecLimits) -> serde_json::Value {
+    serde_json::json!({
+        "max_response_bytes": limits.max_response_bytes,
+        "max_request_bytes": limits.max_request_bytes,
+        "max_continuation_bytes": limits.max_continuation_bytes,
+        "max_tool_argument_bytes": limits.max_tool_argument_bytes,
+        "max_tool_result_bytes": limits.max_tool_result_bytes,
+        "max_narrative_bytes": limits.max_narrative_bytes,
+        "max_tool_calls": limits.max_tool_calls,
+    })
+}
+
+fn digest_json(value: &serde_json::Value) -> Result<Sha256Digest, Box<dyn Error>> {
+    Ok(Sha256Digest::digest_bytes(&serde_json::to_vec(value)?))
+}
+
 fn read_json_file<T: serde::de::DeserializeOwned>(
     path: &Path,
     label: &str,
@@ -684,7 +724,6 @@ mod tests {
                 "task_id": "task-test",
                 "search_run_id": "search-test",
                 "parent_candidate_id": null,
-                "subtask_contract_digest": digest("subtask"),
                 "runtime_model_alias": null,
                 "prompt_revision": "candidate-v1",
                 "loop_policy": {
@@ -695,9 +734,6 @@ mod tests {
                     "max_total_tool_operations": 16,
                     "max_stop_feedback_turns": 2
                 },
-                "data_boundary_policy_digest": digest("boundary"),
-                "budget_snapshot_digest": digest("budget"),
-                "request_budget_digest": digest("request-budget"),
                 "system_prompt": "system.txt",
                 "initial_user_text": "user.txt"
             },

@@ -18,7 +18,8 @@ relative to the document, validates the catalog and selected alias, securely rea
 credential without printing it, derives protocol headers, loads the exact MigrationSpec and CUDA
 reference files, deterministically appends the exact contract and declared source bytes to the
 operator task text, derives both context-projection and input-root identities, bounds prompt/context
-bytes, validates three distinct fixed worker/image/resource
+bytes, derives the remaining subtask, data-boundary, episode-budget, and request-budget identities
+from their exact policies, validates three distinct fixed worker/image/resource
 targets, and checks durable state/workspace paths. It performs no listener, worker, or provider
 network operation.
 

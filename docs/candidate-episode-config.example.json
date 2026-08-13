@@ -11,7 +11,6 @@
     "task_id": "cuda-reduction-v1",
     "search_run_id": "cuda-reduction-search-001",
     "parent_candidate_id": null,
-    "subtask_contract_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
     "runtime_model_alias": null,
     "prompt_revision": "cuda-reduction-candidate-v1",
     "loop_policy": {
@@ -22,9 +21,6 @@
       "max_total_tool_operations": 32,
       "max_stop_feedback_turns": 2
     },
-    "data_boundary_policy_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "budget_snapshot_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "request_budget_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
     "system_prompt": "candidate-system-prompt.example.md",
     "initial_user_text": "candidate-user-prompt.example.md"
   },
