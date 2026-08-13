@@ -565,14 +565,16 @@ fn read_text_file(path: &Path, label: &str, max: usize) -> Result<String, Box<dy
 }
 
 fn read_regular_file(path: &Path, label: &str, max: usize) -> Result<Vec<u8>, Box<dyn Error>> {
-    let metadata = fs::symlink_metadata(path)?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect {label} {}: {error}", path.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(format!("{label} must be a regular non-symlink file").into());
     }
     if usize::try_from(metadata.len()).map_or(true, |length| length > max) {
         return Err(format!("{label} exceeds its configured bound").into());
     }
-    Ok(fs::read(path)?)
+    fs::read(path)
+        .map_err(|error| format!("cannot read {label} {}: {error}", path.display()).into())
 }
 
 fn real_directory(path: &Path, label: &str) -> Result<PathBuf, Box<dyn Error>> {
