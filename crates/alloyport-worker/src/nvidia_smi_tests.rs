@@ -40,6 +40,22 @@ fn malformed_metrics_and_unknown_process_rows_fail_closed() {
 }
 
 #[test]
+fn unified_memory_n_a_remains_ready_with_explicit_unknown_telemetry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let unified = b"0, NVIDIA GB10, GPU-0000, vbios, 0, [N/A], [N/A], 41, 4.66, None\n";
+    let (_, snapshot) = parse_discovery(unified, b"", 1)?;
+    let observation = &snapshot.devices[0];
+    assert_eq!(observation.health, DeviceHealth::Ready);
+    assert_eq!(observation.memory_used_bytes, 0);
+    assert_eq!(observation.memory_total_bytes, 0);
+    assert_eq!(
+        observation.detail,
+        "gpu_recovery_action=None;memory_counters=unavailable"
+    );
+    Ok(())
+}
+
+#[test]
 fn recovery_action_is_explicit_health_evidence() -> Result<(), Box<dyn std::error::Error>> {
     let reset = b"0, NVIDIA GB10, GPU-0000, vbios, 0, 0, 1, 40, 1, Reset\n";
     let (_, snapshot) = parse_discovery(reset, b"", 1)?;

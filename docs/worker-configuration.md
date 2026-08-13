@@ -81,4 +81,6 @@ and a new reusable observation. Probe uncertainty or an unattributed visible pro
 lease as quarantine; neither backend currently authorizes an automatic reset.
 
 Utilization and memory counters are telemetry only. Zero utilization does not prove that a device is
-safe to reuse.
+safe to reuse. NVIDIA unified-memory devices may report memory counters as `[N/A]`; the worker
+records zero plus `memory_counters=unavailable` in the observation detail while continuing to base
+eligibility on explicit recovery health, compute processes, and durable leases.

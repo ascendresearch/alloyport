@@ -233,17 +233,28 @@ fn parse_discovery(
             serial_number: uuid.clone(),
             firmware_version: fields[3].to_owned(),
         });
+        let (memory_used_bytes, memory_used_available) =
+            parse_memory_bytes(fields[5], "memory used")?;
+        let (memory_total_bytes, memory_total_available) =
+            parse_memory_bytes(fields[6], "memory total")?;
         observations.push(DeviceObservation {
             device_id,
             health,
             process_count: processes.get(&uuid).copied().unwrap_or(0),
             utilization_percent,
-            memory_used_bytes: parse_u64(fields[5], "memory used")?.saturating_mul(1024 * 1024),
-            memory_total_bytes: parse_u64(fields[6], "memory total")?.saturating_mul(1024 * 1024),
+            memory_used_bytes,
+            memory_total_bytes,
             temperature_millicelsius: parse_u32(fields[7], "temperature")?.saturating_mul(1000),
             power_milliwatts: parse_decimal_milli(fields[8], "power")?,
             observed_at_ms,
-            detail: format!("gpu_recovery_action={}", fields[9]),
+            detail: if memory_used_available && memory_total_available {
+                format!("gpu_recovery_action={}", fields[9])
+            } else {
+                format!(
+                    "gpu_recovery_action={};memory_counters=unavailable",
+                    fields[9]
+                )
+            },
         });
     }
     if inventory.is_empty() {
@@ -309,6 +320,15 @@ fn parse_u64(value: &str, field: &str) -> Result<u64, DeviceStatusError> {
     value.parse().map_err(|error| {
         DeviceStatusError::InvalidResponse(format!("invalid nvidia-smi {field}: {error}"))
     })
+}
+
+fn parse_memory_bytes(value: &str, field: &str) -> Result<(u64, bool), DeviceStatusError> {
+    match value {
+        "N/A" | "[N/A]" | "Not Supported" | "[Not Supported]" => Ok((0, false)),
+        value => {
+            parse_u64(value, field).map(|mebibytes| (mebibytes.saturating_mul(1024 * 1024), true))
+        }
+    }
 }
 
 fn parse_decimal_milli(value: &str, field: &str) -> Result<u64, DeviceStatusError> {

@@ -699,7 +699,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 287 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 288 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1197,6 +1197,17 @@ The previously missing Build process role is now complete under
 `ascend_build` variant without fixture/bundle authority, and production assembly binds the existing
 Build policy/supervisor/runtime to one dynamically verified NPU while advertising only
 `ascend-build-v1`. The checked-in example still requires actual host/image/TLS facts before launch.
+
+Deployment preparation reached both hardware hosts. Exact local-image descriptors were confirmed,
+the Ascend correctness image was safely retagged to the same immutable ID for the Build role, and
+role-specific configs plus worker binaries were staged under `/tmp/alloyport-worker-state` without
+starting a workload. The x86_64 static worker digest is
+`a29fa09fb4f4cecf3ac8507aa6082170ab4550b10fc0288d70828b02481b073a`; the GB10-native aarch64
+worker is rebuilt from the same committed source before use. A startup preflight exposed that GB10
+reports unified-memory counters as `[N/A]`; the NVIDIA adapter now preserves readiness evidence and
+records those counters explicitly unavailable instead of rejecting the device. Ascend launch was
+correctly refused because every healthy NPU had an external process at the observation time. No
+device workload, provider call, or process eviction was attempted.
 
 ## Suggested first task for the next Codex session
 
