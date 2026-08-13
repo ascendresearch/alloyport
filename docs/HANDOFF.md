@@ -12,6 +12,10 @@ This document is the entry point for a new Codex session. It separates product i
 architecture, implemented behavior, and planned behavior so that work does not drift simply because
 the previous conversation is unavailable.
 
+For this checkout, read `.alloyport-local/host-connections.md` when it exists. It is ignored local
+deployment state containing the CUDA and Ascend SSH targets, installed paths, and tunnel commands;
+do not copy credentials or private key contents into tracked documentation.
+
 ## Read first
 
 Read these documents before changing architecture or implementation:
