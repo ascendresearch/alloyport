@@ -12,6 +12,7 @@ workspace = true
 alloyport-artifacts = { path = "../alloyport-artifacts" }
 alloyport-core = { path = "../alloyport-core" }
 alloyport-events = { path = "../alloyport-events" }
+alloyport-llm-provider = { path = "../alloyport-llm-provider" }
 alloyport-proto = { path = "../alloyport-proto" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 rustls-pemfile = "2.2"

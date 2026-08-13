@@ -20,6 +20,7 @@ pub mod interaction;
 #[cfg(test)]
 mod interaction_contract_tests;
 pub mod interaction_service;
+pub mod model_context;
 mod observation_ingress;
 mod persistence;
 mod session;

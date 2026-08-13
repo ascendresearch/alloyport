@@ -84,6 +84,8 @@ Read these documents before changing architecture or implementation:
     for RepoDigest-pinned runner images and the real CUDA diagnostic/calibration boundary.
 28. [`design/0033-durable-agent-episode-repository.md`](design/0033-durable-agent-episode-repository.md)
     for restart-safe Agent Episode snapshots and the server-owned `SQLite` CAS adapter.
+29. [`design/0034-durable-provider-turn-context.md`](design/0034-durable-provider-turn-context.md)
+    for recoverable native continuation, exact exchange Artifacts, and tool-result input binding.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -688,7 +690,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 277 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 279 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1143,17 +1145,24 @@ The first production Episode-composition blocker is closed under
 [Design 0033](design/0033-durable-agent-episode-repository.md). Complete provider-neutral Episode
 state is now strictly deserializable, schema-checked on recovery, and persisted through a server-owned
 `SQLite` compare-and-swap repository. Reopen, duplicate creation, stale revision, reference-adapter
-parity, and malformed-state rejection are covered. The remaining composition blocker is the durable
-provider context bridge: exact native continuation and Candidate-tool result Artifacts must be
-bound to the reducer-derived next-input digest before a live model run is authorized.
+parity, and malformed-state rejection are covered.
+
+That provider context bridge is now complete under
+[Design 0034](design/0034-durable-provider-turn-context.md). Exact request, response, and native
+continuation bytes are immutable Artifacts; `SQLite` correlates them with Episode/attempt/turn
+identity. Terminal Candidate-tool results are recorded idempotently before reducer success, and the
+next provider input must equal the reducer's continuation-plus-results digest. Reopen recovery,
+wrong input, unrelated result, exchange idempotency, and exact multi-result order are covered. The
+remaining blocker is application composition: no production use case yet creates both records,
+resolves the configured model, and owns the runner plus Candidate tools to terminal state.
 
 ## Suggested first task for the next Codex session
 
 The next action remains product-plan item 5, now narrowed to the first genuine candidate and paired
 hardware acceptance for Designs 0030 through 0032:
 
-> Implement the durable provider context bridge and controller Episode composition, then run the
-> configuration-selected model through the Source/Build correction loop until it produces a
+> Implement the controller Episode composition, then run the configuration-selected model through
+> the Source/Build correction loop until it produces a
 > genuine Source- and Build-Gate-passing Ascend reduction candidate. Then
 > execute the exact frozen corpus through both standalone correctness workers and capture the paired
 > run and Correctness receipts. Keep comparison and hidden corpus authority on the controller. Do

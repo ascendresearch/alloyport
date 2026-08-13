@@ -59,7 +59,8 @@ impl CodecLimits {
 }
 
 /// One client-executed tool exposed to a protocol codec.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CodecToolDefinition {
     pub name: String,
     pub description: String,

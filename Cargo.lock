@@ -102,6 +102,7 @@ dependencies = [
  "alloyport-artifacts",
  "alloyport-core",
  "alloyport-events",
+ "alloyport-llm-provider",
  "alloyport-proto",
  "alloyport-worker",
  "rcgen",
