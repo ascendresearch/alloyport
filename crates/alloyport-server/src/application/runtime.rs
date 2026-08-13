@@ -22,7 +22,7 @@ use tokio::sync::watch;
 use tokio::task::{JoinError, JoinSet};
 use tonic::transport::Server;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TaskKind {
     GrpcServer,
     LeaseReaper,
@@ -267,16 +267,24 @@ async fn supervise(
     shutdown: watch::Sender<bool>,
     shutdown_timeout: std::time::Duration,
 ) -> Result<(), Box<dyn Error>> {
-    let first_exit = tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            signal?;
-            None
+    let failure = loop {
+        let joined = tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                signal?;
+                break None;
+            }
+            joined = tasks.join_next() => joined.ok_or("server task set became empty")?,
+        };
+        let exit = joined.map_err(|error| join_error_detail(&error))?;
+        if exit.kind == TaskKind::CandidateEpisode {
+            report_candidate_exit(exit.result);
+            continue;
         }
-        joined = tasks.join_next() => Some(joined.ok_or("server task set became empty")?),
+        break first_exit_detail(Ok(exit))?;
     };
     let _ = shutdown.send(true);
 
-    let mut failure = first_exit.map(first_exit_detail).transpose()?.flatten();
+    let mut failure = failure;
     let drain = async {
         let mut drain_failure = None;
         while let Some(joined) = tasks.join_next().await {
@@ -309,6 +317,15 @@ async fn supervise(
     Ok(())
 }
 
+fn report_candidate_exit(result: Result<(), TaskError>) {
+    match result {
+        Ok(()) => println!("Candidate Episode job exited; AlloyPort server remains available"),
+        Err(error) => eprintln!(
+            "Candidate Episode job failed: {error}; AlloyPort server remains available for inspection and new work"
+        ),
+    }
+}
+
 async fn wait_for_shutdown(mut shutdown: watch::Receiver<bool>) {
     while !*shutdown.borrow() {
         if shutdown.changed().await.is_err() {
@@ -322,7 +339,6 @@ fn first_exit_detail(
 ) -> Result<Option<String>, Box<dyn Error>> {
     let exit = joined.map_err(|error| join_error_detail(&error))?;
     match (exit.kind, exit.result) {
-        (TaskKind::CandidateEpisode, Ok(())) => Ok(None),
         (kind, Ok(())) => Ok(Some(format!("{kind} stopped unexpectedly"))),
         (kind, Err(error)) => Ok(Some(format!("{kind} failed: {error}"))),
     }
