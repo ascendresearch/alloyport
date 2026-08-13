@@ -170,11 +170,37 @@ struct LoadedWorkerPolicies {
 
 impl CandidateEpisodeConfig {
     pub(super) fn load(path: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
-        let path = fs::canonicalize(path)?;
-        let base = path
-            .parent()
-            .ok_or("candidate Episode config has no parent directory")?;
-        let file: CandidateEpisodeFileConfig = serde_json::from_slice(&fs::read(&path)?)?;
+        let (file, base) = load_file(path)?;
+        Self::from_file(file, &base)
+    }
+
+    pub(super) fn load_for_task(
+        template: impl AsRef<Path>,
+        task_id: &str,
+        project_root: &Path,
+        runtime_root: &Path,
+    ) -> Result<Self, Box<dyn Error>> {
+        let (mut file, base) = load_file(template)?;
+        let task_id = TaskId::try_from(task_id)?;
+        let episode_id = EpisodeId::try_from(format!("episode-{task_id}"))?;
+        let search_run_id = SearchRunId::try_from(format!("search-{task_id}"))?;
+        let project_root = fs::canonicalize(project_root)?;
+        let workspace_root = runtime_root.join("workspace");
+        fs::create_dir_all(&workspace_root)?;
+        let workspace_root = fs::canonicalize(workspace_root)?;
+        fs::create_dir_all(runtime_root)?;
+        file.migration_spec = project_root.join("migration-spec-v1.json");
+        file.reference_root = project_root;
+        file.workspace_root = workspace_root;
+        file.episode_database = runtime_root.join("episode.sqlite3");
+        file.episode.episode_id = episode_id;
+        file.episode.task_id = task_id;
+        file.episode.search_run_id = search_run_id;
+        file.episode.parent_candidate_id = None;
+        Self::from_file(file, &base)
+    }
+
+    fn from_file(file: CandidateEpisodeFileConfig, base: &Path) -> Result<Self, Box<dyn Error>> {
         if file.schema_version != CANDIDATE_EPISODE_CONFIG_SCHEMA_V1 {
             return Err(format!(
                 "unsupported candidate Episode config schema {}; expected 1",
@@ -239,6 +265,18 @@ impl CandidateEpisodeConfig {
             .map_err(|error| format!("model credential preflight failed: {error}"))?;
         Ok(())
     }
+}
+
+fn load_file(
+    path: impl AsRef<Path>,
+) -> Result<(CandidateEpisodeFileConfig, PathBuf), Box<dyn Error>> {
+    let path = fs::canonicalize(path)?;
+    let base = path
+        .parent()
+        .ok_or("candidate Episode config has no parent directory")?
+        .to_path_buf();
+    let file = serde_json::from_slice(&fs::read(&path)?)?;
+    Ok((file, base))
 }
 
 fn load_inputs(

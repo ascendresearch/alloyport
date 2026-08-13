@@ -8,6 +8,7 @@ mod command;
 mod config;
 mod episode;
 mod identity_admin;
+mod migration_dispatcher;
 mod runtime;
 
 use std::error::Error;

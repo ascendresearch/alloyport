@@ -4,6 +4,7 @@ use super::CandidateEpisodeApplication;
 use super::assembly::ServerApplication;
 use super::candidate_config::RequiredWorker;
 use crate::WorkerControlService;
+use crate::migration_task::SqliteMigrationTaskStore;
 use crate::storage::RepositoryError;
 use alloyport_core::{AgentLoopAdvance, EpisodeStatus};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
@@ -18,6 +19,7 @@ use alloyport_proto::{
 };
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::task::{JoinError, JoinSet};
 use tonic::transport::Server;
@@ -28,6 +30,7 @@ enum TaskKind {
     LeaseReaper,
     PreparationReconciler,
     CandidateEpisode,
+    MigrationDispatcher,
 }
 
 impl Display for TaskKind {
@@ -37,6 +40,7 @@ impl Display for TaskKind {
             Self::LeaseReaper => formatter.write_str("lease reaper"),
             Self::PreparationReconciler => formatter.write_str("assignment preparation reconciler"),
             Self::CandidateEpisode => formatter.write_str("Candidate Episode"),
+            Self::MigrationDispatcher => formatter.write_str("migration dispatcher"),
         }
     }
 }
@@ -46,6 +50,7 @@ enum TaskError {
     Transport(tonic::transport::Error),
     Repository(RepositoryError),
     Candidate(String),
+    Migration(String),
 }
 
 impl Display for TaskError {
@@ -53,7 +58,7 @@ impl Display for TaskError {
         match self {
             Self::Transport(error) => Display::fmt(error, formatter),
             Self::Repository(error) => Display::fmt(error, formatter),
-            Self::Candidate(error) => formatter.write_str(error),
+            Self::Candidate(error) | Self::Migration(error) => formatter.write_str(error),
         }
     }
 }
@@ -63,7 +68,7 @@ impl Error for TaskError {
         match self {
             Self::Transport(error) => Some(error),
             Self::Repository(error) => Some(error),
-            Self::Candidate(_) => None,
+            Self::Candidate(_) | Self::Migration(_) => None,
         }
     }
 }
@@ -126,6 +131,7 @@ fn spawn_tasks(
         artifact_max_decoding_message_bytes,
         interaction,
         management,
+        migration_dispatcher,
         ..
     } = application;
     let mut tasks = JoinSet::new();
@@ -162,6 +168,20 @@ fn spawn_tasks(
             result,
         }
     });
+
+    if let Some(dispatcher) = migration_dispatcher {
+        let dispatcher_shutdown = shutdown_receiver.clone();
+        tasks.spawn(async move {
+            let result = dispatcher
+                .run_until(dispatcher_shutdown)
+                .await
+                .map_err(TaskError::Migration);
+            TaskExit {
+                kind: TaskKind::MigrationDispatcher,
+                result,
+            }
+        });
+    }
     let reaper = control.clone();
     let reaper_shutdown = shutdown_receiver.clone();
     tasks.spawn(async move {
@@ -202,8 +222,24 @@ fn spawn_tasks(
 }
 
 async fn drive_candidate(mut runtime: CandidateRuntime) -> Result<(), String> {
+    drive_candidate_inner(&mut runtime, None).await
+}
+
+pub(super) async fn drive_candidate_for_task(
+    mut runtime: CandidateRuntime,
+    tasks: Arc<SqliteMigrationTaskStore>,
+    task_id: String,
+) -> Result<(), String> {
+    drive_candidate_inner(&mut runtime, Some((&tasks, task_id.as_str()))).await
+}
+
+async fn drive_candidate_inner(
+    runtime: &mut CandidateRuntime,
+    cancellation: Option<(&SqliteMigrationTaskStore, &str)>,
+) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + runtime.ready_timeout;
     loop {
+        check_cancelled(cancellation)?;
         let mut missing = Vec::new();
         for required in &runtime.required_workers {
             let ready = runtime
@@ -236,6 +272,7 @@ async fn drive_candidate(mut runtime: CandidateRuntime) -> Result<(), String> {
     println!("Candidate Episode workers are ready; authorized provider dispatch may begin");
 
     loop {
+        check_cancelled(cancellation)?;
         match runtime
             .application
             .advance()
@@ -260,6 +297,17 @@ async fn drive_candidate(mut runtime: CandidateRuntime) -> Result<(), String> {
             AgentLoopAdvance::Progressed(_) => tokio::task::yield_now().await,
         }
     }
+}
+
+fn check_cancelled(cancellation: Option<(&SqliteMigrationTaskStore, &str)>) -> Result<(), String> {
+    if let Some((tasks, task_id)) = cancellation
+        && tasks
+            .is_cancelled(task_id)
+            .map_err(|error| error.to_string())?
+    {
+        return Err("migration cancelled by user".to_owned());
+    }
+    Ok(())
 }
 
 async fn supervise(

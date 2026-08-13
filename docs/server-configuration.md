@@ -35,6 +35,9 @@ The root object accepts these fields:
 - `identity_database`: enrollment SQLite database, default
   `<artifact.root>/identities.sqlite3`;
 - `tls`: server certificate, private-key, and client-CA paths, or `null` for loopback plaintext;
+- `migration_runtime`: optional daemon dispatcher settings. When enabled it contains
+  `candidate_template`, an optional persistent `root` (default `migration-runtime` beside the
+  config), and optional positive `poll_interval_ms` (default `500`);
 - `shutdown_timeout_seconds`: positive bounded drain window, default `10`.
 
 The `artifact` object accepts `root`, `max_bytes`, `max_chunk_bytes`, `total_quota_bytes`, and
@@ -63,6 +66,21 @@ The three TLS variables must be set together. Plaintext remains restricted to lo
 non-loopback `listen` value requires a complete TLS block or all three TLS environment overrides.
 The local trial path requires no external database, OCI registry, certificate service, or service
 discovery system.
+
+To make `alloyport-cli migrate` start Episodes automatically, set the deployment-level Candidate
+template once in the Server configuration:
+
+```json
+"migration_runtime": {
+  "candidate_template": "candidate.json",
+  "root": "state/migrations"
+}
+```
+
+The dispatcher replaces the template's migration input paths and Episode/task/search identities for
+each submitted task. Provider catalog, prompts, generation policy, worker IDs, pinned images,
+resource limits, and timeouts remain deployment policy in that template. Without this block,
+submitted tasks remain safely `captured` and can still be inspected or cancelled.
 
 ## Identity administration
 

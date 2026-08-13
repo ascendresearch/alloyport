@@ -11,5 +11,6 @@
   },
   "identity_database": "../alloyport-artifacts/identities.sqlite3",
   "tls": null,
-  "shutdown_timeout_seconds": 10
+  "shutdown_timeout_seconds": 10,
+  "migration_runtime": null
 }

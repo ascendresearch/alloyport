@@ -41,6 +41,7 @@ pub enum MigrationTaskState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationTaskRecord {
+    pub owner_id: String,
     pub task_id: String,
     pub project_name: String,
     pub project_digest: Sha256Digest,
@@ -237,6 +238,91 @@ impl SqliteMigrationTaskStore {
         select_by_id(&connection, owner_id, task_id)?.ok_or(MigrationTaskError::NotFound)
     }
 
+    /// Atomically claims the oldest captured task, or resumes a running task after restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage/corruption error.
+    pub fn claim_next(&self) -> Result<Option<MigrationTaskRecord>, MigrationTaskError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let record = transaction
+            .query_row(
+                "SELECT owner_id, task_id, project_name, project_digest, project_size_bytes,
+                        file_count, state, created_at_ms
+                 FROM migration_tasks WHERE state IN (?1, ?2)
+                 ORDER BY CASE state WHEN ?2 THEN 0 ELSE 1 END, created_at_ms, task_id LIMIT 1",
+                params![
+                    MigrationTaskState::Captured as i64,
+                    MigrationTaskState::Running as i64,
+                ],
+                row_to_claimed_record,
+            )
+            .optional()?;
+        let Some(mut record) = record else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        if record.state == MigrationTaskState::Captured {
+            transaction.execute(
+                "UPDATE migration_tasks SET state = ?2 WHERE task_id = ?1 AND state = ?3",
+                params![
+                    record.task_id,
+                    MigrationTaskState::Running as i64,
+                    MigrationTaskState::Captured as i64,
+                ],
+            )?;
+            record.state = MigrationTaskState::Running;
+        }
+        transaction.commit()?;
+        Ok(Some(record))
+    }
+
+    /// Moves a running task to one terminal state unless it was cancelled concurrently.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage/corruption error or rejects a nonterminal target.
+    pub fn finish(
+        &self,
+        task_id: &str,
+        state: MigrationTaskState,
+    ) -> Result<(), MigrationTaskError> {
+        if !matches!(
+            state,
+            MigrationTaskState::Completed | MigrationTaskState::Failed
+        ) {
+            return Err(MigrationTaskError::Corrupt(
+                "finish requires a completed or failed state".to_owned(),
+            ));
+        }
+        let connection = self.connection()?;
+        connection.execute(
+            "UPDATE migration_tasks SET state = ?2 WHERE task_id = ?1 AND state = ?3",
+            params![task_id, state as i64, MigrationTaskState::Running as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Reports whether a task has been cancelled by its owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns not found or a storage/corruption error.
+    pub fn is_cancelled(&self, task_id: &str) -> Result<bool, MigrationTaskError> {
+        let connection = self.connection()?;
+        let state: Option<i64> = connection
+            .query_row(
+                "SELECT state FROM migration_tasks WHERE task_id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        state
+            .map(|state| state == MigrationTaskState::Cancelled as i64)
+            .ok_or(MigrationTaskError::NotFound)
+    }
+
     fn connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>, MigrationTaskError> {
         self.connection
             .lock()
@@ -283,30 +369,49 @@ fn select_by_id(
 }
 
 fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<MigrationTaskRecord> {
-    let digest: String = row.get(2)?;
-    let state: i64 = row.get(5)?;
+    row_to_record_shifted(row, 0)
+}
+
+fn row_to_claimed_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<MigrationTaskRecord> {
+    let owner_id: String = row.get(0)?;
+    let mut record = row_to_record_shifted(row, 1)?;
+    record.owner_id = owner_id;
+    Ok(record)
+}
+
+fn row_to_record_shifted(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<MigrationTaskRecord> {
+    let digest: String = row.get(offset + 2)?;
+    let state: i64 = row.get(offset + 5)?;
     Ok(MigrationTaskRecord {
-        task_id: row.get(0)?,
-        project_name: row.get(1)?,
+        owner_id: String::new(),
+        task_id: row.get(offset)?,
+        project_name: row.get(offset + 1)?,
         project_digest: Sha256Digest::from_str(&digest).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                2,
+                offset + 2,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?,
-        project_size_bytes: from_i64(row.get(3)?, "project_size_bytes")?,
-        file_count: from_i64(row.get(4)?, "file_count")?,
-        state: match state {
-            1 => MigrationTaskState::Captured,
-            2 => MigrationTaskState::Running,
-            3 => MigrationTaskState::Completed,
-            4 => MigrationTaskState::Failed,
-            5 => MigrationTaskState::Cancelled,
-            _ => return Err(invalid_column("state")),
-        },
-        created_at_ms: from_i64(row.get(6)?, "created_at_ms")?,
+        project_size_bytes: from_i64(row.get(offset + 3)?, "project_size_bytes")?,
+        file_count: from_i64(row.get(offset + 4)?, "file_count")?,
+        state: decode_state(state)?,
+        created_at_ms: from_i64(row.get(offset + 6)?, "created_at_ms")?,
     })
+}
+
+fn decode_state(state: i64) -> rusqlite::Result<MigrationTaskState> {
+    match state {
+        1 => Ok(MigrationTaskState::Captured),
+        2 => Ok(MigrationTaskState::Running),
+        3 => Ok(MigrationTaskState::Completed),
+        4 => Ok(MigrationTaskState::Failed),
+        5 => Ok(MigrationTaskState::Cancelled),
+        _ => Err(invalid_column("state")),
+    }
 }
 
 fn to_i64(value: u64) -> Result<i64, MigrationTaskError> {
@@ -327,4 +432,50 @@ fn invalid_column(field: &'static str) -> rusqlite::Error {
         rusqlite::types::Type::Integer,
         format!("invalid {field}").into(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claim_resume_cancel_and_finish_are_durable_state_transitions()
+    -> Result<(), MigrationTaskError> {
+        let store = SqliteMigrationTaskStore::in_memory()?;
+        let digest = Sha256Digest::digest_bytes(b"project");
+        let submitted = store.submit(
+            "owner-a",
+            "request-a",
+            "task-a",
+            "project-a",
+            digest,
+            7,
+            1,
+            10,
+        )?;
+        assert_eq!(submitted.state, MigrationTaskState::Captured);
+
+        let claimed = store.claim_next()?.expect("captured task");
+        assert_eq!(claimed.owner_id, "owner-a");
+        assert_eq!(claimed.state, MigrationTaskState::Running);
+        let resumed = store.claim_next()?.expect("running task resumes first");
+        assert_eq!(resumed.task_id, "task-a");
+        store.finish("task-a", MigrationTaskState::Completed)?;
+        assert!(store.claim_next()?.is_none());
+
+        store.submit(
+            "owner-a",
+            "request-b",
+            "task-b",
+            "project-b",
+            digest,
+            7,
+            1,
+            11,
+        )?;
+        store.cancel("owner-a", "task-b")?;
+        assert!(store.is_cancelled("task-b")?);
+        assert!(store.claim_next()?.is_none());
+        Ok(())
+    }
 }

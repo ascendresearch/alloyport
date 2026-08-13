@@ -14,6 +14,7 @@ const DEFAULT_MAX_UPLOAD_CHUNK_BYTES: u64 = 1024 * 1024;
 const DEFAULT_TOTAL_ARTIFACT_QUOTA_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const DEFAULT_OWNER_ARTIFACT_QUOTA_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const DEFAULT_SHUTDOWN_TIMEOUT_SECONDS: u64 = 10;
+const DEFAULT_MIGRATION_POLL_INTERVAL_MS: u64 = 500;
 const SIBLING_CONFIG_NAME: &str = "alloyport-server.json";
 const SYSTEM_CONFIG_PATH: &str = "/etc/alloyport-server/server.json";
 
@@ -25,6 +26,14 @@ pub(super) struct ServerConfig {
     pub(super) identity_database: PathBuf,
     pub(super) tls: Option<ServerTlsPaths>,
     pub(super) shutdown_timeout: Duration,
+    pub(super) migration_runtime: Option<MigrationRuntimeConfig>,
+}
+
+#[derive(Debug)]
+pub(super) struct MigrationRuntimeConfig {
+    pub(super) candidate_template: PathBuf,
+    pub(super) root: PathBuf,
+    pub(super) poll_interval: Duration,
 }
 
 #[derive(Debug)]
@@ -53,6 +62,15 @@ struct ServerFileConfig {
     identity_database: Option<PathBuf>,
     tls: Option<TlsFileConfig>,
     shutdown_timeout_seconds: Option<u64>,
+    migration_runtime: Option<MigrationRuntimeFileConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MigrationRuntimeFileConfig {
+    candidate_template: PathBuf,
+    root: Option<PathBuf>,
+    poll_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -84,6 +102,7 @@ impl ServerConfig {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn load_with(
         explicit_path: Option<PathBuf>,
         environment: impl Fn(&str) -> Option<OsString>,
@@ -170,6 +189,35 @@ impl ServerConfig {
                     .and_then(|config| config.shutdown_timeout_seconds),
                 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
             )?),
+            migration_runtime: file
+                .as_ref()
+                .and_then(|config| config.migration_runtime.as_ref())
+                .map(
+                    |runtime| -> Result<MigrationRuntimeConfig, Box<dyn Error>> {
+                        let poll_interval_ms = runtime
+                            .poll_interval_ms
+                            .unwrap_or(DEFAULT_MIGRATION_POLL_INTERVAL_MS);
+                        if poll_interval_ms == 0 {
+                            return Err(
+                                "migration_runtime.poll_interval_ms must be positive".into()
+                            );
+                        }
+                        Ok(MigrationRuntimeConfig {
+                            candidate_template: resolve_file_path(
+                                Some(&runtime.candidate_template),
+                                base.as_deref(),
+                                &runtime.candidate_template,
+                            ),
+                            root: resolve_file_path(
+                                runtime.root.as_ref(),
+                                base.as_deref(),
+                                Path::new("migration-runtime"),
+                            ),
+                            poll_interval: Duration::from_millis(poll_interval_ms),
+                        })
+                    },
+                )
+                .transpose()?,
         })
     }
 }
@@ -377,6 +425,32 @@ mod tests {
             |_| false,
         )?;
         assert_eq!(config.address.port(), 50_051);
+        Ok(())
+    }
+
+    #[test]
+    fn migration_runtime_paths_are_relative_to_server_config() -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("server.json");
+        fs::write(
+            &path,
+            r#"{
+              "schema_version": 1,
+              "migration_runtime": {
+                "candidate_template": "candidate.json",
+                "root": "state/migrations",
+                "poll_interval_ms": 25
+              }
+            }"#,
+        )?;
+        let config = ServerConfig::load_with(Some(path), |_| None, None, |_| false)?;
+        let runtime = config.migration_runtime.expect("migration runtime");
+        assert_eq!(
+            runtime.candidate_template,
+            directory.path().join("candidate.json")
+        );
+        assert_eq!(runtime.root, directory.path().join("state/migrations"));
+        assert_eq!(runtime.poll_interval, Duration::from_millis(25));
         Ok(())
     }
 

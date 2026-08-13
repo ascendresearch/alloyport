@@ -1,6 +1,7 @@
 //! Concrete server dependency assembly.
 
 use super::config::{ArtifactConfig, ServerConfig, ServerTlsPaths};
+use super::migration_dispatcher::MigrationDispatcher;
 use crate::WorkerControlService;
 use crate::adapters::sqlite::SqliteIdentityRegistry;
 use crate::artifact::{ArtifactServiceImpl, EnrolledArtifactAccessPolicy};
@@ -33,9 +34,12 @@ pub(super) struct ServerApplication {
     pub(super) artifact_max_decoding_message_bytes: usize,
     pub(super) interaction: InteractionServiceImpl,
     pub(super) management: ManagementServiceImpl,
+    pub(super) migration_dispatcher: Option<MigrationDispatcher>,
 }
 
-pub(super) async fn assemble(config: ServerConfig) -> Result<ServerApplication, Box<dyn Error>> {
+pub(super) async fn assemble(
+    mut config: ServerConfig,
+) -> Result<ServerApplication, Box<dyn Error>> {
     let require_enrollment = config.tls.is_some();
     let tls = config.tls.map(load_tls).transpose()?;
     let identities = Arc::new(SqliteIdentityRegistry::open(config.identity_database)?);
@@ -72,10 +76,22 @@ pub(super) async fn assemble(config: ServerConfig) -> Result<ServerApplication, 
     };
     let interaction = InteractionServiceImpl::new(interaction_hub, interaction_access);
     let management = ManagementServiceImpl::new(control.clone()).with_migration_intake(
-        migrations,
+        Arc::clone(&migrations),
         artifact.artifacts.clone(),
         require_enrollment.then_some(identity_resolver),
     );
+    let migration_dispatcher = config
+        .migration_runtime
+        .take()
+        .map(|runtime| {
+            MigrationDispatcher::new(
+                runtime,
+                Arc::clone(&migrations),
+                artifact.artifacts.clone(),
+                control.clone(),
+            )
+        })
+        .transpose()?;
     Ok(ServerApplication {
         address: config.address,
         tls,
@@ -86,6 +102,7 @@ pub(super) async fn assemble(config: ServerConfig) -> Result<ServerApplication, 
         artifact_max_decoding_message_bytes: artifact.max_decoding_message_bytes,
         interaction,
         management,
+        migration_dispatcher,
     })
 }
 

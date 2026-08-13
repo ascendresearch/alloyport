@@ -132,8 +132,9 @@ cargo run -p alloyport-cli -- attach TASK_ID
 `.git`, `target`, `build`, and `.cache`, uploads the remaining bounded regular files into the
 server's content-addressed store, and creates a durable `captured` task. Use `status TASK_ID`,
 `runs`, or `cancel TASK_ID` from any later CLI process. `attach TASK_ID` replays canonical events
-and then follows the live run stream; exiting that view does not cancel the task. The daemon-side
-Episode dispatcher is the next runtime slice.
+and then follows the live run stream; exiting that view does not cancel the task. When the Server
+configuration enables `migration_runtime`, its dispatcher claims captured tasks, materializes the
+CAS project under the configured persistent runtime root, and drives the existing Candidate Episode.
 
 The server can use its zero-dependency loopback defaults or one strict schema-1 JSON configuration.
 `--config PATH` takes locator precedence over `ALLOYPORT_SERVER_CONFIG`; individual environment
