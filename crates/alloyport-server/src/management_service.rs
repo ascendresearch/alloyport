@@ -10,6 +10,7 @@ use crate::persistence::ServerPersistence;
 use crate::storage::{Clock, SystemClock};
 use alloyport_artifacts::{ArtifactStore, IngestRequest};
 use alloyport_core::{BundlePath, Sha256Digest};
+use alloyport_events::{Authority, Event, Producer, ProducerEvent, Visibility};
 use alloyport_proto::management_v1::management_service_server::ManagementService;
 use alloyport_proto::management_v1::{
     CancelMigrationRequest, GetMigrationRequest, GetServerStatusRequest, ListMigrationsRequest,
@@ -122,6 +123,7 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<SubmitMigrationRequest>,
     ) -> Result<Response<MigrationTask>, Status> {
         let owner_id = self.owner(&request).await?;
+        let event_owner = owner_id.clone();
         let request = request.into_inner();
         validate_request_id(&request.request_id)?;
         let project = request
@@ -168,6 +170,30 @@ impl ManagementService for ManagementServiceImpl {
             .await
             .map_err(|error| Status::internal(error.to_string()))?
             .map_err(task_status)?;
+        let control = self.control.clone();
+        let task_id = record.task_id.clone();
+        let project_name = record.project_name.clone();
+        let emitted_at_unix_ms = record.created_at_ms;
+        self.persistence
+            .run(move || {
+                control.grant_interaction_access(&task_id, &event_owner)?;
+                let mut frame = ProducerEvent::new(
+                    task_id.clone(),
+                    Producer::new("alloyport-server", "management"),
+                    Event::RunStarted {
+                        task: format!("migrate CUDA project {project_name}"),
+                    },
+                );
+                frame.task_id = Some(task_id);
+                frame.emitted_at_unix_ms = emitted_at_unix_ms;
+                frame.authority = Authority::Observed;
+                frame.visibility = Visibility::User;
+                control.append_interaction_event("migration-captured", &frame)?;
+                Ok::<(), crate::interaction::InteractionError>(())
+            })
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
+            .map_err(|error| Status::internal(format!("publish migration event: {error}")))?;
         Ok(Response::new(task_to_proto(record)))
     }
 
@@ -369,8 +395,12 @@ mod tests {
         let migrations = Arc::new(SqliteMigrationTaskStore::in_memory()?);
         let artifacts: Arc<dyn ArtifactStore> =
             Arc::new(InMemoryArtifactStore::new(64 * 1024 * 1024));
-        let service = ManagementServiceImpl::new(WorkerControlService::new())
-            .with_migration_intake(migrations, Arc::clone(&artifacts), None);
+        let control = WorkerControlService::new();
+        let service = ManagementServiceImpl::new(control.clone()).with_migration_intake(
+            migrations,
+            Arc::clone(&artifacts),
+            None,
+        );
         let request = SubmitMigrationRequest {
             request_id: "request-1".to_owned(),
             project: Some(MigrationProjectBundle {
@@ -393,6 +423,13 @@ mod tests {
         assert_eq!(submitted, retried);
         assert_eq!(submitted.state, MigrationTaskState::Captured as i32);
         assert!(artifacts.contains(submitted.project_digest.parse()?)?);
+        let events = control.interaction_events(&submitted.task_id)?;
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].event, Event::RunStarted { .. }));
+        assert_eq!(
+            control.grant_interaction_access(&submitted.task_id, LOCAL_OWNER_ID)?,
+            crate::interaction::RunGrantOutcome::Duplicate
+        );
 
         let listed = service
             .list_migrations(Request::new(ListMigrationsRequest { limit: 0 }))

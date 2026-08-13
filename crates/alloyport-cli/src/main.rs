@@ -3,9 +3,12 @@ use alloyport_core::{
     inspect_migration_source,
 };
 use alloyport_events::{
-    Authority, Event, EventSequencer, FileChange, FileChangeKind, MessageRole, OutputStream,
-    Producer, ProducerEvent, RunReducer, Visibility, producer_event_from_json_line, render_plain,
+    Authority, Event, EventEnvelope, EventSequencer, FileChange, FileChangeKind, MessageRole,
+    OutputStream, Producer, ProducerEvent, RunReducer, Visibility, producer_event_from_json_line,
+    render_plain,
 };
+use alloyport_proto::interaction_v1::SubscribeRunRequest;
+use alloyport_proto::interaction_v1::interaction_service_client::InteractionServiceClient;
 use alloyport_proto::management_v1::management_service_client::ManagementServiceClient;
 use alloyport_proto::management_v1::{
     CancelMigrationRequest, GetMigrationRequest, GetServerStatusRequest, ListMigrationsRequest,
@@ -74,6 +77,10 @@ async fn main() -> ExitCode {
             Ok(task_id) => cancel_migration(task_id).await,
             Err(error) => Err(error),
         },
+        Some("attach") => match one_text_argument(&mut arguments, "attach", "TASK_ID") {
+            Ok(task_id) => attach_migration(task_id).await,
+            Err(error) => Err(error),
+        },
         Some("inspect-migration") => {
             let spec_path = arguments
                 .next()
@@ -92,7 +99,8 @@ async fn main() -> ExitCode {
             }
         }
         _ => Err(
-            "usage: alloyport-cli <migrate PROJECT|runs|status TASK_ID|cancel TASK_ID|\
+            "usage: alloyport-cli <migrate PROJECT|runs|status TASK_ID|attach TASK_ID|\
+             cancel TASK_ID|\
              server status|workers|about|lifecycle|\
              inspect-migration SPEC_PATH BUNDLE_ROOT|render-events [--jsonl]|event-demo [--jsonl]>"
                 .to_owned(),
@@ -128,6 +136,19 @@ async fn management_client() -> Result<ManagementServiceClient<tonic::transport:
             client
                 .max_encoding_message_size(MAX_MANAGEMENT_REQUEST_MESSAGE_BYTES)
                 .max_decoding_message_size(MAX_MANAGEMENT_RESPONSE_MESSAGE_BYTES)
+        })
+        .map_err(|error| format!("cannot connect to AlloyPort server at {endpoint}: {error}"))
+}
+
+async fn interaction_client() -> Result<InteractionServiceClient<tonic::transport::Channel>, String>
+{
+    let endpoint = server_endpoint();
+    InteractionServiceClient::connect(endpoint.clone())
+        .await
+        .map(|client| {
+            client
+                .max_encoding_message_size(alloyport_proto::MAX_INTERACTION_REQUEST_MESSAGE_BYTES)
+                .max_decoding_message_size(alloyport_proto::MAX_INTERACTION_EVENT_MESSAGE_BYTES)
         })
         .map_err(|error| format!("cannot connect to AlloyPort server at {endpoint}: {error}"))
 }
@@ -216,6 +237,42 @@ async fn cancel_migration(task_id: String) -> Result<(), String> {
         .map_err(|error| format!("migration cancellation failed: {error}"))?
         .into_inner();
     print_task(&task);
+    Ok(())
+}
+
+async fn attach_migration(task_id: String) -> Result<(), String> {
+    let mut stream = interaction_client()
+        .await?
+        .subscribe_run(SubscribeRunRequest {
+            run_id: task_id,
+            after_sequence: 0,
+        })
+        .await
+        .map_err(|error| format!("run attachment failed: {error}"))?
+        .into_inner();
+    let mut reducer = RunReducer::new();
+    let mut stdout = io::stdout().lock();
+    while let Some(event) = stream
+        .message()
+        .await
+        .map_err(|error| format!("run event stream failed: {error}"))?
+    {
+        let envelope: EventEnvelope = serde_json::from_slice(&event.envelope_json)
+            .map_err(|error| format!("server returned an invalid canonical event: {error}"))?;
+        reducer
+            .apply(&envelope)
+            .map_err(|error| format!("run event sequence is invalid: {error}"))?;
+        stdout
+            .write_all(render_plain(&envelope).as_bytes())
+            .map_err(|error| error.to_string())?;
+        stdout.flush().map_err(|error| error.to_string())?;
+        if matches!(
+            envelope.event,
+            Event::RunCompleted { .. } | Event::RunFailed { .. }
+        ) {
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -755,7 +812,11 @@ mod tests {
         let project = load_project(&root)?;
 
         assert_eq!(project.name, "cuda-reduction-v1");
-        assert!(project.files.iter().any(|file| file.path.ends_with(".cu")));
+        assert!(project.files.iter().any(|file| {
+            Path::new(&file.path)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("cu"))
+        }));
         assert!(
             project
                 .files

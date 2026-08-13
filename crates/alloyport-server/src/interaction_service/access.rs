@@ -39,6 +39,53 @@ pub trait InteractionAccessPolicy: Debug + Send + Sync {
     ) -> Result<(), Status>;
 }
 
+/// Loopback-only policy used when the server itself is configured without TLS.
+#[derive(Clone, Debug)]
+pub struct LocalInteractionAccessPolicy {
+    interactions: Arc<dyn InteractionStore>,
+    owner_id: String,
+}
+
+impl LocalInteractionAccessPolicy {
+    #[must_use]
+    pub fn new(interactions: Arc<dyn InteractionStore>, owner_id: impl Into<String>) -> Self {
+        Self {
+            interactions,
+            owner_id: owner_id.into(),
+        }
+    }
+
+    async fn authorize_owner(&self, run_id: &str) -> Result<(), Status> {
+        authorize_owner(
+            Arc::clone(&self.interactions),
+            self.owner_id.clone(),
+            run_id.to_owned(),
+        )
+        .await
+    }
+}
+
+#[tonic::async_trait]
+impl InteractionAccessPolicy for LocalInteractionAccessPolicy {
+    async fn authorize(
+        &self,
+        _metadata: &MetadataMap,
+        _extensions: &Extensions,
+        run_id: &str,
+    ) -> Result<RunAuthorization, Status> {
+        self.authorize_owner(run_id).await?;
+        Ok(AuthenticatedRequestContext::local(self.owner_id.clone()))
+    }
+
+    async fn revalidate(
+        &self,
+        _authorization: &RunAuthorization,
+        run_id: &str,
+    ) -> Result<(), Status> {
+        self.authorize_owner(run_id).await
+    }
+}
+
 /// Production policy backed by verified certificate enrollment and durable run grants.
 #[derive(Clone, Debug)]
 pub struct EnrolledInteractionAccessPolicy {
@@ -59,20 +106,30 @@ impl EnrolledInteractionAccessPolicy {
     }
 
     async fn authorize_owner(&self, owner_id: &str, run_id: &str) -> Result<(), Status> {
-        let interactions = Arc::clone(&self.interactions);
-        let owner_id = owner_id.to_owned();
-        let run_id = run_id.to_owned();
-        let can_read = ServerPersistence::default()
-            .run(move || interactions.can_read_run(&run_id, &owner_id))
-            .await
-            .map_err(|error| Status::internal(error.to_string()))?;
-        match can_read {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(Status::permission_denied(
-                "run is not visible to this owner",
-            )),
-            Err(error) => Err(interaction_status(&error)),
-        }
+        authorize_owner(
+            Arc::clone(&self.interactions),
+            owner_id.to_owned(),
+            run_id.to_owned(),
+        )
+        .await
+    }
+}
+
+async fn authorize_owner(
+    interactions: Arc<dyn InteractionStore>,
+    owner_id: String,
+    run_id: String,
+) -> Result<(), Status> {
+    let can_read = ServerPersistence::default()
+        .run(move || interactions.can_read_run(&run_id, &owner_id))
+        .await
+        .map_err(|error| Status::internal(error.to_string()))?;
+    match can_read {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(Status::permission_denied(
+            "run is not visible to this owner",
+        )),
+        Err(error) => Err(interaction_status(&error)),
     }
 }
 

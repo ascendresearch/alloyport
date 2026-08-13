@@ -2,7 +2,10 @@
 
 mod access;
 
-pub use access::{EnrolledInteractionAccessPolicy, InteractionAccessPolicy, RunAuthorization};
+pub use access::{
+    EnrolledInteractionAccessPolicy, InteractionAccessPolicy, LocalInteractionAccessPolicy,
+    RunAuthorization,
+};
 
 use crate::grpc_status::interaction_status;
 use crate::interaction::{

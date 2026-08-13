@@ -124,14 +124,16 @@ cargo run -p alloyport-cli -- server status
 cargo run -p alloyport-cli -- workers
 cargo run -p alloyport-cli -- migrate /absolute/path/to/cuda/project
 cargo run -p alloyport-cli -- runs
+cargo run -p alloyport-cli -- attach TASK_ID
 ```
 
 `alloyport-cli` is the user-facing client; it does not own the daemon or worker lifecycle. Set
 `ALLOYPORT_SERVER_ENDPOINT` only when the server is not using the local default. `migrate` skips
 `.git`, `target`, `build`, and `.cache`, uploads the remaining bounded regular files into the
 server's content-addressed store, and creates a durable `captured` task. Use `status TASK_ID`,
-`runs`, or `cancel TASK_ID` from any later CLI process. The daemon-side Episode dispatcher and live
-`attach` view are the next runtime slice.
+`runs`, or `cancel TASK_ID` from any later CLI process. `attach TASK_ID` replays canonical events
+and then follows the live run stream; exiting that view does not cancel the task. The daemon-side
+Episode dispatcher is the next runtime slice.
 
 The server can use its zero-dependency loopback defaults or one strict schema-1 JSON configuration.
 `--config PATH` takes locator precedence over `ALLOYPORT_SERVER_CONFIG`; individual environment

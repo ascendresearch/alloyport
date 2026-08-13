@@ -397,6 +397,19 @@ impl WorkerControlService {
         self.interactions.events(run_id)
     }
 
+    /// Appends one server-authored canonical interaction event idempotently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid event identity, conflicting content, or storage failure.
+    pub fn append_interaction_event(
+        &self,
+        dedup_key: &str,
+        frame: &ProducerEvent,
+    ) -> Result<AppendOutcome, InteractionError> {
+        self.interactions.append(dedup_key, frame)
+    }
+
     /// Requires every worker stream to match a verified, enrolled connection identity.
     #[must_use]
     pub fn require_identity_resolver(

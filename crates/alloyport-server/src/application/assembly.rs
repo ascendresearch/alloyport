@@ -9,6 +9,7 @@ use crate::identity::{
 };
 use crate::interaction::InteractionStore;
 use crate::interaction_service::{EnrolledInteractionAccessPolicy, InteractionServiceImpl};
+use crate::interaction_service::{InteractionAccessPolicy, LocalInteractionAccessPolicy};
 use crate::management_service::ManagementServiceImpl;
 use crate::migration_task::SqliteMigrationTaskStore;
 use crate::storage::SystemClock;
@@ -58,13 +59,18 @@ pub(super) async fn assemble(config: ServerConfig) -> Result<ServerApplication, 
         );
     }
     let interaction_store: Arc<dyn InteractionStore> = interaction_hub.clone();
-    let interaction = InteractionServiceImpl::new(
-        interaction_hub,
+    let interaction_access: Arc<dyn InteractionAccessPolicy> = if require_enrollment {
         Arc::new(EnrolledInteractionAccessPolicy::new(
             interaction_store,
             Arc::clone(&identity_resolver),
-        )),
-    );
+        ))
+    } else {
+        Arc::new(LocalInteractionAccessPolicy::new(
+            interaction_store,
+            "local-cli",
+        ))
+    };
+    let interaction = InteractionServiceImpl::new(interaction_hub, interaction_access);
     let management = ManagementServiceImpl::new(control.clone()).with_migration_intake(
         migrations,
         artifact.artifacts.clone(),
