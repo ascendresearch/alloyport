@@ -20,6 +20,7 @@ pub mod interaction;
 #[cfg(test)]
 mod interaction_contract_tests;
 pub mod interaction_service;
+pub mod management_service;
 pub mod model_context;
 mod observation_ingress;
 mod persistence;
@@ -428,6 +429,28 @@ impl WorkerControlService {
                 .map_or(0, |capabilities| capabilities.backend),
             features: worker.hello.features.clone(),
         })
+    }
+
+    /// Returns a stable, sorted view of all worker instances known to this daemon process.
+    pub async fn worker_snapshots(&self) -> Vec<WorkerSnapshot> {
+        let state = self.state.lock().await;
+        state
+            .workers
+            .values()
+            .map(|worker| WorkerSnapshot {
+                worker_id: worker.hello.worker_id.clone(),
+                instance_id: worker.hello.instance_id.clone(),
+                connection_id: worker.connection_id.clone(),
+                connected: worker.connected,
+                last_worker_sequence: worker.last_worker_sequence,
+                backend: worker
+                    .hello
+                    .capabilities
+                    .as_ref()
+                    .map_or(0, |capabilities| capabilities.backend),
+                features: worker.hello.features.clone(),
+            })
+            .collect()
     }
 
     /// Returns the durable lifecycle state for an attempt.

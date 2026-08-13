@@ -38,8 +38,11 @@ version = "0.1.0"
 dependencies = [
  "alloyport-core",
  "alloyport-events",
+ "alloyport-proto",
  "serde",
  "serde_json",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]

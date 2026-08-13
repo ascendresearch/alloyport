@@ -4,10 +4,12 @@ use super::CandidateEpisodeApplication;
 use super::assembly::ServerApplication;
 use super::candidate_config::RequiredWorker;
 use crate::WorkerControlService;
+use crate::management_service::ManagementServiceImpl;
 use crate::storage::RepositoryError;
 use alloyport_core::{AgentLoopAdvance, EpisodeStatus};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
 use alloyport_proto::interaction_v1::interaction_service_server::InteractionServiceServer;
+use alloyport_proto::management_v1::management_service_server::ManagementServiceServer;
 use alloyport_proto::v1::worker_control_server::WorkerControlServer;
 use alloyport_proto::{
     MAX_ARTIFACT_DOWNLOAD_MESSAGE_BYTES, MAX_INTERACTION_EVENT_MESSAGE_BYTES,
@@ -105,7 +107,9 @@ async fn run_inner(
     let (shutdown, shutdown_receiver) = watch::channel(false);
     let tasks = spawn_tasks(application, server, shutdown_receiver, candidate);
 
-    println!("AlloyPort worker control, artifact, and interaction services listening on {address}");
+    println!(
+        "AlloyPort worker control, artifact, interaction, and management services listening on {address}"
+    );
     supervise(tasks, shutdown, shutdown_timeout).await
 }
 
@@ -126,6 +130,7 @@ fn spawn_tasks(
     let mut tasks = JoinSet::new();
 
     let grpc_control = control.clone();
+    let management = ManagementServiceImpl::new(control.clone());
     let server_shutdown = shutdown_receiver.clone();
     tasks.spawn(async move {
         let result = server
@@ -144,6 +149,7 @@ fn spawn_tasks(
                     .max_decoding_message_size(MAX_INTERACTION_REQUEST_MESSAGE_BYTES)
                     .max_encoding_message_size(MAX_INTERACTION_EVENT_MESSAGE_BYTES),
             )
+            .add_service(ManagementServiceServer::new(management))
             .serve_with_shutdown(address, wait_for_shutdown(server_shutdown))
             .await
             .map_err(TaskError::Transport);

@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package alloyport.management.v1;
+
+// Read-only daemon and executor discovery used by alloyport-cli. Mutating administration and
+// migration submission are added as separately authorized operations instead of overloading the
+// worker control stream.
+service ManagementService {
+  rpc GetServerStatus(GetServerStatusRequest) returns (ServerStatus);
+  rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse);
+}
+
+message GetServerStatusRequest {}
+
+message ServerStatus {
+  string server_version = 1;
+  uint32 protocol_major = 2;
+  uint32 protocol_minor = 3;
+  uint64 worker_count = 4;
+  uint64 connected_worker_count = 5;
+}
+
+message ListWorkersRequest {}
+
+message ListWorkersResponse {
+  repeated Worker workers = 1;
+}
+
+message Worker {
+  string worker_id = 1;
+  string instance_id = 2;
+  bool connected = 3;
+  uint64 last_worker_sequence = 4;
+  int32 backend = 5;
+  repeated string features = 6;
+}

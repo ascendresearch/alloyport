@@ -118,7 +118,16 @@ cargo run -p alloyport-server -- --config docs/server-config.example.json
 
 # terminal 2; first copy the relevant example and replace every placeholder
 cargo run -p alloyport-worker -- --config /absolute/path/to/worker.json
+
+# terminal 3; query the persistent daemon (defaults to http://127.0.0.1:50051)
+cargo run -p alloyport-cli -- server status
+cargo run -p alloyport-cli -- workers
 ```
+
+`alloyport-cli` is the user-facing client; it does not own the daemon or worker lifecycle. Set
+`ALLOYPORT_SERVER_ENDPOINT` only when the server is not using the local default. The initial
+management slice reports daemon and worker state; migration submission and run attachment are the
+next client operations to move behind this boundary.
 
 The server can use its zero-dependency loopback defaults or one strict schema-1 JSON configuration.
 `--config PATH` takes locator precedence over `ALLOYPORT_SERVER_CONFIG`; individual environment
@@ -172,7 +181,8 @@ reconciliation, Artifact-gated independent receipts, and fail-closed post-termin
 production path remains default-deny and requires an explicit worker configuration. A pinned image
 carrying the trusted `ascend-add-v1` harness now builds and passes a direct, least-capability 950PR
 gate. Standalone trials may bind a local Docker tag to its exact inspected image ID; registry-backed
-deployments may instead use a manifest-pinned reference. No external scheduling API is attached yet.
+deployments may instead use a manifest-pinned reference. No external task-submission API is attached
+yet.
 
 CUDA and Ascend share the same durable per-attempt device guard: lease before preflight, immutable
 preflight evidence before `Running`, and lease release only after terminal container cleanup plus a

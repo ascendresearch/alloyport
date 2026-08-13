@@ -5,6 +5,9 @@ use alloyport_events::{
     Authority, Event, EventSequencer, FileChange, FileChangeKind, MessageRole, OutputStream,
     Producer, ProducerEvent, RunReducer, Visibility, producer_event_from_json_line, render_plain,
 };
+use alloyport_proto::management_v1::management_service_client::ManagementServiceClient;
+use alloyport_proto::management_v1::{GetServerStatusRequest, ListWorkersRequest};
+use alloyport_proto::v1::Backend;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -14,7 +17,10 @@ use std::process::ExitCode;
 const MAX_SPEC_BYTES: u64 = 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
 
-fn main() -> ExitCode {
+const DEFAULT_SERVER_ENDPOINT: &str = "http://127.0.0.1:50051";
+
+#[tokio::main]
+async fn main() -> ExitCode {
     let mut arguments = env::args().skip(1);
     let result = match arguments.next().as_deref() {
         Some("about") => {
@@ -30,6 +36,16 @@ fn main() -> ExitCode {
         }
         Some("render-events") => render_events(arguments.next().as_deref() == Some("--jsonl")),
         Some("event-demo") => render_demo(arguments.next().as_deref() == Some("--jsonl")),
+        Some("server") if arguments.next().as_deref() == Some("status") => {
+            match no_extra_arguments(&mut arguments) {
+                Ok(()) => server_status().await,
+                Err(error) => Err(error),
+            }
+        }
+        Some("workers") => match arguments.next() {
+            None => list_workers().await,
+            Some(_) => Err("workers accepts no arguments".to_owned()),
+        },
         Some("inspect-migration") => {
             let spec_path = arguments
                 .next()
@@ -48,8 +64,8 @@ fn main() -> ExitCode {
             }
         }
         _ => Err(
-            "usage: alloyport-cli <about|lifecycle|inspect-migration SPEC_PATH BUNDLE_ROOT|\
-             render-events [--jsonl]|event-demo [--jsonl]>"
+            "usage: alloyport-cli <server status|workers|about|lifecycle|\
+             inspect-migration SPEC_PATH BUNDLE_ROOT|render-events [--jsonl]|event-demo [--jsonl]>"
                 .to_owned(),
         ),
     };
@@ -61,6 +77,77 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn no_extra_arguments(arguments: &mut impl Iterator<Item = String>) -> Result<(), String> {
+    if arguments.next().is_some() {
+        Err("server status accepts no arguments".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+fn server_endpoint() -> String {
+    env::var("ALLOYPORT_SERVER_ENDPOINT").unwrap_or_else(|_| DEFAULT_SERVER_ENDPOINT.to_owned())
+}
+
+async fn management_client() -> Result<ManagementServiceClient<tonic::transport::Channel>, String> {
+    let endpoint = server_endpoint();
+    ManagementServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|error| format!("cannot connect to AlloyPort server at {endpoint}: {error}"))
+}
+
+async fn server_status() -> Result<(), String> {
+    let response = management_client()
+        .await?
+        .get_server_status(GetServerStatusRequest {})
+        .await
+        .map_err(|error| format!("server status request failed: {error}"))?
+        .into_inner();
+    println!("server: AlloyPort {}", response.server_version);
+    println!(
+        "protocol: {}.{}",
+        response.protocol_major, response.protocol_minor
+    );
+    println!(
+        "workers: {} connected / {} known",
+        response.connected_worker_count, response.worker_count
+    );
+    Ok(())
+}
+
+async fn list_workers() -> Result<(), String> {
+    let response = management_client()
+        .await?
+        .list_workers(ListWorkersRequest {})
+        .await
+        .map_err(|error| format!("worker list request failed: {error}"))?
+        .into_inner();
+    if response.workers.is_empty() {
+        println!("No workers registered.");
+        return Ok(());
+    }
+    println!("WORKER\tINSTANCE\tSTATE\tBACKEND\tSEQUENCE\tFEATURES");
+    for worker in response.workers {
+        let backend = Backend::try_from(worker.backend)
+            .unwrap_or(Backend::Unspecified)
+            .as_str_name();
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            worker.worker_id,
+            worker.instance_id,
+            if worker.connected {
+                "connected"
+            } else {
+                "offline"
+            },
+            backend,
+            worker.last_worker_sequence,
+            worker.features.join(",")
+        );
+    }
+    Ok(())
 }
 
 fn inspect_migration(spec_path: &Path, bundle_root: &Path) -> Result<(), String> {
