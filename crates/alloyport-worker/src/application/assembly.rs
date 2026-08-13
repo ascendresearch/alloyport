@@ -6,8 +6,8 @@ use crate::ascend_supervisor::{AscendContainerEngine, AscendContainerSupervisor}
 use crate::cuda_runtime::{CudaEnvironmentFacts, CudaExecutionRuntime};
 use crate::cuda_supervisor::{CudaContainerEngine, CudaContainerSupervisor};
 use crate::device::{
-    BoundDeviceStatusProvider, DeviceLifecycleManager, DeviceSelectionPolicy, DeviceStatusProvider,
-    bind_worker_device,
+    BoundDeviceStatusProvider, DeviceLifecycleManager, DeviceStatusProvider,
+    bind_configured_device, bind_worker_device,
 };
 use crate::docker_cli::DockerCliEngine;
 use crate::nvidia_smi::{CudaDeviceManager, NvidiaSmi};
@@ -166,14 +166,11 @@ async fn attach_ascend(
     )?);
     let inventory = manager.inventory().await?;
     let snapshot = manager.snapshot().await?;
-    let selected = bind_worker_device(
+    let selected = bind_configured_device(
         &inventory,
         &snapshot,
         &worker.state().active_device_leases()?,
-        &DeviceSelectionPolicy::new(
-            vec![configured_device.device_id.clone()],
-            Some(configured_device.device_id.clone()),
-        )?,
+        &configured_device,
     )?;
     if selected.identity != configured_device {
         return Err(
@@ -348,14 +345,11 @@ async fn attach_ascend_build(
     )?);
     let inventory = manager.inventory().await?;
     let snapshot = manager.snapshot().await?;
-    let selected = bind_worker_device(
+    let selected = bind_configured_device(
         &inventory,
         &snapshot,
         &worker.state().active_device_leases()?,
-        &DeviceSelectionPolicy::new(
-            vec![configured_device.device_id.clone()],
-            Some(configured_device.device_id.clone()),
-        )?,
+        &configured_device,
     )?;
     if selected.identity != configured_device {
         return Err("selected NPU identity does not match Ascend build config".into());
@@ -446,14 +440,11 @@ async fn attach_ascend_correctness(
     )?);
     let inventory = manager.inventory().await?;
     let snapshot = manager.snapshot().await?;
-    let selected = bind_worker_device(
+    let selected = bind_configured_device(
         &inventory,
         &snapshot,
         &worker.state().active_device_leases()?,
-        &DeviceSelectionPolicy::new(
-            vec![configured_device.device_id.clone()],
-            Some(configured_device.device_id.clone()),
-        )?,
+        &configured_device,
     )?;
     if selected.identity != configured_device {
         return Err("selected NPU identity does not match Ascend correctness config".into());
@@ -545,14 +536,11 @@ async fn attach_ascend_candidate(
     )?);
     let inventory = manager.inventory().await?;
     let snapshot = manager.snapshot().await?;
-    let selected = bind_worker_device(
+    let selected = bind_configured_device(
         &inventory,
         &snapshot,
         &worker.state().active_device_leases()?,
-        &DeviceSelectionPolicy::new(
-            vec![configured_device.device_id.clone()],
-            Some(configured_device.device_id.clone()),
-        )?,
+        &configured_device,
     )?;
     if selected.identity != configured_device {
         return Err("selected NPU identity does not match Ascend candidate config".into());
@@ -872,9 +860,9 @@ mod tests {
                 ],
                 &discovered,
             )
-                .expect_err("unavailable selected device must fail")
-                .to_string()
-                .contains("/dev/davinci2")
+            .expect_err("unavailable selected device must fail")
+            .to_string()
+            .contains("/dev/davinci2")
         );
         assert!(is_ascend_device_node_name("davinci12"));
         assert!(!is_ascend_device_node_name("davinci"));

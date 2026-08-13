@@ -162,14 +162,13 @@ impl OutboundWorker {
             },
             None => (crate::device::DeviceSnapshot::default(), false),
         };
-        let health = if !device_probe_failed
+        let device_available = !device_probe_failed
             && (self.device_status.is_none()
                 || (!device_snapshot.devices.is_empty()
-                    && device_snapshot
-                        .devices
-                        .iter()
-                        .all(|device| device.health == DeviceHealth::Ready)))
-        {
+                    && device_snapshot.devices.iter().all(|device| {
+                        device.health == DeviceHealth::Ready && device.process_count == 0
+                    })));
+        let health = if device_available {
             WorkerHealth::Ready
         } else {
             WorkerHealth::Degraded
@@ -203,7 +202,11 @@ impl OutboundWorker {
             .collect();
         Ok(Heartbeat {
             active_attempts,
-            available_slots: self.available_slots().await?,
+            available_slots: if device_available {
+                self.available_slots().await?
+            } else {
+                0
+            },
             health: health.into(),
             devices,
             device_leases,

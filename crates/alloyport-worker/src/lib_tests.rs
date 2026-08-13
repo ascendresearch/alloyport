@@ -315,7 +315,7 @@ impl DeviceStatusProvider for FixedDeviceStatus {
             Ok(DeviceSnapshot {
                 devices: vec![DeviceObservation {
                     device_id: "3".to_owned(),
-                    health: DeviceHealth::Degraded,
+                    health: DeviceHealth::Ready,
                     process_count: 2,
                     utilization_percent: 0,
                     memory_used_bytes: 5_255,

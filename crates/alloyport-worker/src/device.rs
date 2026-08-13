@@ -254,6 +254,57 @@ pub fn bind_worker_device(
     })
 }
 
+/// Binds a daemon to one configured accelerator without requiring it to be idle at startup.
+///
+/// The worker can therefore stay connected and report a busy or unhealthy device. Attempt
+/// preflight remains responsible for requiring a ready, process-free device before execution.
+/// A retained durable lease must still name this exact configured device.
+///
+/// # Errors
+///
+/// Returns an error when discovery omits or changes the configured identity, or when a retained
+/// lease names another device.
+pub fn bind_configured_device(
+    inventory: &[AcceleratorDevice],
+    snapshot: &DeviceSnapshot,
+    leases: &[DeviceLease],
+    configured: &AcceleratorDevice,
+) -> Result<SelectedDevice, DeviceStatusError> {
+    if leases
+        .iter()
+        .any(|lease| lease.device_id != configured.device_id)
+    {
+        return Err(DeviceStatusError::InvalidConfiguration(
+            "retained device lease does not match the configured worker device".into(),
+        ));
+    }
+    let (identities, observations) = validated_discovery(inventory, snapshot)?;
+    let identity = identities.get(&configured.device_id).ok_or_else(|| {
+        DeviceStatusError::InvalidResponse(format!(
+            "configured device {} is absent from accelerator inventory",
+            configured.device_id
+        ))
+    })?;
+    if identity != configured {
+        return Err(DeviceStatusError::InvalidResponse(
+            "discovered accelerator identity does not match the configured worker device".into(),
+        ));
+    }
+    let observation = observations
+        .get(&configured.device_id)
+        .cloned()
+        .ok_or_else(|| {
+            DeviceStatusError::InvalidResponse(format!(
+                "device probe omitted configured device {}",
+                configured.device_id
+            ))
+        })?;
+    Ok(SelectedDevice {
+        identity: identity.clone(),
+        observation,
+    })
+}
+
 fn validated_discovery(
     inventory: &[AcceleratorDevice],
     snapshot: &DeviceSnapshot,
@@ -368,6 +419,22 @@ mod tests {
             devices: vec![observation("foreign", DeviceHealth::Ready, 0)],
         };
         assert!(select_ready_device(&inventory, &snapshot, &[], &policy).is_err());
+    }
+
+    #[test]
+    fn configured_daemon_binds_and_reports_a_busy_device() -> Result<(), Box<dyn Error>> {
+        let configured = device(1);
+        let inventory = vec![device(0), configured.clone()];
+        let snapshot = DeviceSnapshot {
+            devices: vec![
+                observation("0", DeviceHealth::Ready, 0),
+                observation("1", DeviceHealth::Ready, 2),
+            ],
+        };
+        let selected = bind_configured_device(&inventory, &snapshot, &[], &configured)?;
+        assert_eq!(selected.identity, configured);
+        assert_eq!(selected.observation.process_count, 2);
+        Ok(())
     }
 
     #[test]
