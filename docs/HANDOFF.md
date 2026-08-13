@@ -1202,8 +1202,9 @@ Deployment preparation reached both hardware hosts. Exact local-image descriptor
 the Ascend correctness image was safely retagged to the same immutable ID for the Build role, and
 role-specific configs plus worker binaries were staged under `/tmp/alloyport-worker-state` without
 starting a workload. The x86_64 static worker digest is
-`a29fa09fb4f4cecf3ac8507aa6082170ab4550b10fc0288d70828b02481b073a`; the GB10-native aarch64
-worker is rebuilt from the same committed source before use. A startup preflight exposed that GB10
+`db9bc4a50c31a0c8b2d655dbfddd562d20a0836276914b1050c9b099b7792f7f`; the GB10-native aarch64
+worker digest is `43766587c5ddabd2908b3c17e232aaa4833aaec8faf7ca05478f3af009541de3`.
+A startup preflight exposed that GB10
 reports unified-memory counters as `[N/A]`; the NVIDIA adapter now preserves readiness evidence and
 records those counters explicitly unavailable instead of rejecting the device. Ascend launch was
 correctly refused because every healthy NPU had an external process at the observation time. No
