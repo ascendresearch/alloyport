@@ -28,6 +28,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 const MAX_SPEC_BYTES: u64 = 1024 * 1024;
@@ -128,10 +129,17 @@ async fn run(arguments: &mut impl Iterator<Item = String>) -> Result<(), String>
             None => list_workers().await,
             Some(_) => Err("workers accepts no arguments".to_owned()),
         },
-        Some("migrate") => match one_path_argument(arguments, "migrate") {
-            Ok(path) => submit_migration(Path::new(&path)).await,
-            Err(error) => Err(error),
-        },
+        Some("migrate") => {
+            let path = arguments
+                .next()
+                .ok_or_else(|| "migrate requires PROJECT".to_owned())?;
+            let retry = match arguments.next().as_deref() {
+                None => false,
+                Some("--retry") if arguments.next().is_none() => true,
+                Some(_) => return Err("migrate accepts PROJECT and optional --retry".to_owned()),
+            };
+            submit_migration(Path::new(&path), retry).await
+        }
         Some("runs") => match arguments.next() {
             None => list_migrations().await,
             Some(_) => Err("runs accepts no arguments".to_owned()),
@@ -166,7 +174,7 @@ async fn run(arguments: &mut impl Iterator<Item = String>) -> Result<(), String>
             }
         }
         _ => Err(
-            "usage: alloyport-cli [--config PATH] <migrate PROJECT|runs|status TASK_ID|attach TASK_ID|\
+            "usage: alloyport-cli [--config PATH] <migrate PROJECT [--retry]|runs|status TASK_ID|attach TASK_ID|\
              cancel TASK_ID|\
              server status|workers|about|lifecycle|\
              inspect-migration SPEC_PATH BUNDLE_ROOT|render-events [--jsonl]|event-demo [--jsonl]>"
@@ -318,13 +326,6 @@ async fn interaction_client() -> Result<InteractionServiceClient<Channel>, Strin
         })
 }
 
-fn one_path_argument(
-    arguments: &mut impl Iterator<Item = String>,
-    command: &str,
-) -> Result<String, String> {
-    one_text_argument(arguments, command, "PROJECT")
-}
-
 fn one_text_argument(
     arguments: &mut impl Iterator<Item = String>,
     command: &str,
@@ -339,11 +340,20 @@ fn one_text_argument(
     Ok(value)
 }
 
-async fn submit_migration(project_root: &Path) -> Result<(), String> {
+async fn submit_migration(project_root: &Path, retry: bool) -> Result<(), String> {
     let project = load_project(project_root)?;
     let digest = Sha256Digest::digest_bytes(&project.encode_to_vec()).hexadecimal();
+    let request_id = if retry {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "system clock is before the Unix epoch".to_owned())?
+            .as_nanos();
+        format!("cli-retry-{}-{nonce}", &digest[..32])
+    } else {
+        format!("cli-{}", &digest[..32])
+    };
     let request = SubmitMigrationRequest {
-        request_id: format!("cli-{}", &digest[..32]),
+        request_id,
         project: Some(project),
     };
     let task = management_client()
@@ -353,7 +363,7 @@ async fn submit_migration(project_root: &Path) -> Result<(), String> {
         .map_err(|error| format!("migration submission failed: {error}"))?
         .into_inner();
     print_task(&task);
-    println!("Attach later with: alloyport-cli status {}", task.task_id);
+    println!("Attach with: alloyport-cli attach {}", task.task_id);
     Ok(())
 }
 
