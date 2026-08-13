@@ -1225,6 +1225,14 @@ A local server install likewise uses `/home/dawei/.local/lib/alloyport-server` w
 shut down under a bounded probe. System-wide server installation remains
 `/etc/alloyport-server/server.json` plus `/var/lib/alloyport-server` on a host with noninteractive
 administrative installation authority.
+A deployment CA and three role-specific client certificates are installed outside the repository;
+their private keys are mode `0600`, and their exact fingerprints are enrolled against the stable
+worker IDs. With loopback-only SSH reverse tunnels, CUDA Correctness maintained an authenticated
+production control connection. Both Ascend identities completed verified TLS 1.3 handshakes, but
+their worker processes correctly failed startup preflight before `WorkerHello` because no configured
+NPU was both Ready and process-free. Full paths, digests, fingerprints, shutdown evidence, and claim
+limits are recorded in
+[`evidence/persistent-worker-connectivity-20260813.md`](evidence/persistent-worker-connectivity-20260813.md).
 A startup preflight exposed that GB10
 reports unified-memory counters as `[N/A]`; the NVIDIA adapter now preserves readiness evidence and
 records those counters explicitly unavailable instead of rejecting the device. Ascend launch was
