@@ -1,12 +1,13 @@
-//! Shared single-device policy for sequential Ascend Build and Correctness execution.
+//! Shared host-wide policy for sequential Ascend Build and Correctness execution.
 
-use super::backend_config::{AscendCeilingsConfig, AscendDeviceConfig, AscendEnvironmentConfig};
+use super::backend_config::{
+    AscendCeilingsConfig, AscendDeviceConfig, AscendEnvironmentConfig, DeviceSelectionConfig,
+};
 use crate::ascend::{AscendEnvironmentFacts, AscendResourceCeilings};
 use crate::ascend_build::AscendBuildPolicy;
 use crate::reduction_correctness::{CorrectnessResourceCeilings, ReductionCorrectnessPolicy};
 use alloyport_artifacts::Sha256Digest;
 use alloyport_core::AcceleratorDevice;
-use alloyport_proto::v1::AcceleratorDevice as WireDevice;
 use serde::Deserialize;
 use std::error::Error;
 use std::path::PathBuf;
@@ -20,8 +21,13 @@ pub(super) struct AscendCandidateWorkerConfig {
     pub(super) image_digest: String,
     pub(super) image_reference: String,
     pub(super) image_id: String,
-    pub(super) device: AscendDeviceConfig,
-    pub(super) device_nodes: Vec<PathBuf>,
+    /// Deprecated fixed-device fields accepted for configuration compatibility.
+    #[serde(default, rename = "device")]
+    pub(super) _device: Option<AscendDeviceConfig>,
+    #[serde(default, rename = "device_nodes")]
+    pub(super) _device_nodes: Vec<PathBuf>,
+    #[serde(default)]
+    pub(super) device_selection: DeviceSelectionConfig,
     pub(super) driver_path: PathBuf,
     pub(super) sandbox_root: PathBuf,
     pub(super) environment: AscendEnvironmentConfig,
@@ -68,28 +74,27 @@ impl AscendCandidateWorkerConfig {
         {
             return Err("Ascend candidate resource and transport limits are invalid".into());
         }
-        self.build_policy()?;
-        self.correctness_policy()?;
+        self.device_selection.policy()?;
+        let validation_device = AcceleratorDevice {
+            device_id: "0".into(),
+            product_name: self.environment.architecture.clone(),
+            serial_number: "validation-serial".into(),
+            firmware_version: self.environment.firmware_version.clone(),
+        };
+        let validation_nodes = vec![
+            PathBuf::from("/dev/davinci0"),
+            PathBuf::from("/dev/davinci_manager"),
+            PathBuf::from("/dev/hisi_hdc"),
+        ];
+        self.build_policy_for(validation_device.clone(), validation_nodes.clone())?;
+        self.correctness_policy_for(validation_device, validation_nodes)?;
         Ok(())
     }
 
-    pub(super) fn device(&self) -> AcceleratorDevice {
-        AcceleratorDevice {
-            device_id: self.device.device_id.clone(),
-            product_name: self.device.product_name.clone(),
-            serial_number: self.device.serial_number.clone(),
-            firmware_version: self.device.firmware_version.clone(),
-        }
-    }
-
-    pub(super) fn wire_device(&self) -> WireDevice {
-        let device = self.device();
-        WireDevice {
-            device_id: device.device_id,
-            product_name: device.product_name,
-            serial_number: device.serial_number,
-            firmware_version: device.firmware_version,
-        }
+    pub(super) fn selection_policy(
+        &self,
+    ) -> Result<crate::device::DeviceSelectionPolicy, Box<dyn Error>> {
+        self.device_selection.policy()
     }
 
     pub(super) fn environment(&self) -> Result<AscendEnvironmentFacts, Box<dyn Error>> {
@@ -101,13 +106,17 @@ impl AscendCandidateWorkerConfig {
         )?)
     }
 
-    pub(super) fn build_policy(&self) -> Result<AscendBuildPolicy, Box<dyn Error>> {
+    pub(super) fn build_policy_for(
+        &self,
+        device: AcceleratorDevice,
+        device_nodes: Vec<PathBuf>,
+    ) -> Result<AscendBuildPolicy, Box<dyn Error>> {
         Ok(AscendBuildPolicy::new(
             Sha256Digest::from_str(&self.image_digest)?,
             &self.image_reference,
             Sha256Digest::from_str(&self.image_id)?,
-            self.device(),
-            self.device_nodes.clone(),
+            device,
+            device_nodes,
             &self.driver_path,
             &self.sandbox_root,
             AscendResourceCeilings {
@@ -122,13 +131,17 @@ impl AscendCandidateWorkerConfig {
         )?)
     }
 
-    pub(super) fn correctness_policy(&self) -> Result<ReductionCorrectnessPolicy, Box<dyn Error>> {
+    pub(super) fn correctness_policy_for(
+        &self,
+        device: AcceleratorDevice,
+        device_nodes: Vec<PathBuf>,
+    ) -> Result<ReductionCorrectnessPolicy, Box<dyn Error>> {
         Ok(ReductionCorrectnessPolicy::new_ascend(
             Sha256Digest::from_str(&self.image_digest)?,
             &self.image_reference,
             Sha256Digest::from_str(&self.image_id)?,
-            self.device(),
-            self.device_nodes.clone(),
+            device,
+            device_nodes,
             &self.driver_path,
             &self.sandbox_root,
             CorrectnessResourceCeilings {

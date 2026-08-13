@@ -250,7 +250,7 @@ impl WorkerFileConfig {
                     driver_version: policy.environment.driver_version.clone(),
                     toolkit_version: policy.environment.cann_version.clone(),
                     container_runtime: "docker".into(),
-                    devices: vec![policy.wire_device()],
+                    devices: Vec::new(),
                 },
                 BackendPolicy::AscendCandidate(policy),
             ),

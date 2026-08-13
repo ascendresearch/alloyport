@@ -26,10 +26,10 @@ across environment variables. Start from the checked-in
 [Ascend correctness](ascend-correctness-worker-config.example.json) example and replace every
 placeholder and all-zero digest.
 
-The combined `ascend_candidate` variant is the normal single-NPU deployment. One persistent worker
-advertises both Build and Ascend Correctness, and `max_concurrency=1` serializes every device
-execution. The separate role variants remain available when an operator intentionally dedicates
-different devices or hosts.
+The combined `ascend_candidate` variant is the normal NPU deployment. One persistent worker
+discovers and reports every host NPU, advertises both Build and Ascend Correctness, and
+`max_concurrency=1` serializes execution. Each attempt immediately leases any Ready, process-free
+card; it does not require two NPUs or a configured device number.
 
 For a single worker role per host, `/etc/alloyport-worker/worker.json` is the conventional
 system-wide location. For multiple roles on one host, install each binary and its
@@ -88,14 +88,11 @@ For NVIDIA, `Ready` requires `gpu_recovery_action=None`. Reset, reboot, or drain
 `Unhealthy`; an unsupported value is `Degraded`, and an unknown value invalidates the probe. A
 successful command alone is never treated as health evidence.
 
-CUDA's `device_selection.allowed_device_ids` is an optional local allowlist; an empty list permits
-all discovered GPUs. `preferred_device_id` changes ordering but cannot make an occupied or unhealthy
-device eligible. Ascend currently binds its complete configured identity to one device and applies
-the same eligibility check before startup.
-
-After selection, the worker registers that exact identity in `WorkerHello` and restricts heartbeat
-observations to the same device. This is a shared CUDA/Ascend boundary: a single-device worker never
-advertises or reports unrelated accelerators present on a multi-device host.
+`device_selection.allowed_device_ids` is an optional local allowlist for CUDA and Ascend candidate
+workers; an empty list permits all discovered cards. `preferred_device_id` changes ordering but
+cannot make an occupied or unhealthy device eligible. The worker registers the complete inventory
+in `WorkerHello` and reports every device in heartbeats. Ascend derives `/dev/davinciN`,
+`/dev/davinci_manager`, and `/dev/hisi_hdc` only after an attempt selects device N.
 
 Selection is repeated as a durable per-attempt preflight. The worker acquires the device lease first,
 stores the original observation before `Running`, and releases only after terminal container cleanup

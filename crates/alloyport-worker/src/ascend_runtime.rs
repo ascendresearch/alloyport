@@ -7,7 +7,7 @@ use crate::ascend_supervisor::{
     ContainerLogStream,
 };
 use crate::backend_error::BackendError;
-use crate::device::DeviceStatusError;
+use crate::device::{DeviceSelectionPolicy, DeviceStatusError, select_ready_device};
 use crate::device_guard::{CleanupIntent, DeviceGuard, DeviceGuardError};
 use crate::executor::{
     ArtifactPublisher, ExecutionChunk, ExecutionObservation, ExecutionRun, ExecutionRuntimeError,
@@ -17,7 +17,7 @@ use crate::executor::{
 };
 use crate::journal::{LocalAttemptPhase, StoredArtifact, StoredFinished};
 use alloyport_artifacts::ArtifactStore;
-use alloyport_core::{AttemptId, DeviceLease, DeviceObservation, Sha256Digest};
+use alloyport_core::{AcceleratorDevice, AttemptId, DeviceLease, DeviceObservation, Sha256Digest};
 use alloyport_events::{Event, ProducerEvent};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -33,6 +33,29 @@ pub struct AscendExecutionRuntime {
     engine: Arc<dyn AscendContainerEngine>,
     device_manager: Arc<dyn AscendDeviceManager>,
     active_attempts: Arc<Mutex<BTreeSet<String>>>,
+    dynamic: Option<DynamicAscendRuntime>,
+}
+
+type AscendSupervisorFactory = dyn Fn(&AcceleratorDevice) -> Result<Arc<AscendContainerSupervisor>, ExecutionRuntimeError>
+    + Send
+    + Sync;
+
+struct DynamicAscendRuntime {
+    inventory: Vec<AcceleratorDevice>,
+    selection: DeviceSelectionPolicy,
+    supervisor_factory: Arc<AscendSupervisorFactory>,
+    executor_kind: alloyport_core::ExecutionKind,
+}
+
+impl Debug for DynamicAscendRuntime {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DynamicAscendRuntime")
+            .field("inventory", &self.inventory)
+            .field("selection", &self.selection)
+            .field("executor_kind", &self.executor_kind)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Debug for AscendExecutionRuntime {
@@ -44,6 +67,7 @@ impl Debug for AscendExecutionRuntime {
             .field("supervisor", &self.supervisor)
             .field("engine", &self.engine)
             .field("device_manager", &self.device_manager)
+            .field("dynamic", &self.dynamic)
             .finish_non_exhaustive()
     }
 }
@@ -78,6 +102,49 @@ impl AscendExecutionRuntime {
             engine,
             device_manager,
             active_attempts: Arc::new(Mutex::new(BTreeSet::new())),
+            dynamic: None,
+        })
+    }
+
+    /// Creates a runtime which selects a currently reusable NPU for each accepted attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty identity/inventory or an invalid per-device supervisor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_dynamic(
+        worker_id: impl Into<String>,
+        artifacts: Arc<dyn ArtifactStore>,
+        engine: Arc<dyn AscendContainerEngine>,
+        environment: crate::ascend::AscendEnvironmentFacts,
+        device_manager: Arc<dyn AscendDeviceManager>,
+        inventory: Vec<AcceleratorDevice>,
+        selection: DeviceSelectionPolicy,
+        executor_kind: alloyport_core::ExecutionKind,
+        supervisor_factory: Arc<AscendSupervisorFactory>,
+    ) -> Result<Self, ExecutionRuntimeError> {
+        let worker_id = worker_id.into();
+        if worker_id.trim().is_empty() || inventory.is_empty() {
+            return Err(ExecutionRuntimeError::InvalidConfiguration(
+                "dynamic Ascend worker identity and inventory must be nonempty",
+            ));
+        }
+        let supervisor = supervisor_factory(&inventory[0])?;
+        Ok(Self {
+            worker_id,
+            device: inventory[0].clone(),
+            environment,
+            artifacts,
+            supervisor,
+            engine,
+            device_manager,
+            active_attempts: Arc::new(Mutex::new(BTreeSet::new())),
+            dynamic: Some(DynamicAscendRuntime {
+                inventory,
+                selection,
+                supervisor_factory,
+                executor_kind,
+            }),
         })
     }
 
@@ -98,7 +165,10 @@ impl AscendExecutionRuntime {
 
     #[must_use]
     pub fn executor_kind(&self) -> alloyport_core::ExecutionKind {
-        self.supervisor.executor_kind()
+        self.dynamic.as_ref().map_or_else(
+            || self.supervisor.executor_kind(),
+            |dynamic| dynamic.executor_kind,
+        )
     }
 
     /// Runs one fixed Ascend attempt without a remote Artifact publisher.
@@ -112,6 +182,13 @@ impl AscendExecutionRuntime {
         attempt_id: &str,
         cancellation: &crate::executor::CancellationToken,
     ) -> Result<ExecutionRun, ExecutionRuntimeError> {
+        if self.dynamic.is_some() {
+            return self
+                .runtime_for_attempt(state, attempt_id)
+                .await?
+                .run_inner(state, attempt_id, cancellation, None, |_| {})
+                .await;
+        }
         self.run_inner(state, attempt_id, cancellation, None, |_| {})
             .await
     }
@@ -132,6 +209,13 @@ impl AscendExecutionRuntime {
     where
         F: FnMut(ExecutionObservation) + Send,
     {
+        if self.dynamic.is_some() {
+            return self
+                .runtime_for_attempt(state, attempt_id)
+                .await?
+                .run_inner(state, attempt_id, cancellation, Some(publisher), observer)
+                .await;
+        }
         self.run_inner(state, attempt_id, cancellation, Some(publisher), observer)
             .await
     }
@@ -151,8 +235,70 @@ impl AscendExecutionRuntime {
     where
         F: FnMut(ExecutionObservation) + Send,
     {
+        if self.dynamic.is_some() {
+            return self
+                .runtime_for_attempt(state, attempt_id)
+                .await?
+                .run_inner(state, attempt_id, cancellation, None, observer)
+                .await;
+        }
         self.run_inner(state, attempt_id, cancellation, None, observer)
             .await
+    }
+
+    async fn runtime_for_attempt(
+        &self,
+        state: &WorkerState,
+        attempt_id: &str,
+    ) -> Result<Self, ExecutionRuntimeError> {
+        let dynamic = self
+            .dynamic
+            .as_ref()
+            .ok_or(ExecutionRuntimeError::InvalidConfiguration(
+                "Ascend runtime is not dynamic",
+            ))?;
+        let attempt = state
+            .attempt_async(attempt_id.to_owned())
+            .await?
+            .ok_or_else(|| ExecutionRuntimeError::MissingAttempt(attempt_id.into()))?;
+        let leases = state.active_device_leases_async().await?;
+        let leased_device = leases
+            .iter()
+            .find(|lease| lease.attempt_id.to_string() == attempt_id)
+            .map(|lease| lease.device_id.as_str());
+        let selected = if let Some(device_id) = leased_device {
+            dynamic
+                .inventory
+                .iter()
+                .find(|device| device.device_id == device_id)
+                .cloned()
+                .ok_or_else(|| {
+                    ExecutionRuntimeError::Backend(BackendError::integrity(format!(
+                        "Ascend attempt {attempt_id} retains a lease for undiscovered device {device_id}"
+                    )))
+                })?
+        } else if attempt.phase == LocalAttemptPhase::Finished {
+            dynamic.inventory[0].clone()
+        } else {
+            let snapshot = self
+                .device_manager
+                .snapshot()
+                .await
+                .map_err(|error| ExecutionRuntimeError::Backend(error.into()))?;
+            select_ready_device(&dynamic.inventory, &snapshot, &leases, &dynamic.selection)
+                .map_err(|error| ExecutionRuntimeError::Backend(error.into()))?
+                .identity
+        };
+        let supervisor = (dynamic.supervisor_factory)(&selected)?;
+        let mut runtime = Self::new(
+            &self.worker_id,
+            Arc::clone(&self.artifacts),
+            supervisor,
+            Arc::clone(&self.engine),
+            Arc::clone(&self.device_manager),
+        )?;
+        runtime.active_attempts = Arc::clone(&self.active_attempts);
+        Ok(runtime)
     }
 
     async fn run_inner<F>(

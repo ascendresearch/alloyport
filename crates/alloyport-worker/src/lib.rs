@@ -669,6 +669,41 @@ impl OutboundWorker {
         Ok(self)
     }
 
+    /// Advertises every accelerator discovered on this executor host while retaining the
+    /// configured task concurrency. Device selection remains an attempt-time decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when discovery is empty, exceeds protocol limits, or produces an invalid
+    /// worker hello.
+    pub fn with_discovered_devices(
+        mut self,
+        devices: Vec<AcceleratorDevice>,
+    ) -> Result<Self, WorkerError> {
+        if devices.is_empty() {
+            return Err(WorkerError::PolicyViolation(
+                "accelerator discovery returned no devices".into(),
+            ));
+        }
+        let capabilities = self.hello.capabilities.as_mut().ok_or_else(|| {
+            WorkerError::PolicyViolation("worker capabilities are missing".into())
+        })?;
+        capabilities.device_count = u32::try_from(devices.len()).map_err(|_| {
+            WorkerError::PolicyViolation("accelerator inventory exceeds u32".into())
+        })?;
+        capabilities.devices = devices
+            .into_iter()
+            .map(|device| WireDevice {
+                device_id: device.device_id,
+                product_name: device.product_name,
+                serial_number: device.serial_number,
+                firmware_version: device.firmware_version,
+            })
+            .collect();
+        validate_worker_hello(&self.hello).map_err(WorkerError::InvalidHello)?;
+        Ok(self)
+    }
+
     /// Enables an explicit control-plane harness mode that admits work without executing it.
     ///
     /// Production workers must attach a matching execution backend instead. This mode exists for

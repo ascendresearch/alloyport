@@ -3,6 +3,7 @@ use crate::artifact_upload::RemoteArtifactPublisher;
 use crate::ascend_runtime::AscendExecutionRuntime;
 use crate::ascend_smi::{AscendDeviceManager, NpuSmi};
 use crate::ascend_supervisor::{AscendContainerEngine, AscendContainerSupervisor};
+use crate::backend_error::BackendError;
 use crate::cuda_runtime::{CudaEnvironmentFacts, CudaExecutionRuntime};
 use crate::cuda_supervisor::{CudaContainerEngine, CudaContainerSupervisor};
 use crate::device::{
@@ -10,9 +11,11 @@ use crate::device::{
     bind_configured_device, bind_worker_device,
 };
 use crate::docker_cli::DockerCliEngine;
+use crate::executor::ExecutionRuntimeError;
 use crate::nvidia_smi::{CudaDeviceManager, NvidiaSmi};
 use crate::{OutboundWorker, WorkerError};
 use alloyport_artifacts::FilesystemArtifactStore;
+use alloyport_core::ExecutionKind;
 use alloyport_proto::v1::WorkerHello;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -235,34 +238,18 @@ async fn attach_cuda_correctness(
         .capabilities
         .as_ref()
         .ok_or("CUDA correctness worker capabilities are missing")?;
-    if capabilities.device_count != 1
-        || capabilities.max_concurrency != 1
-        || capabilities.container_runtime != "docker"
-    {
-        return Err(
-            "the CUDA correctness worker requires one device, concurrency one, and Docker".into(),
-        );
+    if capabilities.max_concurrency != 1 || capabilities.container_runtime != "docker" {
+        return Err("the CUDA correctness worker requires concurrency one and Docker".into());
     }
     let manager = Arc::new(NvidiaSmi::new(&config.nvidia_smi_binary)?);
     let inventory = manager.inventory().await?;
-    let snapshot = manager.snapshot().await?;
-    let selected = bind_worker_device(
-        &inventory,
-        &snapshot,
-        &worker.state().active_device_leases()?,
-        &config.device_selection.policy()?,
-    )?;
-    let selected_identity = selected.identity.clone();
-    let status_provider = Arc::new(BoundDeviceStatusProvider::new(
-        manager.clone(),
-        &selected.identity.device_id,
-    )?);
+    let selection = config.device_selection.policy()?;
+    let status_provider: Arc<dyn DeviceStatusProvider> = manager.clone();
     let environment = CudaEnvironmentFacts::new(
         &capabilities.architecture,
         &capabilities.driver_version,
         &capabilities.toolkit_version,
     )?;
-    let policy = Arc::new(config.policy_for(&selected.identity.device_id, &environment)?);
     let engine: Arc<dyn CudaContainerEngine> = Arc::new(
         DockerCliEngine::new(&config.docker_binary)?
             .with_stop_timeout_seconds(config.docker_stop_timeout_seconds),
@@ -271,18 +258,30 @@ async fn attach_cuda_correctness(
         &config.local_artifact_root,
         config.local_artifact_max_bytes,
     )?);
-    let supervisor = Arc::new(CudaContainerSupervisor::new_correctness(
-        policy,
-        artifacts.clone(),
-    ));
+    let config = Arc::new(config);
+    let factory_config = Arc::clone(&config);
+    let factory_artifacts = artifacts.clone();
+    let factory_environment = environment.clone();
+    let supervisor_factory = Arc::new(move |device_id: &str| {
+        let policy = factory_config
+            .policy_for(device_id, &factory_environment)
+            .map_err(dynamic_runtime_configuration)?;
+        Ok(Arc::new(CudaContainerSupervisor::new_correctness(
+            Arc::new(policy),
+            factory_artifacts.clone(),
+        )))
+    });
     let device_manager: Arc<dyn DeviceLifecycleManager> = manager.clone();
-    let runtime = Arc::new(CudaExecutionRuntime::new(
+    let runtime = Arc::new(CudaExecutionRuntime::new_dynamic(
         &hello.worker_id,
         artifacts.clone(),
-        supervisor,
         engine,
         environment,
         device_manager,
+        inventory.clone(),
+        selection,
+        ExecutionKind::CudaCorrectness,
+        supervisor_factory,
     )?);
     let downloader = Arc::new(RemoteArtifactDownloader::new(
         endpoint.clone(),
@@ -296,7 +295,7 @@ async fn attach_cuda_correctness(
         Some(config.upload_ttl_ms),
     )?);
     worker
-        .with_bound_device(selected_identity)?
+        .with_discovered_devices(inventory)?
         .with_cuda_executor(runtime)
         .map_err(|error: WorkerError| -> Box<dyn Error> { Box::new(error) })
         .map(|worker| {
@@ -508,13 +507,8 @@ async fn attach_ascend_candidate(
         .capabilities
         .as_ref()
         .ok_or("Ascend candidate worker capabilities are missing")?;
-    if capabilities.device_count != 1
-        || capabilities.max_concurrency != 1
-        || capabilities.container_runtime != "docker"
-    {
-        return Err(
-            "the Ascend candidate worker requires one device, concurrency one, and Docker".into(),
-        );
+    if capabilities.max_concurrency != 1 || capabilities.container_runtime != "docker" {
+        return Err("the Ascend candidate worker requires concurrency one and Docker".into());
     }
     let expected_environment = config.environment()?;
     if capabilities.architecture != expected_environment.architecture
@@ -523,32 +517,14 @@ async fn attach_ascend_candidate(
     {
         return Err("Ascend candidate environment does not match worker capabilities".into());
     }
-    let configured_device = config.device();
     let discovered_nodes = discover_ascend_device_nodes(Path::new("/dev"))?;
-    require_selected_ascend_device_nodes(
-        &configured_device.device_id,
-        &config.device_nodes,
-        &discovered_nodes,
-    )?;
     let manager = Arc::new(NpuSmi::new(
         &config.npu_smi_binary,
         &config.environment.firmware_version,
     )?);
     let inventory = manager.inventory().await?;
-    let snapshot = manager.snapshot().await?;
-    let selected = bind_configured_device(
-        &inventory,
-        &snapshot,
-        &worker.state().active_device_leases()?,
-        &configured_device,
-    )?;
-    if selected.identity != configured_device {
-        return Err("selected NPU identity does not match Ascend candidate config".into());
-    }
-    let status_provider = Arc::new(BoundDeviceStatusProvider::new(
-        manager.clone(),
-        &selected.identity.device_id,
-    )?);
+    let selection = config.selection_policy()?;
+    let status_provider: Arc<dyn DeviceStatusProvider> = manager.clone();
     let artifacts = Arc::new(FilesystemArtifactStore::open(
         &config.local_artifact_root,
         config.local_artifact_max_bytes,
@@ -557,31 +533,64 @@ async fn attach_ascend_candidate(
         DockerCliEngine::new(&config.docker_binary)?
             .with_stop_timeout_seconds(config.docker_stop_timeout_seconds),
     );
-    let build_supervisor = Arc::new(AscendContainerSupervisor::new_build(
-        Arc::new(config.build_policy()?),
-        artifacts.clone(),
-    ));
-    let correctness_supervisor = Arc::new(AscendContainerSupervisor::new_correctness(
-        Arc::new(config.correctness_policy()?),
-        artifacts.clone(),
-    )?);
+    let config = Arc::new(config);
+    let discovered_nodes = Arc::new(discovered_nodes.into_iter().collect::<BTreeSet<_>>());
+    let build_config = Arc::clone(&config);
+    let build_artifacts = artifacts.clone();
+    let build_nodes = Arc::clone(&discovered_nodes);
+    let build_factory = Arc::new(move |device: &alloyport_core::AcceleratorDevice| {
+        let nodes = selected_ascend_device_nodes(&device.device_id, &build_nodes)
+            .map_err(dynamic_runtime_configuration)?;
+        let policy = build_config
+            .build_policy_for(device.clone(), nodes)
+            .map_err(dynamic_runtime_configuration)?;
+        Ok(Arc::new(AscendContainerSupervisor::new_build(
+            Arc::new(policy),
+            build_artifacts.clone(),
+        )))
+    });
+    let correctness_config = Arc::clone(&config);
+    let correctness_artifacts = artifacts.clone();
+    let correctness_nodes = Arc::clone(&discovered_nodes);
+    let correctness_factory = Arc::new(move |device: &alloyport_core::AcceleratorDevice| {
+        let nodes = selected_ascend_device_nodes(&device.device_id, &correctness_nodes)
+            .map_err(dynamic_runtime_configuration)?;
+        let policy = correctness_config
+            .correctness_policy_for(device.clone(), nodes)
+            .map_err(dynamic_runtime_configuration)?;
+        let supervisor = AscendContainerSupervisor::new_correctness(
+            Arc::new(policy),
+            correctness_artifacts.clone(),
+        )
+        .map_err(dynamic_runtime_configuration)?;
+        Ok(Arc::new(supervisor))
+    });
     let build_engine: Arc<dyn AscendContainerEngine> = docker.clone();
     let correctness_engine: Arc<dyn AscendContainerEngine> = docker;
     let build_manager: Arc<dyn AscendDeviceManager> = manager.clone();
     let correctness_manager: Arc<dyn AscendDeviceManager> = manager;
-    let build_runtime = Arc::new(AscendExecutionRuntime::new(
+    let environment = config.environment()?;
+    let build_runtime = Arc::new(AscendExecutionRuntime::new_dynamic(
         &hello.worker_id,
         artifacts.clone(),
-        build_supervisor,
         build_engine,
+        environment.clone(),
         build_manager,
+        inventory.clone(),
+        selection.clone(),
+        ExecutionKind::AscendBuild,
+        build_factory,
     )?);
-    let correctness_runtime = Arc::new(AscendExecutionRuntime::new(
+    let correctness_runtime = Arc::new(AscendExecutionRuntime::new_dynamic(
         &hello.worker_id,
         artifacts.clone(),
-        correctness_supervisor,
         correctness_engine,
+        environment,
         correctness_manager,
+        inventory.clone(),
+        selection,
+        ExecutionKind::AscendCorrectness,
+        correctness_factory,
     )?);
     let downloader = Arc::new(RemoteArtifactDownloader::new(
         endpoint.clone(),
@@ -596,7 +605,7 @@ async fn attach_ascend_candidate(
     )?);
 
     worker
-        .with_bound_device(selected.identity)?
+        .with_discovered_devices(inventory)?
         .with_shared_ascend_executor(build_runtime)?
         .with_shared_ascend_executor(correctness_runtime)
         .map_err(|error: WorkerError| -> Box<dyn Error> { Box::new(error) })
@@ -683,6 +692,29 @@ fn require_selected_ascend_device_nodes(
         .into());
     }
     Ok(())
+}
+
+fn selected_ascend_device_nodes(
+    device_id: &str,
+    discovered: &BTreeSet<PathBuf>,
+) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let required = vec![
+        PathBuf::from(format!("/dev/davinci{device_id}")),
+        PathBuf::from("/dev/davinci_manager"),
+        PathBuf::from("/dev/hisi_hdc"),
+    ];
+    if let Some(missing) = required.iter().find(|node| !discovered.contains(*node)) {
+        return Err(format!(
+            "selected Ascend device {device_id} is missing required node {}",
+            missing.display()
+        )
+        .into());
+    }
+    Ok(required)
+}
+
+fn dynamic_runtime_configuration(error: impl std::fmt::Display) -> ExecutionRuntimeError {
+    ExecutionRuntimeError::Backend(BackendError::integrity(error.to_string()))
 }
 
 #[cfg(test)]

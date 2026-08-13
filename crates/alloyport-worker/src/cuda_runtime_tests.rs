@@ -16,7 +16,7 @@ use crate::device::{
 use crate::executor::{ArtifactPublicationError, CancellationToken};
 use crate::{AdmissionOutcome, AdmissionPolicy, OutboundWorker, WorkerError};
 use alloyport_artifacts::{ArtifactStore, FilesystemArtifactStore, IngestRequest, Sha256Digest};
-use alloyport_core::{DeviceHealth, DeviceObservation};
+use alloyport_core::{AcceleratorDevice, DeviceHealth, DeviceObservation};
 use alloyport_proto::v1::{
     ArtifactRef, Assignment, Backend, ExecutionSpec, ExecutorKind, NetworkPolicy, ResourceLimits,
     WorkerCapabilities, WorkerHello,
@@ -26,6 +26,130 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const CUDA_RUNTIME_STDOUT: &[u8] =
     b"PASS fixture=cuda-vectoradd-v1 elements=1048576 checksum=670562424\n";
+
+#[tokio::test]
+async fn dynamic_runtime_selects_a_free_gpu_when_the_first_gpu_is_busy()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let artifacts = Arc::new(FilesystemArtifactStore::open(
+        directory.path().join("cas"),
+        64 * 1024,
+    )?);
+    let bundle = Sha256Digest::digest_bytes(b"dynamic-bundle");
+    let image = Sha256Digest::digest_bytes(b"dynamic-image");
+    let state = WorkerState::with_policy(AdmissionPolicy::default().allowing_cuda_fixture());
+    assert_eq!(
+        state.admit(&assignment(bundle, 1, image))?,
+        AdmissionOutcome::New
+    );
+    let observations = vec![
+        DeviceObservation {
+            device_id: "0".into(),
+            process_count: 1,
+            ..cuda_observation()
+        },
+        DeviceObservation {
+            device_id: "1".into(),
+            ..cuda_observation()
+        },
+    ];
+    let manager: Arc<dyn DeviceLifecycleManager> = Arc::new(MultiDeviceManager { observations });
+    let inventory = vec![cuda_device("0"), cuda_device("1")];
+    let factory_artifacts = artifacts.clone();
+    let sandbox_root = directory.path().join("sandboxes");
+    let factory = Arc::new(move |device_id: &str| {
+        let policy = CudaFixturePolicy::new(
+            VECTOR_ADD_FIXTURE_ID,
+            bundle,
+            image,
+            format!("example.invalid/cuda@{image}"),
+            image,
+            device_id,
+            &sandbox_root,
+            CudaResourceCeilings {
+                cpu_millis: 1,
+                memory_bytes: 1,
+                disk_bytes: 128 * 1024 * 1024,
+                process_count: 1,
+                output_bytes: 1,
+            },
+        )
+        .map_err(|error| {
+            ExecutionRuntimeError::Backend(BackendError::integrity(error.to_string()))
+        })?;
+        Ok(Arc::new(CudaContainerSupervisor::new(
+            Arc::new(policy),
+            factory_artifacts.clone(),
+        )))
+    });
+    let engine: Arc<dyn CudaContainerEngine> =
+        Arc::new(RecordingEngine::new(state.clone(), image.to_string()));
+    let runtime = CudaExecutionRuntime::new_dynamic(
+        "cuda-worker-1",
+        artifacts,
+        engine,
+        CudaEnvironmentFacts::new("sm_121", "580.159.03", "13.0")?,
+        manager,
+        inventory,
+        DeviceSelectionPolicy::default(),
+        alloyport_core::ExecutionKind::CudaFixture,
+        factory,
+    )?;
+
+    let selected = runtime.runtime_for_attempt(&state, "attempt-1").await?;
+    assert_eq!(selected.device_id, "1");
+    Ok(())
+}
+
+fn cuda_device(device_id: &str) -> AcceleratorDevice {
+    AcceleratorDevice {
+        device_id: device_id.into(),
+        product_name: "NVIDIA GB10".into(),
+        serial_number: format!("serial-{device_id}"),
+        firmware_version: "580.159.03".into(),
+    }
+}
+
+#[derive(Debug)]
+struct MultiDeviceManager {
+    observations: Vec<DeviceObservation>,
+}
+
+impl DeviceStatusProvider for MultiDeviceManager {
+    fn snapshot(&self) -> DeviceSnapshotFuture<'_> {
+        Box::pin(async {
+            Ok(DeviceSnapshot {
+                devices: self.observations.clone(),
+            })
+        })
+    }
+}
+
+impl DeviceLifecycleManager for MultiDeviceManager {
+    fn observe_device<'a>(
+        &'a self,
+        device_id: &'a str,
+    ) -> DeviceLifecycleFuture<'a, DeviceObservation> {
+        Box::pin(async move {
+            self.observations
+                .iter()
+                .find(|observation| observation.device_id == device_id)
+                .cloned()
+                .ok_or_else(|| DeviceStatusError::Unavailable("missing test device".into()))
+        })
+    }
+
+    fn recover_device<'a>(
+        &'a self,
+        _device_id: &'a str,
+    ) -> DeviceLifecycleFuture<'a, DeviceObservation> {
+        Box::pin(async {
+            Err(DeviceStatusError::RecoveryUnsupported(
+                "test reset is disabled".into(),
+            ))
+        })
+    }
+}
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
