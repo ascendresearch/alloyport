@@ -384,6 +384,11 @@ impl ResolvedRuntimeModel {
     pub const fn max_output_tokens(&self) -> u32 {
         self.settings.max_output_tokens
     }
+
+    #[must_use]
+    pub const fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.settings.reasoning.effort
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

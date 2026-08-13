@@ -127,6 +127,7 @@ fn prepared(kind: ProtocolKind) -> PreparedModelPayload {
         continuation: None,
         tools: &tools,
         max_output_tokens: 4096,
+        reasoning_effort: None,
     };
     match kind {
         ProtocolKind::OpenAiResponses => OpenAiResponsesCodec::default()

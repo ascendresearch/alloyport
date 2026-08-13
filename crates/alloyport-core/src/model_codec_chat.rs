@@ -113,17 +113,18 @@ impl ProtocolCodec for OpenAiChatCompletionsCodec {
         }
         let continuation =
             NativeContinuation::new(self.kind(), history.clone(), vec![], self.limits)?;
-        PreparedModelPayload::new(
-            &json!({
-                "model": input.wire_model,
-                "messages": history,
-                "tools": Self::tools(input.tools),
-                "max_tokens": input.max_output_tokens
-            }),
-            continuation,
-            input.tools,
-            self.limits,
-        )
+        let mut body = json!({
+            "model": input.wire_model,
+            "messages": history,
+            "tools": Self::tools(input.tools),
+            "max_tokens": input.max_output_tokens
+        });
+        if let Some(effort) = input.reasoning_effort {
+            body.as_object_mut()
+                .expect("chat request body is an object")
+                .insert("reasoning_effort".into(), json!(effort));
+        }
+        PreparedModelPayload::new(&body, continuation, input.tools, self.limits)
     }
 
     fn decode(

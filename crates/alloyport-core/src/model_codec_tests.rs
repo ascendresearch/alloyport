@@ -2,7 +2,7 @@ use crate::{
     AnthropicMessagesCodec, CodecError, CodecLimits, CodecToolDefinition, ModelUsage,
     ModelVisibleToolResult, NativeContinuation, NativeTurnInput, NormalizedStopReason,
     OpenAiChatCompletionsCodec, OpenAiResponsesCodec, ProtocolCodec, RawModelResponseRef,
-    Sha256Digest,
+    ReasoningEffort, Sha256Digest,
 };
 use serde_json::{Value, json};
 
@@ -59,6 +59,7 @@ fn turn_input<'a>(
         continuation,
         tools,
         max_output_tokens: 4096,
+        reasoning_effort: None,
     }
 }
 
@@ -167,6 +168,16 @@ fn chat_fixture_replays_exact_assistant_message_and_correlated_tool_messages() {
         json_body(second_followup.body())["messages"][6]["tool_call_id"],
         "chat_call_c"
     );
+}
+
+#[test]
+fn chat_request_carries_the_configured_reasoning_effort() {
+    let codec = OpenAiChatCompletionsCodec::default();
+    let tools = tools();
+    let mut input = turn_input(&tools, None);
+    input.reasoning_effort = Some(ReasoningEffort::High);
+    let prepared = codec.prepare(input).expect("Chat request must prepare");
+    assert_eq!(json_body(prepared.body())["reasoning_effort"], "high");
 }
 
 #[test]

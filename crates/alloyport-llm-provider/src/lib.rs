@@ -129,6 +129,7 @@ where
             continuation: continuation.as_ref(),
             tools: &input.tools,
             max_output_tokens: deployment.max_output_tokens(),
+            reasoning_effort: deployment.reasoning_effort(),
         }) {
             Ok(prepared) => prepared,
             Err(error) => return confirmed_not_sent(error.to_string()),

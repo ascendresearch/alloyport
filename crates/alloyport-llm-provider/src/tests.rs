@@ -132,6 +132,7 @@ fn scripted_transport(
             continuation: None,
             tools: &input.tools,
             max_output_tokens: deployment.max_output_tokens(),
+            reasoning_effort: deployment.reasoning_effort(),
         })
         .expect("prepared request fixture");
     ScriptedFakeModelTransport::new([ScriptedModelTransportStep {
