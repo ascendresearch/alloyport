@@ -8,13 +8,29 @@ cargo run -p alloyport-worker -- --config /absolute/path/to/worker.json
 ```
 
 `ALLOYPORT_WORKER_CONFIG=/absolute/path/to/worker.json` is an equivalent locator for a service
-manager. Backend facts are not split across environment variables. Start from the checked-in
+manager. With no command-line locator, the worker uses this exact order:
+
+1. `ALLOYPORT_WORKER_CONFIG`;
+2. `alloyport-worker.json` in the executable's directory;
+3. `/etc/alloyport-worker/worker.json`.
+
+The working directory is never searched, and a missing explicit or environment-selected file fails
+startup rather than falling through. Unlike the server, a worker has no safe built-in configuration
+and reports every supported location when discovery finds nothing. Backend facts are not split
+across environment variables. Start from the checked-in
 [CUDA fixture](cuda-worker-config.example.json),
 [Ascend fixture](ascend-worker-config.example.json),
 [Ascend Build](ascend-build-worker-config.example.json),
 [CUDA correctness](cuda-correctness-worker-config.example.json), or
 [Ascend correctness](ascend-correctness-worker-config.example.json) example and replace every
 placeholder and all-zero digest.
+
+For a single worker role per host, `/etc/alloyport-worker/worker.json` is the conventional
+system-wide location. For multiple roles on one host, install each binary and its
+`alloyport-worker.json` in a separate role directory (for example,
+`/opt/alloyport-worker/ascend-build/` and `/opt/alloyport-worker/ascend-correctness/`), or use
+distinct explicit files under `/etc/alloyport-worker/`. Configuration, journals, Artifact stores,
+and sandboxes should use persistent deployment directories rather than `/tmp`.
 
 The `ascend_build`, `cuda_correctness`, and `ascend_correctness` variants intentionally contain no
 fixture ID or bundle digest. They admit only their role-specific execution kind; each controller

@@ -95,6 +95,8 @@ Read these documents before changing architecture or implementation:
     Candidate execution.
 33. [`design/0038-standalone-ascend-build-worker.md`](design/0038-standalone-ascend-build-worker.md)
     for the strict Build-only worker file and production NPU/runtime composition.
+34. [`design/0039-stable-process-configuration-discovery.md`](design/0039-stable-process-configuration-discovery.md)
+    for deterministic binary-sibling and system-wide server/worker configuration locations.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -422,7 +424,10 @@ process restart.
 The `alloyport-server` binary listens on `127.0.0.1:50051` by default. It accepts a strict schema-1
 JSON file through `--config PATH` or `ALLOYPORT_SERVER_CONFIG`; explicit CLI location wins, while
 individual environment values override file values and defaults. JSON-relative paths resolve from
-the file directory. Plaintext is rejected on a non-loopback bind address. Remote mode requires:
+the file directory. With neither explicit locator, it discovers `alloyport-server.json` beside the
+executable and then `/etc/alloyport-server/server.json`; absent files retain the local defaults.
+The working directory is never searched. Plaintext is rejected on a non-loopback bind address.
+Remote mode requires:
 
 - `ALLOYPORT_LISTEN`
 - `ALLOYPORT_TLS_CERT`
@@ -636,7 +641,10 @@ The worker binary does not attach the fake runtime. CUDA and Ascend remain mutua
 default-deny. Fixture and correctness modes are also explicit, mutually exclusive backend variants.
 `alloyport-worker --config PATH` loads one complete schema-1 JSON file containing the server/TLS
 connection, worker ID, journal path, backend facts, and local policy;
-`ALLOYPORT_WORKER_CONFIG` is only an equivalent file locator.
+`ALLOYPORT_WORKER_CONFIG` is an equivalent file locator. Without either locator, the binary checks
+`alloyport-worker.json` beside itself and then `/etc/alloyport-worker/worker.json`; it fails rather
+than synthesizing defaults, and it never searches the working directory. Multiple roles on one host
+use separate executable/config directories or explicit role-specific system files.
 [The CUDA fixture template](cuda-worker-config.example.json),
 [the Ascend fixture template](ascend-worker-config.example.json),
 [the CUDA correctness template](cuda-correctness-worker-config.example.json), and
@@ -1201,11 +1209,22 @@ Build policy/supervisor/runtime to one dynamically verified NPU while advertisin
 `ascend-build-v1`. The checked-in example still requires actual host/image/TLS facts before launch.
 
 Deployment preparation reached both hardware hosts. Exact local-image descriptors were confirmed,
-the Ascend correctness image was safely retagged to the same immutable ID for the Build role, and
-role-specific configs plus worker binaries were staged under `/tmp/alloyport-worker-state` without
-starting a workload. The x86_64 static worker digest is
-`db9bc4a50c31a0c8b2d655dbfddd562d20a0836276914b1050c9b099b7792f7f`; the GB10-native aarch64
-worker digest is `43766587c5ddabd2908b3c17e232aaa4833aaec8faf7ca05478f3af009541de3`.
+and the Ascend correctness image was safely retagged to the same immutable ID for the Build role.
+Design 0039 moved every staged configuration, binary, journal, Artifact root, and sandbox authority
+out of `/tmp`: CUDA Correctness is installed under
+`/home/dawei/.local/lib/alloyport-worker/cuda-correctness` with state under
+`/home/dawei/.local/state/alloyport-worker/cuda-correctness`; the two Ascend roles use
+`/opt/alloyport-worker/{ascend-build,ascend-correctness}` with state under
+`/var/lib/alloyport-worker/...`. The x86_64 static worker digest is
+`cb232d173b79a5c77496726f33d1c76891551352f45c011628f5a0698e1179e3`; the GB10-native aarch64
+worker digest is `5113897e39210e2c945c066ec18401418bf012d5641e108e0a51e5193d2d04b1`.
+All three were launched from `/` with no locator argument and discovered their sibling
+`alloyport-worker.json`; bounded probes were then terminated, and no workload was submitted.
+A local server install likewise uses `/home/dawei/.local/lib/alloyport-server` with state under
+`/home/dawei/.local/state/alloyport-server`; its no-argument sibling discovery bound loopback and
+shut down under a bounded probe. System-wide server installation remains
+`/etc/alloyport-server/server.json` plus `/var/lib/alloyport-server` on a host with noninteractive
+administrative installation authority.
 A startup preflight exposed that GB10
 reports unified-memory counters as `[N/A]`; the NVIDIA adapter now preserves readiness evidence and
 records those counters explicitly unavailable instead of rejecting the device. Ascend launch was

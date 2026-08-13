@@ -14,6 +14,8 @@ const DEFAULT_MAX_UPLOAD_CHUNK_BYTES: u64 = 1024 * 1024;
 const DEFAULT_TOTAL_ARTIFACT_QUOTA_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const DEFAULT_OWNER_ARTIFACT_QUOTA_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const DEFAULT_SHUTDOWN_TIMEOUT_SECONDS: u64 = 10;
+const SIBLING_CONFIG_NAME: &str = "alloyport-server.json";
+const SYSTEM_CONFIG_PATH: &str = "/etc/alloyport-server/server.json";
 
 #[derive(Debug)]
 pub(super) struct ServerConfig {
@@ -73,17 +75,22 @@ struct TlsFileConfig {
 
 impl ServerConfig {
     pub(super) fn load(explicit_path: Option<PathBuf>) -> Result<Self, Box<dyn Error>> {
-        Self::load_with(explicit_path, |name| env::var_os(name))
+        let executable = env::current_exe().ok();
+        Self::load_with(
+            explicit_path,
+            |name| env::var_os(name),
+            executable.as_deref(),
+            Path::is_file,
+        )
     }
 
     fn load_with(
         explicit_path: Option<PathBuf>,
         environment: impl Fn(&str) -> Option<OsString>,
+        executable: Option<&Path>,
+        is_file: impl Fn(&Path) -> bool,
     ) -> Result<Self, Box<dyn Error>> {
-        let configured_path = match explicit_path {
-            Some(path) => Some(path),
-            None => environment("ALLOYPORT_SERVER_CONFIG").map(PathBuf::from),
-        };
+        let configured_path = locate_config_path(explicit_path, &environment, executable, is_file);
         let (file, base) = load_file(configured_path.as_deref())?;
         let artifact_file = file.as_ref().and_then(|config| config.artifact.as_ref());
         let address = text_environment(&environment, "ALLOYPORT_LISTEN")?
@@ -165,6 +172,26 @@ impl ServerConfig {
             )?),
         })
     }
+}
+
+fn locate_config_path(
+    explicit_path: Option<PathBuf>,
+    environment: &impl Fn(&str) -> Option<OsString>,
+    executable: Option<&Path>,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    explicit_path
+        .or_else(|| environment("ALLOYPORT_SERVER_CONFIG").map(PathBuf::from))
+        .or_else(|| {
+            executable
+                .and_then(Path::parent)
+                .map(|directory| directory.join(SIBLING_CONFIG_NAME))
+                .filter(|path| is_file(path))
+        })
+        .or_else(|| {
+            let path = PathBuf::from(SYSTEM_CONFIG_PATH);
+            is_file(&path).then_some(path)
+        })
 }
 
 fn load_file(
@@ -285,7 +312,12 @@ mod tests {
             ("ALLOYPORT_LISTEN", OsString::from("127.0.0.1:7000")),
             ("ALLOYPORT_SHUTDOWN_TIMEOUT_SECONDS", OsString::from("5")),
         ]);
-        let config = ServerConfig::load_with(Some(path), |name| environment.get(name).cloned())?;
+        let config = ServerConfig::load_with(
+            Some(path),
+            |name| environment.get(name).cloned(),
+            None,
+            |_| false,
+        )?;
         assert_eq!(config.address.port(), 7_000);
         assert_eq!(config.shutdown_timeout, Duration::from_secs(5));
         assert_eq!(
@@ -324,7 +356,7 @@ mod tests {
         ] {
             let path = directory.path().join(name);
             fs::write(&path, json)?;
-            assert!(ServerConfig::load_with(Some(path), |_| None).is_err());
+            assert!(ServerConfig::load_with(Some(path), |_| None, None, |_| false).is_err());
         }
         Ok(())
     }
@@ -336,10 +368,53 @@ mod tests {
         let environment = directory.path().join("environment.json");
         fs::write(&explicit, r#"{"schema_version":1}"#)?;
         fs::write(&environment, r#"{"schema_version":2}"#)?;
-        let config = ServerConfig::load_with(Some(explicit), |name| {
-            (name == "ALLOYPORT_SERVER_CONFIG").then(|| environment.clone().into_os_string())
-        })?;
+        let config = ServerConfig::load_with(
+            Some(explicit),
+            |name| {
+                (name == "ALLOYPORT_SERVER_CONFIG").then(|| environment.clone().into_os_string())
+            },
+            None,
+            |_| false,
+        )?;
         assert_eq!(config.address.port(), 50_051);
         Ok(())
+    }
+
+    #[test]
+    fn locator_precedence_is_explicit_environment_sibling_then_system() {
+        let executable = Path::new("/opt/alloyport-server/alloyport-server");
+        let sibling = PathBuf::from("/opt/alloyport-server/alloyport-server.json");
+        let system = PathBuf::from(SYSTEM_CONFIG_PATH);
+        let environment = PathBuf::from("/run/secrets/server.json");
+        let explicit = PathBuf::from("/srv/alloyport/server.json");
+        let present = |path: &Path| path == sibling || path == system;
+
+        assert_eq!(
+            locate_config_path(
+                Some(explicit.clone()),
+                &|_| Some(environment.clone().into_os_string()),
+                Some(executable),
+                present,
+            ),
+            Some(explicit)
+        );
+        assert_eq!(
+            locate_config_path(
+                None,
+                &|_| Some(environment.clone().into_os_string()),
+                Some(executable),
+                present,
+            ),
+            Some(environment)
+        );
+        assert_eq!(
+            locate_config_path(None, &|_| None, Some(executable), present),
+            Some(sibling.clone())
+        );
+        assert_eq!(
+            locate_config_path(None, &|_| None, None, present),
+            Some(system.clone())
+        );
+        assert_eq!(locate_config_path(None, &|_| None, None, |_| false), None);
     }
 }

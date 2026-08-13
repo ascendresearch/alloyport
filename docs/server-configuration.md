@@ -7,9 +7,17 @@ cargo run -p alloyport-server -- --config /absolute/path/to/server.json
 ```
 
 `ALLOYPORT_SERVER_CONFIG=/absolute/path/to/server.json` is the equivalent locator for a service
-manager. The explicit `--config` locator takes precedence over `ALLOYPORT_SERVER_CONFIG`; there is
-no implicit file discovery. For individual settings, environment variables override file values,
-which override built-in loopback defaults.
+manager. Configuration-file discovery is deterministic and never consults the working directory:
+
+1. `--config PATH`;
+2. `ALLOYPORT_SERVER_CONFIG`;
+3. `alloyport-server.json` in the executable's directory;
+4. `/etc/alloyport-server/server.json`;
+5. built-in loopback defaults when none of those files is present.
+
+An explicitly named missing or invalid file fails startup; it does not fall through to another
+location. For individual settings, environment variables override file values, which override
+built-in loopback defaults.
 
 Start from the checked-in [example](server-config.example.json). Relative paths written in the JSON
 file are resolved from that file's directory, so behavior does not depend on the process working
@@ -67,8 +75,9 @@ cargo run -p alloyport-server -- --config server.json identity rotate WORKER_ID 
 cargo run -p alloyport-server -- --config server.json identity revoke client.pem
 ```
 
-When `--config` is omitted, `ALLOYPORT_SERVER_CONFIG` and then the normal defaults apply. The
-configuration option precedes the `identity` subcommand.
+When `--config` is omitted, the normal discovery sequence applies. The configuration option
+precedes the `identity` subcommand, and serving and identity administration always use the same
+discovered file.
 
 ## Explicit Candidate Episode command
 

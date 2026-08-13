@@ -1,6 +1,6 @@
 # 0023: Versioned server configuration
 
-- Status: Accepted; first implementation slice complete
+- Status: Accepted; first implementation slice complete; locator amended by Design 0039
 - Date: 2026-08-12
 - Scope: server bootstrap, offline identity administration, and open-source local trials
 
@@ -20,6 +20,10 @@ The server accepts an optional strict schema-1 JSON file. `--config PATH` locate
 has precedence over `ALLOYPORT_SERVER_CONFIG`; no working-directory file is discovered
 automatically. Individual values use `environment > file > built-in defaults`. The defaults remain
 a plaintext loopback listener and local SQLite/filesystem state.
+
+Design 0039 later replaces only the no-discovery locator rule with deterministic
+executable-sibling and system-wide locations. The value-precedence and local-default decisions in
+this document remain unchanged.
 
 Unknown fields and unsupported schema versions fail closed. Positive limits remain positive-only,
 remote plaintext remains forbidden, and environment TLS paths remain an all-or-none group. Paths

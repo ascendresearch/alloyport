@@ -8,10 +8,14 @@ use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use serde::Deserialize;
 use std::env;
 use std::error::Error;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::transport::{Certificate, ClientTlsConfig, Endpoint, Identity};
+
+const SIBLING_CONFIG_NAME: &str = "alloyport-worker.json";
+const SYSTEM_CONFIG_PATH: &str = "/etc/alloyport-worker/worker.json";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,16 +99,13 @@ pub(super) struct LoadedWorkerConfig {
 
 impl WorkerFileConfig {
     pub fn load_from_args() -> Result<Self, Box<dyn Error>> {
-        let mut arguments = env::args_os();
-        let _program = arguments.next();
-        let path = match (arguments.next(), arguments.next(), arguments.next()) {
-            (Some(flag), Some(path), None) if flag == "--config" => PathBuf::from(path),
-            (Some(path), None, None) => PathBuf::from(path),
-            (None, None, None) => env::var_os("ALLOYPORT_WORKER_CONFIG")
-                .map(PathBuf::from)
-                .ok_or("usage: alloyport-worker --config PATH")?,
-            _ => return Err("usage: alloyport-worker --config PATH".into()),
-        };
+        let executable = env::current_exe().ok();
+        let path = locate_config_path(
+            env::args_os().skip(1),
+            |name| env::var_os(name),
+            executable.as_deref(),
+            Path::is_file,
+        )?;
         Self::load(path)
     }
 
@@ -249,6 +250,41 @@ impl WorkerFileConfig {
     }
 }
 
+fn locate_config_path(
+    arguments: impl IntoIterator<Item = OsString>,
+    environment: impl Fn(&str) -> Option<OsString>,
+    executable: Option<&Path>,
+    is_file: impl Fn(&Path) -> bool,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let mut arguments = arguments.into_iter();
+    let explicit = match (arguments.next(), arguments.next(), arguments.next()) {
+        (Some(flag), Some(path), None) if flag == "--config" => Some(PathBuf::from(path)),
+        (Some(path), None, None) => Some(PathBuf::from(path)),
+        (None, None, None) => None,
+        _ => return Err("usage: alloyport-worker [--config PATH]".into()),
+    };
+    explicit
+        .or_else(|| environment("ALLOYPORT_WORKER_CONFIG").map(PathBuf::from))
+        .or_else(|| {
+            executable
+                .and_then(Path::parent)
+                .map(|directory| directory.join(SIBLING_CONFIG_NAME))
+                .filter(|path| is_file(path))
+        })
+        .or_else(|| {
+            let path = PathBuf::from(SYSTEM_CONFIG_PATH);
+            is_file(&path).then_some(path)
+        })
+        .ok_or_else(|| {
+            format!(
+                "worker configuration not found; use --config PATH, set \
+                 ALLOYPORT_WORKER_CONFIG, place {SIBLING_CONFIG_NAME} beside the executable, or \
+                 install {SYSTEM_CONFIG_PATH}"
+            )
+            .into()
+        })
+}
+
 fn validate_cuda_environment(environment: &CudaEnvironmentConfig) -> Result<(), Box<dyn Error>> {
     if environment.architecture.trim().is_empty()
         || environment.driver_version.trim().is_empty()
@@ -303,6 +339,49 @@ fn instance_id(worker_id: &str) -> Result<String, Box<dyn Error>> {
 mod tests {
     use super::*;
     use alloyport_artifacts::Sha256Digest;
+
+    #[test]
+    fn locator_precedence_is_explicit_environment_sibling_then_system() -> Result<(), Box<dyn Error>>
+    {
+        let executable = Path::new("/opt/alloyport-worker/alloyport-worker");
+        let sibling = PathBuf::from("/opt/alloyport-worker/alloyport-worker.json");
+        let system = PathBuf::from(SYSTEM_CONFIG_PATH);
+        let environment = PathBuf::from("/run/secrets/worker.json");
+        let explicit = PathBuf::from("/srv/alloyport/worker.json");
+        let present = |path: &Path| path == sibling || path == system;
+
+        assert_eq!(
+            locate_config_path(
+                [
+                    OsString::from("--config"),
+                    explicit.clone().into_os_string()
+                ],
+                |_| Some(environment.clone().into_os_string()),
+                Some(executable),
+                present,
+            )?,
+            explicit
+        );
+        assert_eq!(
+            locate_config_path(
+                [],
+                |_| Some(environment.clone().into_os_string()),
+                Some(executable),
+                present,
+            )?,
+            environment
+        );
+        assert_eq!(
+            locate_config_path([], |_| None, Some(executable), present)?,
+            sibling.clone()
+        );
+        assert_eq!(
+            locate_config_path([], |_| None, None, present)?,
+            system.clone()
+        );
+        assert!(locate_config_path([], |_| None, None, |_| false).is_err());
+        Ok(())
+    }
 
     #[test]
     fn unified_config_carries_connection_identity_and_backend() -> Result<(), Box<dyn Error>> {

@@ -46,6 +46,7 @@ stable identifier.
 | 0036 | [Gated Candidate Episode composition](0036-gated-candidate-episode-composition.md) | Implemented composition slice |
 | 0037 | [Explicit Candidate Episode bootstrap](0037-explicit-candidate-episode-bootstrap.md) | Implemented |
 | 0038 | [Standalone Ascend Build worker](0038-standalone-ascend-build-worker.md) | Implemented |
+| 0039 | [Stable process configuration discovery](0039-stable-process-configuration-discovery.md) | Implemented |
 
 ## Convention
 

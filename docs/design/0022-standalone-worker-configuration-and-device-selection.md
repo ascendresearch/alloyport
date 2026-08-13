@@ -1,6 +1,6 @@
 # 0022: Standalone worker configuration and shared device selection
 
-- Status: Accepted; first implementation slice complete
+- Status: Accepted; first implementation slice complete; locator amended by Design 0039
 - Date: 2026-08-11
 - Scope: open-source trial deployment, worker bootstrap, image identity, and GPU/NPU selection
 - Revises: the registry-only image and environment-variable bootstrap portions of Designs 0018 and
@@ -33,6 +33,8 @@ The production worker starts from one strict schema-1 JSON file. It contains:
 
 The command is `alloyport-worker --config PATH`. `ALLOYPORT_WORKER_CONFIG` may locate the same file
 for service managers, but individual policy facts are not assembled from environment variables.
+Design 0039 later adds deterministic executable-sibling and system-wide discovery when neither
+explicit locator is present.
 Unknown fields, partial backend policy, relative security-sensitive binary paths, and remote
 plaintext endpoints fail closed. Loopback HTTP remains available for local evaluation.
 
