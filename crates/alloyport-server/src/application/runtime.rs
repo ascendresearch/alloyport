@@ -336,7 +336,11 @@ async fn supervise(
             report_candidate_exit(exit.result);
             continue;
         }
-        break first_exit_detail(Ok(exit))?;
+        let detail = first_exit_detail(Ok(exit))?;
+        if let Some(detail) = detail.as_deref() {
+            eprintln!("AlloyPort server task exited: {detail}");
+        }
+        break detail;
     };
     let _ = shutdown.send(true);
 
@@ -365,7 +369,10 @@ async fn supervise(
     } else {
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
-        return Err(format!("server tasks did not drain within {shutdown_timeout:?}").into());
+        let timeout = format!("server tasks did not drain within {shutdown_timeout:?}");
+        return Err(failure
+            .map_or(timeout.clone(), |failure| format!("{failure}; {timeout}"))
+            .into());
     }
     if let Some(failure) = failure {
         return Err(failure.into());
