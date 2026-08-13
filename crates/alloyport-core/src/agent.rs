@@ -130,7 +130,8 @@ pub struct EpisodeSpec {
 }
 
 /// Persistable episode aggregate. State changes only through the checked reducer.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentEpisodeRecord {
     schema_version: u16,
     id: EpisodeId,
@@ -327,7 +328,8 @@ pub struct ToolOperationSpec {
 }
 
 /// Persistable logical tool operation with restart-safe terminal evidence.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolOperationRecord {
     schema_version: u16,
     id: ToolOperationId,

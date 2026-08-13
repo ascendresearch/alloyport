@@ -40,6 +40,7 @@ stable identifier.
 | 0030 | [Trusted reduction correctness worker harness](0030-trusted-reduction-correctness-worker-harness.md) | Implemented runtime slice |
 | 0031 | [Standalone correctness worker configuration](0031-standalone-correctness-worker-configuration.md) | Implemented |
 | 0032 | [Pinned correctness images and CUDA hardware diagnostic](0032-pinned-correctness-images-and-cuda-diagnostic.md) | Implemented diagnostic slice |
+| 0033 | [Durable Agent Episode repository](0033-durable-agent-episode-repository.md) | Implemented persistence slice |
 
 ## Convention
 

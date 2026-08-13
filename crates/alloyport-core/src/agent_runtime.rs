@@ -16,7 +16,10 @@ use crate::{
     ModelTurnRequest, Sha256Digest, ToolEffectClass, ToolOperationRecord, ToolOperationSpec,
     ToolOperationStatus, ToolResultAuthority, TurnRecord, TurnSpec,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+pub const DURABLE_EPISODE_STATE_SCHEMA_V1: u16 = 1;
+
 /// Immutable runtime values not interpreted by a provider adapter.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentLoopRuntimeSpec {
@@ -29,21 +32,25 @@ pub struct AgentLoopRuntimeSpec {
     pub request_budget_digest: Sha256Digest,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct DurableTurn {
     record: TurnRecord,
     semantic_turn: crate::GatewayTurn,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct DurableToolOperation {
     record: ToolOperationRecord,
     call: GatewayToolCall,
 }
 
 /// Complete authoritative state saved atomically after each reducer boundary.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DurableEpisodeState {
+    schema_version: u16,
     episode: AgentEpisodeRecord,
     policy: AgentLoopPolicy,
     next_input_digest: Sha256Digest,
@@ -60,69 +67,8 @@ pub struct DurableEpisodeState {
     cancellation_requested: bool,
 }
 
-impl DurableEpisodeState {
-    /// Creates a state snapshot before the first durable transition.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the loop policy is invalid.
-    pub fn new(spec: AgentLoopRuntimeSpec) -> Result<Self, AgentLoopRuntimeError> {
-        spec.policy.validate()?;
-        Ok(Self {
-            episode: spec.episode,
-            policy: spec.policy,
-            next_input_digest: spec.initial_input_digest,
-            resolved_model_digest: spec.resolved_model_digest,
-            deployment_digest: spec.deployment_digest,
-            model_profile_digest: spec.model_profile_digest,
-            request_budget_digest: spec.request_budget_digest,
-            attempts: Vec::new(),
-            turns: Vec::new(),
-            tool_operations: Vec::new(),
-            ambiguous_model_attempts: 0,
-            stop_feedback_turns: 0,
-            subtask_satisfied: false,
-            cancellation_requested: false,
-        })
-    }
-
-    #[must_use]
-    pub const fn episode(&self) -> &AgentEpisodeRecord {
-        &self.episode
-    }
-
-    #[must_use]
-    pub fn model_attempt_count(&self) -> usize {
-        self.attempts.len()
-    }
-
-    #[must_use]
-    pub fn turn_count(&self) -> usize {
-        self.turns.len()
-    }
-
-    #[must_use]
-    pub fn tool_operation_count(&self) -> usize {
-        self.tool_operations.len()
-    }
-
-    #[must_use]
-    pub fn ambiguous_model_attempt_count(&self) -> u32 {
-        self.ambiguous_model_attempts
-    }
-
-    #[must_use]
-    pub fn tool_statuses(&self) -> Vec<ToolOperationStatus> {
-        self.tool_operations
-            .iter()
-            .map(|operation| operation.record.status())
-            .collect()
-    }
-
-    pub(crate) const fn episode_id(&self) -> &EpisodeId {
-        self.episode.id()
-    }
-}
+#[path = "agent_runtime_state.rs"]
+mod state;
 
 /// Stateless runner. Reconstructing it from the same repository exercises restart semantics.
 #[derive(Clone, Debug)]

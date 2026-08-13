@@ -191,6 +191,9 @@ research report and complete Design 0025 now precede provider refactoring or Sou
    - [x] Add strict standalone correctness-worker configuration and production runtime composition.
    - [x] Build RepoDigest-pinned CUDA/Ascend correctness images and capture a real CUDA diagnostic
      run plus ten-mutant calibration for the frozen corpus.
+   - [x] Add crash-durable, compare-and-swap `SQLite` persistence for complete Agent Episode state.
+   - [ ] Compose durable provider continuation/tool-result context and the production Episode use
+     case required to generate the first real candidate.
    - [ ] Capture a Build-Gate-authorized paired CUDA/Ascend run and Correctness receipt for a real
      generated candidate.
 6. Produce the first complete release and evidence bundle.

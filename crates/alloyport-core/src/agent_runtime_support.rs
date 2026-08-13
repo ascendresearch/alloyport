@@ -98,6 +98,7 @@ pub enum EpisodeRepositoryError {
     NotFound(EpisodeId),
     Conflict { expected: u64, actual: u64 },
     RevisionExhausted,
+    Adapter(String),
 }
 
 impl Display for EpisodeRepositoryError {
@@ -110,6 +111,9 @@ impl Display for EpisodeRepositoryError {
                 "episode revision conflict: expected {expected}, actual {actual}"
             ),
             Self::RevisionExhausted => write!(formatter, "episode revision is exhausted"),
+            Self::Adapter(detail) => {
+                write!(formatter, "episode repository adapter failed: {detail}")
+            }
         }
     }
 }

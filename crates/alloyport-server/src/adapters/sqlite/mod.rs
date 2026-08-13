@@ -8,9 +8,11 @@ mod control_outbox;
 mod control_records;
 mod control_repository;
 mod control_schema;
+mod episode_repository;
 mod identity_registry;
 mod interaction_store;
 
 pub use control_repository::SqliteControlRepository;
+pub use episode_repository::SqliteEpisodeRepository;
 pub use identity_registry::SqliteIdentityRegistry;
 pub use interaction_store::SqliteInteractionStore;

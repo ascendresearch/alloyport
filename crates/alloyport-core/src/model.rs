@@ -533,7 +533,8 @@ pub struct ModelAttemptSpec {
     pub predecessor_continuation_digest: Option<Sha256Digest>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelAttemptRecord {
     schema_version: u16,
     id: ModelAttemptId,

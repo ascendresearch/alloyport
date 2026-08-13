@@ -82,6 +82,8 @@ Read these documents before changing architecture or implementation:
     for strict correctness-only worker files and production process composition.
 27. [`design/0032-pinned-correctness-images-and-cuda-diagnostic.md`](design/0032-pinned-correctness-images-and-cuda-diagnostic.md)
     for RepoDigest-pinned runner images and the real CUDA diagnostic/calibration boundary.
+28. [`design/0033-durable-agent-episode-repository.md`](design/0033-durable-agent-episode-repository.md)
+    for restart-safe Agent Episode snapshots and the server-owned `SQLite` CAS adapter.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -686,7 +688,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 274 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 277 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1137,13 +1139,22 @@ calibration receipts plus image/base identities are in
 The Ascend image is built and toolchain-checked, but no developer-authored target was substituted
 for the still-missing generated candidate.
 
+The first production Episode-composition blocker is closed under
+[Design 0033](design/0033-durable-agent-episode-repository.md). Complete provider-neutral Episode
+state is now strictly deserializable, schema-checked on recovery, and persisted through a server-owned
+`SQLite` compare-and-swap repository. Reopen, duplicate creation, stale revision, reference-adapter
+parity, and malformed-state rejection are covered. The remaining composition blocker is the durable
+provider context bridge: exact native continuation and Candidate-tool result Artifacts must be
+bound to the reducer-derived next-input digest before a live model run is authorized.
+
 ## Suggested first task for the next Codex session
 
 The next action remains product-plan item 5, now narrowed to the first genuine candidate and paired
 hardware acceptance for Designs 0030 through 0032:
 
-> Run the configuration-selected model through the existing durable Source/Build correction loop
-> until it produces a genuine Source- and Build-Gate-passing Ascend reduction candidate. Then
+> Implement the durable provider context bridge and controller Episode composition, then run the
+> configuration-selected model through the Source/Build correction loop until it produces a
+> genuine Source- and Build-Gate-passing Ascend reduction candidate. Then
 > execute the exact frozen corpus through both standalone correctness workers and capture the paired
 > run and Correctness receipts. Keep comparison and hidden corpus authority on the controller. Do
 > not yet

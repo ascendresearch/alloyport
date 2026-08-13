@@ -19,7 +19,8 @@ pub struct ModelTurnRequest {
     pub input_digest: Sha256Digest,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct GatewayToolCall {
     pub native_call_id: String,
     pub name: String,
@@ -38,7 +39,8 @@ pub enum NormalizedStopReason {
     Unknown,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct GatewayTurn {
     pub narrative: Vec<String>,
     pub tool_calls: Vec<GatewayToolCall>,
@@ -100,7 +102,8 @@ pub struct TurnSpec {
 }
 
 /// Persistable provider-neutral projection; exact native bytes remain content-addressed Artifacts.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TurnRecord {
     schema_version: u16,
     id: crate::TurnId,

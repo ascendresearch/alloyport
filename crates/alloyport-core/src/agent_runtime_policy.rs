@@ -1,10 +1,11 @@
 //! Bounded policy captured by one agent episode.
 
 use crate::AgentLoopRuntimeError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Provider retry policy remains explicit and separate from these loop budgets.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentLoopPolicy {
     pub max_model_turns: u32,
     pub max_model_attempts: u32,
