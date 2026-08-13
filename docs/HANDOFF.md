@@ -1,12 +1,16 @@
 # AlloyPort handoff
 
-- Handoff date: 2026-08-12
+- Handoff date: 2026-08-13
 - Repository: `/data/projects/shinesheep/alloyport`
 - Branch: `main`
-- Baseline: the 2026-08-12 closeout includes `8382ab5` (paired correctness worker dispatch);
-  run `git log --oneline` for the handoff commit and later local history
-- Project state: modular-monolith architecture evolution with working fixed CUDA and fixed Ascend
-  runtime composition
+- Baseline: the 2026-08-13 closeout includes `8077957` (explicit chat thinking control),
+  `d95204a` (per-attempt accelerator selection), and the preceding committed runtime/deployment
+  work; run `git log --oneline` for the handoff commit and later local history
+- Project state: the server, CLI, persistent CUDA worker, and persistent shared Ascend candidate
+  worker have completed a real authenticated deployment exercise. Workers enumerate all devices and
+  select one healthy, process-free, unleased accelerator when an attempt starts; they no longer wait
+  for a configured card. The first authorized provider-driven migration reached a real Source Gate
+  correction loop and exposed one recoverability defect described in the 2026-08-13 closeout below.
 
 This document is the entry point for a new Codex session. It separates product intent, accepted
 architecture, implemented behavior, and planned behavior so that work does not drift simply because
@@ -1243,18 +1247,97 @@ records those counters explicitly unavailable instead of rejecting the device. A
 correctly refused because every healthy NPU had an external process at the observation time. No
 device workload, provider call, or process eviction was attempted.
 
+## 2026-08-13 closeout: automatic device selection and first live migration
+
+The fixed-card startup model has been removed from the active CUDA and Ascend candidate runtimes.
+Commit `d95204a` implements selection at attempt execution time:
+
+- each worker enumerates its complete local CUDA or Ascend inventory and reports every device in
+  `WorkerHello` and subsequent heartbeats, including busy and unhealthy devices;
+- worker availability means that at least one device is healthy, process-free, and not protected by
+  a durable AlloyPort lease; it does not require every device to be idle;
+- an arriving attempt atomically selects and leases one currently eligible device, then derives the
+  container mapping for that selected GPU/NPU only;
+- a recovered attempt retains its previously leased device, while a new attempt is never pinned to
+  a historical device ID;
+- the shared Ascend candidate worker keeps `max_concurrency = 1`, so Build and Ascend Correctness
+  run sequentially and can use whichever single NPU is available at the start of each attempt;
+- AlloyPort never kills, resets, or otherwise interferes with processes that it did not start.
+
+The behavior was exercised against the real hosts. The Ascend worker reported devices 0 through 6
+with per-device process counts, transitioned automatically from busy/zero slots to available/one
+slot when an NPU became free, and then accepted the queued migration. The CUDA worker reported its
+complete inventory and the unit/runtime regression proves that a busy GPU 0 causes selection of GPU
+1. No fixed device is present in the active normal configuration schema; deprecated fixed-device
+fields are accepted only for compatibility and ignored.
+
+Current installed candidate processes and their sibling configuration locations are:
+
+- Ascend: `/opt/alloyport-worker/ascend-candidate/{alloyport-worker,worker.json}` on the host recorded
+  in `.alloyport-local/host-connections.md`;
+- CUDA: `/home/dawei/.local/lib/alloyport-worker/cuda-candidate/{alloyport-worker,worker.json}` on the
+  host recorded in that same ignored local file;
+- server: `/home/dawei/.local/lib/alloyport-server/alloyport-server`, with its deployment state and
+  provider configuration under the sibling `deployment` directory;
+- CLI: `/home/dawei/.local/lib/alloyport-cli/alloyport-cli`.
+
+The local connection file is the authority for SSH targets, reverse-tunnel commands, and exact
+deployment paths. It contains no tracked secrets and must not be replaced with recollection from a
+later conversation. The interactive server and two SSH worker/tunnel sessions used for this
+exercise were deliberately stopped during closeout; start them from that file next session.
+
+Provider integration also advanced. `5f060c3` bounds chat output with the compatible token field;
+`25c7b78` sends configured reasoning effort; `8077957` adds protocol-configured explicit thinking
+control without vendor-name branches. The active deployment used the configured DeepSeek Chat
+Completions endpoint/model with explicit thinking disabled. This produced ordinary visible tool
+calls, unlike the earlier thinking-only responses that decoded to an empty semantic turn. Never
+write the API secret into the repository or handoff; the active owner-only secret file path is in
+the local deployment configuration.
+
+The latest authorized migration was `task-addd999597dcf12eded7489d`. Its durable Episode database is
+`/home/dawei/.local/lib/alloyport-server/deployment/state/migrations/task-addd999597dcf12eded7489d/episode.sqlite3`.
+It completed three model attempts and made real progress:
+
+1. `submit_candidate_bundle` succeeded with result digest beginning `sha256:90b7b9b9...`;
+2. `request_source_gate` returned the model-visible `candidate_failed` result beginning
+   `sha256:2b9e5fa6...`;
+3. the model attempted a corrected `submit_candidate_bundle`, but one file object omitted `path`.
+
+The third operation remains durably `dispatching`. `CandidateToolGateway::submit` currently maps
+the model-authored JSON/schema failure to `ToolGatewayError::Adapter`; the error then escapes the
+Agent loop and marks the whole migration failed (`invalid candidate submission: missing field
+'path'`). This is the immediate functional blocker. Invalid, side-effect-free model tool arguments
+must become a bounded terminal tool failure recorded against the stable operation and returned to
+the model, allowing it to correct the call. Infrastructure/ambiguous-effect errors must continue to
+fail or reconcile according to the existing durable semantics. Do not blindly create another paid
+migration before closing this distinction.
+
+Verification at this closeout:
+
+- `cargo test --workspace` passed after the dynamic-device change (`d95204a`), with the two explicit
+  real-hardware tests remaining ignored;
+- targeted `alloyport-core`, `alloyport-llm-provider`, and `alloyport-server` tests plus server
+  all-target clippy passed after `8077957`;
+- the real CUDA and Ascend worker deployments authenticated and reconnected automatically;
+- the CLI observed the Ascend busy-to-available transition and the queued migration becoming
+  running without selecting a configured card.
+
+One independent shutdown issue remains: the server can report `server tasks did not drain within
+10s` after Ctrl-C even when the primary task failure is already known. Commit `cc511dc` preserves
+the primary task diagnostic rather than overwriting it with that drain timeout, but the slow drain
+itself is not yet diagnosed.
+
 ## Suggested first task for the next Codex session
 
-The next action remains product-plan item 5, now narrowed to worker deployment and the first genuine
-candidate plus paired hardware acceptance:
+Start by making deterministic, side-effect-free candidate-tool input validation failures
+model-visible and recoverable. Add an Agent-runtime/candidate-gateway regression proving that a
+malformed corrected submission is recorded as a failed tool result and that a following valid call
+can continue the same durable Episode. Run the full workspace tests and commit.
 
-> Prepare the CUDA Correctness worker and the shared single-NPU Ascend candidate worker, then run
-> the configuration-selected model
-> through the Source/Build correction
-> loop until it produces a
-> genuine Source- and Build-Gate-passing Ascend reduction candidate. Then
-> execute the exact frozen corpus through both standalone correctness workers and capture the paired
-> run and Correctness receipts. Keep comparison and hidden corpus authority on the controller. Do
-> not yet
-> add performance optimization, release automation, live provider validation, API, scheduler, UI,
-> retention policy, or generalized execution.
+Then rebuild/redeploy only the server, restart the server and both persistent worker/tunnel
+processes using `.alloyport-local/host-connections.md`, and explicitly retry the existing migration
+through `alloyport-cli`. Observe which automatically selected Ascend device receives the durable
+lease and container mapping. Continue through Source, sequential Ascend Build, paired CUDA/Ascend
+Correctness, and capture the immutable receipts. Do not add performance optimization, release
+automation, TUI polish, retention policy, or generalized execution until this first genuine
+migration completes.
