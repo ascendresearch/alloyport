@@ -110,24 +110,27 @@ For glibc-independent x86-64 deployment artifacts, use the checked
 [portable Linux build](docs/portable-linux-builds.md). CI builds the static server and worker with
 Rust 1.88.0 and verifies that neither result is dynamically linked.
 
-Start the server locally, then run a configured GPU or NPU worker:
+Bootstrap the persistent server and each GPU or NPU worker, then submit a migration:
 
 ```bash
 # one-time deployment bootstrap: state directories, PKI, identities, and config templates
 alloyport-server bootstrap ./alloyport-deployment
 
-# terminal 1; the checked-in server example uses loopback and local SQLite/filesystem state
-cargo run -p alloyport-server -- --config docs/server-config.example.json
+# terminal 1
+alloyport-server --config ./alloyport-deployment/server.json
 
-# terminal 2; first copy the relevant example and replace every placeholder
-cargo run -p alloyport-worker -- --config /absolute/path/to/worker.json
+# on a CUDA executor, after copying its enrollment bundle from the server host
+alloyport-worker bootstrap cuda-correctness \
+  ./cuda-correctness-worker-1 ./alloyport-worker https://SERVER_ADDRESS:50051
+# replace the image/hardware placeholders reported by bootstrap, then keep the agent running
+alloyport-worker --config ./alloyport-worker/worker.json
 
-# terminal 3; query the persistent daemon (defaults to http://127.0.0.1:50051)
-cargo run -p alloyport-cli -- server status
-cargo run -p alloyport-cli -- workers
-cargo run -p alloyport-cli -- migrate /absolute/path/to/cuda/project
-cargo run -p alloyport-cli -- runs
-cargo run -p alloyport-cli -- attach TASK_ID
+# from the server host
+alloyport-cli --config ./alloyport-deployment/clients/admin/client.json server status
+alloyport-cli --config ./alloyport-deployment/clients/admin/client.json workers
+alloyport-cli --config ./alloyport-deployment/clients/admin/client.json \
+  migrate /absolute/path/to/cuda/project
+alloyport-cli --config ./alloyport-deployment/clients/admin/client.json attach TASK_ID
 ```
 
 For a TLS deployment, start the generated daemon with

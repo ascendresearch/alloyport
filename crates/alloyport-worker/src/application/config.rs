@@ -98,10 +98,12 @@ pub(super) struct LoadedWorkerConfig {
 }
 
 impl WorkerFileConfig {
-    pub fn load_from_args() -> Result<Self, Box<dyn Error>> {
+    pub fn load_from_arguments(
+        arguments: impl IntoIterator<Item = OsString>,
+    ) -> Result<Self, Box<dyn Error>> {
         let executable = env::current_exe().ok();
         let path = locate_config_path(
-            env::args_os().skip(1),
+            arguments,
             |name| env::var_os(name),
             executable.as_deref(),
             Path::is_file,

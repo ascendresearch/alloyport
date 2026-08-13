@@ -115,12 +115,19 @@ pub(super) fn run(directory: &Path) -> Result<(), Box<dyn Error>> {
         "  alloyport-cli --config {} server status",
         root.join("clients/admin/client.json").display()
     );
-    println!("Worker enrollment bundles:");
-    for worker_id in WORKER_IDS {
-        println!("  {}", root.join("workers").join(worker_id).display());
+    println!("On each executor host, copy its enrollment bundle and run:");
+    for (role, worker_id) in [
+        ("ascend-build", "ascend-build-worker-1"),
+        ("cuda-correctness", "cuda-correctness-worker-1"),
+        ("ascend-correctness", "ascend-correctness-worker-1"),
+    ] {
+        println!(
+            "  alloyport-worker bootstrap {role} {} ./alloyport-worker https://SERVER_ADDRESS:50051",
+            root.join("workers").join(worker_id).display()
+        );
     }
     println!(
-        "Before submitting a real migration, configure provider.json and replace image placeholders in candidate.json; copy each enrollment bundle to its worker host."
+        "Before submitting a real migration, configure provider.json and replace image placeholders in candidate.json and each worker.json."
     );
     Ok(())
 }
