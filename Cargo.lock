@@ -42,6 +42,7 @@ dependencies = [
  "prost",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tonic",
 ]
