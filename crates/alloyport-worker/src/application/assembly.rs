@@ -152,15 +152,19 @@ async fn attach_ascend(
     {
         return Err("Ascend config environment does not match worker capability facts".into());
     }
+    let configured_device = config.device();
     let discovered_nodes = discover_ascend_device_nodes(Path::new("/dev"))?;
-    require_exact_ascend_device_nodes(&config.device_nodes, &discovered_nodes)?;
+    require_selected_ascend_device_nodes(
+        &configured_device.device_id,
+        &config.device_nodes,
+        &discovered_nodes,
+    )?;
 
     let manager = Arc::new(NpuSmi::new(
         &config.npu_smi_binary,
         &config.environment.firmware_version,
     )?);
     let inventory = manager.inventory().await?;
-    let configured_device = config.device();
     let snapshot = manager.snapshot().await?;
     let selected = bind_worker_device(
         &inventory,
@@ -331,14 +335,18 @@ async fn attach_ascend_build(
     {
         return Err("Ascend build environment does not match worker capabilities".into());
     }
+    let configured_device = config.device();
     let discovered_nodes = discover_ascend_device_nodes(Path::new("/dev"))?;
-    require_exact_ascend_device_nodes(&config.device_nodes, &discovered_nodes)?;
+    require_selected_ascend_device_nodes(
+        &configured_device.device_id,
+        &config.device_nodes,
+        &discovered_nodes,
+    )?;
     let manager = Arc::new(NpuSmi::new(
         &config.npu_smi_binary,
         &config.environment.firmware_version,
     )?);
     let inventory = manager.inventory().await?;
-    let configured_device = config.device();
     let snapshot = manager.snapshot().await?;
     let selected = bind_worker_device(
         &inventory,
@@ -425,14 +433,18 @@ async fn attach_ascend_correctness(
     {
         return Err("Ascend correctness environment does not match worker capabilities".into());
     }
+    let configured_device = config.device();
     let discovered_nodes = discover_ascend_device_nodes(Path::new("/dev"))?;
-    require_exact_ascend_device_nodes(&config.device_nodes, &discovered_nodes)?;
+    require_selected_ascend_device_nodes(
+        &configured_device.device_id,
+        &config.device_nodes,
+        &discovered_nodes,
+    )?;
     let manager = Arc::new(NpuSmi::new(
         &config.npu_smi_binary,
         &config.environment.firmware_version,
     )?);
     let inventory = manager.inventory().await?;
-    let configured_device = config.device();
     let snapshot = manager.snapshot().await?;
     let selected = bind_worker_device(
         &inventory,
@@ -520,14 +532,18 @@ async fn attach_ascend_candidate(
     {
         return Err("Ascend candidate environment does not match worker capabilities".into());
     }
+    let configured_device = config.device();
     let discovered_nodes = discover_ascend_device_nodes(Path::new("/dev"))?;
-    require_exact_ascend_device_nodes(&config.device_nodes, &discovered_nodes)?;
+    require_selected_ascend_device_nodes(
+        &configured_device.device_id,
+        &config.device_nodes,
+        &discovered_nodes,
+    )?;
     let manager = Arc::new(NpuSmi::new(
         &config.npu_smi_binary,
         &config.environment.firmware_version,
     )?);
     let inventory = manager.inventory().await?;
-    let configured_device = config.device();
     let snapshot = manager.snapshot().await?;
     let selected = bind_worker_device(
         &inventory,
@@ -637,25 +653,44 @@ fn is_ascend_device_node_name(name: &str) -> bool {
     })
 }
 
-fn require_exact_ascend_device_nodes(
+fn require_selected_ascend_device_nodes(
+    device_id: &str,
     configured: &[PathBuf],
     discovered: &[PathBuf],
 ) -> Result<(), Box<dyn Error>> {
     let configured = configured.iter().cloned().collect::<BTreeSet<_>>();
     let discovered = discovered.iter().cloned().collect::<BTreeSet<_>>();
-    if configured != discovered {
-        let missing = discovered
+    let required = [
+        PathBuf::from(format!("/dev/davinci{device_id}")),
+        PathBuf::from("/dev/davinci_manager"),
+        PathBuf::from("/dev/hisi_hdc"),
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    if configured != required {
+        let missing = required
             .difference(&configured)
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
         let extra = configured
-            .difference(&discovered)
+            .difference(&required)
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
         return Err(format!(
-            "Ascend device-node policy does not exactly match the host; missing [{missing}], extra [{extra}]"
+            "Ascend device-node policy must expose only selected device {device_id}; missing [{missing}], extra [{extra}]"
+        )
+        .into());
+    }
+    let unavailable = required
+        .difference(&discovered)
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !unavailable.is_empty() {
+        return Err(format!(
+            "selected Ascend device nodes are unavailable on the host: [{unavailable}]"
         )
         .into());
     }
@@ -808,19 +843,38 @@ mod tests {
     }
 
     #[test]
-    fn ascend_startup_requires_the_exact_enumerated_host_device_nodes() {
+    fn ascend_startup_exposes_only_the_selected_host_device() {
         let discovered = vec![
             PathBuf::from("/dev/davinci0"),
             PathBuf::from("/dev/davinci1"),
             PathBuf::from("/dev/davinci_manager"),
             PathBuf::from("/dev/hisi_hdc"),
         ];
-        assert!(require_exact_ascend_device_nodes(&discovered, &discovered).is_ok());
+        let selected = vec![
+            PathBuf::from("/dev/davinci1"),
+            PathBuf::from("/dev/davinci_manager"),
+            PathBuf::from("/dev/hisi_hdc"),
+        ];
+        assert!(require_selected_ascend_device_nodes("1", &selected, &discovered).is_ok());
         assert!(
-            require_exact_ascend_device_nodes(&discovered[..3], &discovered)
-                .expect_err("missing host node must fail")
+            require_selected_ascend_device_nodes("1", &discovered, &discovered)
+                .expect_err("other host devices must not be exposed")
                 .to_string()
-                .contains("hisi_hdc")
+                .contains("/dev/davinci0")
+        );
+        assert!(
+            require_selected_ascend_device_nodes(
+                "2",
+                &[
+                    PathBuf::from("/dev/davinci2"),
+                    PathBuf::from("/dev/davinci_manager"),
+                    PathBuf::from("/dev/hisi_hdc"),
+                ],
+                &discovered,
+            )
+                .expect_err("unavailable selected device must fail")
+                .to_string()
+                .contains("/dev/davinci2")
         );
         assert!(is_ascend_device_node_name("davinci12"));
         assert!(!is_ascend_device_node_name("davinci"));
