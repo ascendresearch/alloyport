@@ -43,7 +43,7 @@ pub mod interaction_v1 {
 }
 
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 5;
+pub const PROTOCOL_MINOR: u32 = 6;
 /// Maximum encoded worker-to-server control frame accepted by the service.
 pub const MAX_WORKER_TO_SERVER_MESSAGE_BYTES: usize = 128 * 1024;
 /// Maximum encoded server-to-worker control frame accepted by the worker.
@@ -145,17 +145,18 @@ pub fn validate_worker_hello(hello: &v1::WorkerHello) -> Result<(), ValidationEr
         ));
     }
     validate_accelerator_devices(capabilities)?;
-    if hello
-        .features
-        .iter()
-        .any(|feature| matches!(feature.as_str(), "ascend-fixture-v1" | "ascend-build-v1"))
-    {
+    if hello.features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "ascend-fixture-v1" | "ascend-build-v1" | "ascend-reduction-correctness-v1"
+        )
+    }) {
         if v1::Backend::try_from(capabilities.backend).unwrap_or(v1::Backend::Unspecified)
             != v1::Backend::Ascend
         {
             return Err(ValidationError::new(
                 "hello.features",
-                "ascend-fixture-v1 requires the Ascend backend",
+                "fixed Ascend features require the Ascend backend",
             ));
         }
         if capabilities.devices.len() != capabilities.device_count as usize {
@@ -164,6 +165,18 @@ pub fn validate_worker_hello(hello: &v1::WorkerHello) -> Result<(), ValidationEr
                 "fixed Ascend workers must identify every advertised device",
             ));
         }
+    }
+    if hello
+        .features
+        .iter()
+        .any(|feature| feature == "cuda-reduction-correctness-v1")
+        && v1::Backend::try_from(capabilities.backend).unwrap_or(v1::Backend::Unspecified)
+            != v1::Backend::Cuda
+    {
+        return Err(ValidationError::new(
+            "hello.features",
+            "cuda-reduction-correctness-v1 requires the CUDA backend",
+        ));
     }
     Ok(())
 }
@@ -480,6 +493,37 @@ mod tests {
                 .expect_err("duplicate device identities must fail")
                 .field(),
             "hello.capabilities.devices.device_id"
+        );
+    }
+
+    #[test]
+    fn correctness_features_are_bound_to_their_accelerator_backend() {
+        let mut hello = v1::WorkerHello {
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
+            worker_id: "cuda-correctness-1".to_owned(),
+            instance_id: "boot-1".to_owned(),
+            worker_version: "0.1.0".to_owned(),
+            features: vec!["cuda-reduction-correctness-v1".to_owned()],
+            capabilities: Some(v1::WorkerCapabilities {
+                backend: v1::Backend::Cuda.into(),
+                architecture: "sm_90".to_owned(),
+                device_count: 1,
+                max_concurrency: 1,
+                driver_version: "1".to_owned(),
+                toolkit_version: "1".to_owned(),
+                container_runtime: "docker".to_owned(),
+                devices: Vec::new(),
+            }),
+            active_attempts: Vec::new(),
+        };
+        assert_eq!(validate_worker_hello(&hello), Ok(()));
+        hello.capabilities.as_mut().expect("capabilities").backend = v1::Backend::Ascend.into();
+        assert_eq!(
+            validate_worker_hello(&hello)
+                .expect_err("CUDA correctness cannot be advertised by Ascend")
+                .field(),
+            "hello.features"
         );
     }
 

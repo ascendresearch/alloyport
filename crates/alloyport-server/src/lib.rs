@@ -13,6 +13,7 @@ mod attempt_observer;
 mod attempt_projection;
 mod build_attempt;
 mod control_transport;
+mod correctness_attempt;
 mod grpc_status;
 pub mod identity;
 pub mod interaction;
@@ -80,6 +81,7 @@ const INTERACTION_LIVE_CAPACITY: usize = 1_024;
 const INTERACTION_REPLAY_BATCH_SIZE: usize = 256;
 
 pub use build_attempt::WorkerBuildAttemptAdapter;
+pub use correctness_attempt::{CorrectnessWorkerTarget, WorkerCorrectnessAttemptAdapter};
 pub use storage::{AttemptState as AssignmentState, LeaseRecord, ManualClock};
 
 /// Read-only worker registry view for scheduling and diagnostics.

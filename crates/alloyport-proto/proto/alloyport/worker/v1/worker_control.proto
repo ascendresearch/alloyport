@@ -174,6 +174,10 @@ enum ExecutorKind {
   // selected device are derived exclusively from worker-local policy.
   EXECUTOR_KIND_ASCEND_FIXTURE = 5;
   EXECUTOR_KIND_ASCEND_BUILD = 6;
+  // Independent reduction authority/DUT executions. Exact source and corpus bytes are carried by a
+  // controller-authored reduction execution bundle; the worker chooses the trusted harness.
+  EXECUTOR_KIND_CUDA_CORRECTNESS = 7;
+  EXECUTOR_KIND_ASCEND_CORRECTNESS = 8;
 }
 
 message EnvironmentVariable {

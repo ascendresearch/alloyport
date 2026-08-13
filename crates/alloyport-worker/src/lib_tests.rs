@@ -159,6 +159,42 @@ fn cuda_fixture_executor_requires_explicit_local_policy() {
 }
 
 #[test]
+fn correctness_executors_require_role_specific_local_policy() {
+    let mut cuda = assignment("reduction-correctness-v1");
+    cuda.execution
+        .as_mut()
+        .expect("fixture has execution")
+        .executor_kind = WireExecutorKind::CudaCorrectness.into();
+    assert!(matches!(
+        WorkerState::default().admit(&cuda),
+        Err(WorkerError::PolicyViolation(_))
+    ));
+    assert_eq!(
+        WorkerState::with_policy(AdmissionPolicy::default().cuda_correctness_only())
+            .admit(&cuda)
+            .expect("CUDA correctness policy"),
+        AdmissionOutcome::New
+    );
+
+    let mut ascend = assignment("reduction-correctness-v1");
+    ascend
+        .execution
+        .as_mut()
+        .expect("fixture has execution")
+        .executor_kind = WireExecutorKind::AscendCorrectness.into();
+    assert!(matches!(
+        WorkerState::default().admit(&ascend),
+        Err(WorkerError::PolicyViolation(_))
+    ));
+    assert_eq!(
+        WorkerState::with_policy(AdmissionPolicy::default().ascend_correctness_only())
+            .admit(&ascend)
+            .expect("Ascend correctness policy"),
+        AdmissionOutcome::New
+    );
+}
+
+#[test]
 fn bound_device_is_registered_in_worker_capabilities() -> Result<(), Box<dyn Error>> {
     let worker = OutboundWorker::new(
         Endpoint::from_static("http://127.0.0.1:50051"),

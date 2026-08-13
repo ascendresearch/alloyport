@@ -133,6 +133,20 @@ impl WorkerState {
                     "Ascend build executor is disabled".to_owned(),
                 ));
             }
+            if executor == ExecutionKind::CudaCorrectness
+                && self.policy.allowed_fixed_executors & super::ALLOW_CUDA_CORRECTNESS == 0
+            {
+                return Err(WorkerError::PolicyViolation(
+                    "CUDA correctness executor is disabled".to_owned(),
+                ));
+            }
+            if executor == ExecutionKind::AscendCorrectness
+                && self.policy.allowed_fixed_executors & super::ALLOW_ASCEND_CORRECTNESS == 0
+            {
+                return Err(WorkerError::PolicyViolation(
+                    "Ascend correctness executor is disabled".to_owned(),
+                ));
+            }
         }
         let stored = assignment_to_stored(assignment);
         let outcome = self.store.admit(&stored, now_unix_ms())?;

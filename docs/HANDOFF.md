@@ -72,6 +72,9 @@ Read these documents before changing architecture or implementation:
 23. [`design/0028-controller-authored-correctness-execution-bundles.md`](design/0028-controller-authored-correctness-execution-bundles.md)
     for exact paired-run bundle inputs, frozen-corpus coverage, implementation binding, and the
     stable callable candidate ABI required before production worker execution.
+24. [`design/0029-paired-correctness-worker-dispatch.md`](design/0029-paired-correctness-worker-dispatch.md)
+    for protocol-minor-6 execution kinds, dual assignment/reconciliation, and the worker-to-run
+    Artifact trust chain.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -230,8 +233,9 @@ The schema currently includes:
 - accepted/rejected, started, output, and finished lifecycle messages;
 - cancel, cancellation-acknowledged, and drain messages;
 - content-addressed artifact references and resource limits.
-- protocol minor 4 fixed-Ascend executor identity, explicitly enumerated static device identities,
-  dynamic health/occupancy observations, and worker-durable device-lease reporting.
+- protocol minor 6 execution vocabulary, including fixed-Ascend executor identity, explicitly
+  enumerated static device identities, paired reduction correctness executors, dynamic
+  health/occupancy observations, and worker-durable device-lease reporting.
 
 Validation currently enforces supported protocol major version, worker identity/capacity, typed
 executor, sandbox-relative working directory, non-empty argv, and `sha256:` artifact digests.
@@ -671,7 +675,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 260 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 265 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1084,16 +1088,25 @@ both Artifact descriptors; candidate tooling rereads the immutable manifest/mate
 dispatch and binds returned run receipts to the assigned implementation digests. The oracle requires
 exact corpus coverage and recomputes case input identities, so coordinated case omission cannot
 calibrate. Source Gate v2 additionally requires the fixed reduction C ABI and
-`alloyport_reduction_candidate` CMake target. Worker execution kinds, trusted harnesses, the server
-paired adapter, and real device evidence are still absent.
+`alloyport_reduction_candidate` CMake target.
+
+The paired controller-dispatch slice is complete under
+[Design 0029](design/0029-paired-correctness-worker-dispatch.md). Protocol minor 6 adds separate
+default-deny CUDA-reference and Ascend-candidate correctness executors with backend-bound features.
+`WorkerCorrectnessAttemptAdapter` maps one Port operation to two stable offline single-device
+assignments on distinct configured workers, idempotently recovers partial dispatch, and waits for
+both durable terminal observations. It validates each generic worker receipt, its stdout digest,
+and the structured `ReductionRunReceipt` against the assigned bundle before returning run
+descriptors. The server grants each worker only its role bundle. Trusted worker harnesses and real
+device evidence remain unimplemented.
 
 ## Suggested first task for the next Codex session
 
-The next action remains the production execution slice from product-plan item 5, now using the
-Design 0028 bundle and ABI prerequisites:
+The next action remains product-plan item 5, now narrowed to the worker execution half of Designs
+0028 and 0029:
 
-> Connect `ReductionCorrectnessAttemptPort` to policy-bound CUDA-reference and Ascend-candidate
-> worker runners, deliver the exact frozen corpus to both paths, and capture real run/calibration/
+> Implement policy-bound CUDA-reference and Ascend-candidate worker harnesses, deliver the exact
+> frozen corpus to both paths, and capture real run/calibration/
 > Correctness receipts. Keep comparison and hidden corpus authority on the controller. Do not yet
 > add performance optimization, release automation, live provider validation, API, scheduler, UI,
 > retention policy, or generalized execution.

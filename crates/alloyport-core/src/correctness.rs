@@ -160,6 +160,11 @@ impl ReductionRunReceipt {
     }
 
     #[must_use]
+    pub const fn role(&self) -> ReductionRunRole {
+        self.role
+    }
+
+    #[must_use]
     pub const fn corpus_digest(&self) -> Sha256Digest {
         self.corpus_digest
     }
@@ -344,6 +349,11 @@ impl ReductionCorrectnessExperiment {
             corpus_digest,
             policy_digest,
         }
+    }
+
+    #[must_use]
+    pub const fn task_id(&self) -> &TaskId {
+        &self.task_id
     }
 
     #[must_use]

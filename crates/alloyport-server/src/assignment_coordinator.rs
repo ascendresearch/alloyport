@@ -206,6 +206,8 @@ impl WorkerControlService {
             ExecutionKind::CudaFixture => "CUDA fixture input bundle",
             ExecutionKind::AscendFixture => "Ascend fixture input bundle",
             ExecutionKind::AscendBuild => "Ascend candidate build input bundle",
+            ExecutionKind::CudaCorrectness => "CUDA correctness execution bundle",
+            ExecutionKind::AscendCorrectness => "Ascend correctness execution bundle",
             _ => return Ok(()),
         };
         let uploads = self.artifact_metadata.as_ref().ok_or_else(|| {

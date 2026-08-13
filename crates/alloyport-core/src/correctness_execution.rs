@@ -10,6 +10,8 @@ use std::collections::BTreeSet;
 pub const REDUCTION_EXECUTION_BUNDLE_SCHEMA_V1: u16 = 1;
 pub const REDUCTION_EXECUTION_BUNDLE_MEDIA_TYPE: &str =
     "application/vnd.alloyport.reduction-execution-bundle.v1+json";
+pub const CUDA_REDUCTION_CORRECTNESS_FEATURE: &str = "cuda-reduction-correctness-v1";
+pub const ASCEND_REDUCTION_CORRECTNESS_FEATURE: &str = "ascend-reduction-correctness-v1";
 const MAX_EXECUTION_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 
 #[cfg(test)]

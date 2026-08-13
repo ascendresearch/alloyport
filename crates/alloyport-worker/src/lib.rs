@@ -186,6 +186,8 @@ pub struct AdmissionPolicy {
 const ALLOW_CUDA_FIXTURE: u8 = 1;
 const ALLOW_ASCEND_FIXTURE: u8 = 2;
 const ALLOW_ASCEND_BUILD: u8 = 4;
+const ALLOW_CUDA_CORRECTNESS: u8 = 8;
+const ALLOW_ASCEND_CORRECTNESS: u8 = 16;
 
 impl AdmissionPolicy {
     /// Returns a policy that permits the explicitly policy-gated shell executor.
@@ -221,6 +223,22 @@ impl AdmissionPolicy {
     pub const fn ascend_build_only(mut self) -> Self {
         self.allowed_fixed_executors |= ALLOW_ASCEND_BUILD;
         self.exclusive_executor = Some(alloyport_core::ExecutionKind::AscendBuild);
+        self
+    }
+
+    /// Returns a policy that permits only the reduction CUDA authority runner.
+    #[must_use]
+    pub const fn cuda_correctness_only(mut self) -> Self {
+        self.allowed_fixed_executors |= ALLOW_CUDA_CORRECTNESS;
+        self.exclusive_executor = Some(alloyport_core::ExecutionKind::CudaCorrectness);
+        self
+    }
+
+    /// Returns a policy that permits only the reduction Ascend DUT runner.
+    #[must_use]
+    pub const fn ascend_correctness_only(mut self) -> Self {
+        self.allowed_fixed_executors |= ALLOW_ASCEND_CORRECTNESS;
+        self.exclusive_executor = Some(alloyport_core::ExecutionKind::AscendCorrectness);
         self
     }
 

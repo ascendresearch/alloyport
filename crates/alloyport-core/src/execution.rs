@@ -18,6 +18,8 @@ pub enum ExecutionKind {
     CudaFixture = 4,
     AscendFixture = 5,
     AscendBuild = 6,
+    CudaCorrectness = 7,
+    AscendCorrectness = 8,
 }
 
 impl ExecutionKind {
@@ -31,6 +33,8 @@ impl ExecutionKind {
             Self::CudaFixture => "EXECUTOR_KIND_CUDA_FIXTURE",
             Self::AscendFixture => "EXECUTOR_KIND_ASCEND_FIXTURE",
             Self::AscendBuild => "EXECUTOR_KIND_ASCEND_BUILD",
+            Self::CudaCorrectness => "EXECUTOR_KIND_CUDA_CORRECTNESS",
+            Self::AscendCorrectness => "EXECUTOR_KIND_ASCEND_CORRECTNESS",
         }
     }
 }
@@ -52,6 +56,8 @@ impl TryFrom<i32> for ExecutionKind {
             4 => Ok(Self::CudaFixture),
             5 => Ok(Self::AscendFixture),
             6 => Ok(Self::AscendBuild),
+            7 => Ok(Self::CudaCorrectness),
+            8 => Ok(Self::AscendCorrectness),
             _ => Err(ExecutionKindError(value)),
         }
     }
@@ -233,6 +239,11 @@ mod tests {
             ExecutionKind::CudaFixture
         );
         assert_eq!(serde_json::to_string(&ExecutionKind::AscendFixture)?, "5");
+        assert_eq!(serde_json::to_string(&ExecutionKind::CudaCorrectness)?, "7");
+        assert_eq!(
+            serde_json::to_string(&ExecutionKind::AscendCorrectness)?,
+            "8"
+        );
         assert!(serde_json::from_str::<ExecutionKind>("0").is_err());
         assert_eq!(serde_json::to_string(&NetworkPolicy::Disabled)?, "1");
         assert_eq!(
