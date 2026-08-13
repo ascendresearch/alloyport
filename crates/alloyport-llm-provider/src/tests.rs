@@ -3,8 +3,8 @@ use alloyport_core::{
     AgentEpisodeRecord, AgentLoopAdvance, AgentLoopPolicy, AgentLoopRunner, AgentLoopRuntimeSpec,
     DurableEpisodeState, EpisodeId, EpisodeRepository, EpisodeSpec, EpisodeStatus,
     InMemoryEpisodeRepository, ModelGatewayOutcome, ModelTransportOutcome, NoAgentRuntimeFault,
-    RawModelResponse, RuntimeToolDescriptor, ScriptedFakeModelTransport, ScriptedFakeToolGateway,
-    ScriptedModelTransportStep, SearchRunId, TaskId,
+    ProtocolKind, RawModelResponse, RuntimeToolDescriptor, ScriptedFakeModelTransport,
+    ScriptedFakeToolGateway, ScriptedModelTransportStep, SearchRunId, TaskId,
 };
 use serde_json::json;
 use std::sync::Mutex;
@@ -133,6 +133,7 @@ fn scripted_transport(
             tools: &input.tools,
             max_output_tokens: deployment.max_output_tokens(),
             reasoning_effort: deployment.reasoning_effort(),
+            reasoning_mode: deployment.reasoning_mode(),
         })
         .expect("prepared request fixture");
     ScriptedFakeModelTransport::new([ScriptedModelTransportStep {

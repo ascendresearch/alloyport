@@ -30,7 +30,12 @@ pub enum ProtocolConfig {
         store: bool,
     },
     #[serde(rename = "openai_chat_completions")]
-    OpenAiChatCompletions {},
+    OpenAiChatCompletions {
+        /// Emit the OpenAI-compatible `thinking.type` request extension when the deployment
+        /// explicitly supports it.
+        #[serde(default)]
+        thinking_parameter: bool,
+    },
     #[serde(rename = "anthropic_messages")]
     AnthropicMessages { api_version: String },
 }
@@ -40,7 +45,7 @@ impl ProtocolConfig {
     pub const fn kind(&self) -> ProtocolKind {
         match self {
             Self::OpenAiResponses { .. } => ProtocolKind::OpenAiResponses,
-            Self::OpenAiChatCompletions {} => ProtocolKind::OpenAiChatCompletions,
+            Self::OpenAiChatCompletions { .. } => ProtocolKind::OpenAiChatCompletions,
             Self::AnthropicMessages { .. } => ProtocolKind::AnthropicMessages,
         }
     }
@@ -388,6 +393,11 @@ impl ResolvedRuntimeModel {
     #[must_use]
     pub const fn reasoning_effort(&self) -> Option<ReasoningEffort> {
         self.settings.reasoning.effort
+    }
+
+    #[must_use]
+    pub const fn reasoning_mode(&self) -> ReasoningMode {
+        self.settings.reasoning.mode
     }
 }
 

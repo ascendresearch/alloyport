@@ -111,6 +111,7 @@ fn transport(spec: &ControllerEpisodeSpec) -> ScriptedFakeModelTransport {
             tools: &spec.tools,
             max_output_tokens: deployment.max_output_tokens(),
             reasoning_effort: deployment.reasoning_effort(),
+            reasoning_mode: deployment.reasoning_mode(),
         })
         .expect("prepared request");
     ScriptedFakeModelTransport::new([ScriptedModelTransportStep {

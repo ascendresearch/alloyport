@@ -2,7 +2,7 @@ use crate::{
     AnthropicMessagesCodec, CodecError, CodecLimits, CodecToolDefinition, ModelUsage,
     ModelVisibleToolResult, NativeContinuation, NativeTurnInput, NormalizedStopReason,
     OpenAiChatCompletionsCodec, OpenAiResponsesCodec, ProtocolCodec, RawModelResponseRef,
-    ReasoningEffort, Sha256Digest,
+    ReasoningEffort, ReasoningMode, Sha256Digest,
 };
 use serde_json::{Value, json};
 
@@ -60,6 +60,7 @@ fn turn_input<'a>(
         tools,
         max_output_tokens: 4096,
         reasoning_effort: None,
+        reasoning_mode: ReasoningMode::Disabled,
     }
 }
 
@@ -176,8 +177,13 @@ fn chat_request_carries_the_configured_reasoning_effort() {
     let tools = tools();
     let mut input = turn_input(&tools, None);
     input.reasoning_effort = Some(ReasoningEffort::High);
-    let prepared = codec.prepare(input).expect("Chat request must prepare");
+    input.reasoning_mode = ReasoningMode::Enabled;
+    let prepared = codec
+        .with_thinking_parameter(true)
+        .prepare(input)
+        .expect("Chat request must prepare");
     assert_eq!(json_body(prepared.body())["reasoning_effort"], "high");
+    assert_eq!(json_body(prepared.body())["thinking"]["type"], "enabled");
 }
 
 #[test]

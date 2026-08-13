@@ -5,7 +5,7 @@ use alloyport_core::{
     ModelCatalogError, ModelGateway, ModelGatewayError, ModelGatewayFuture, ModelGatewayOutcome,
     ModelTransport, ModelTransportOutcome, ModelTransportRetryHint, ModelTurnRequest,
     ModelVisibleToolResult, NativeContinuation, NativeTurnInput, OpenAiChatCompletionsCodec,
-    OpenAiResponsesCodec, PreparedModelPayload, ProtocolCodec, ProtocolKind, RawModelResponse,
+    OpenAiResponsesCodec, PreparedModelPayload, ProtocolCodec, RawModelResponse,
     RawModelResponseRef, ResolvedRuntimeModel, RuntimeModelCatalog, Sha256Digest,
 };
 use std::error::Error;
@@ -114,7 +114,7 @@ where
         deployment: &ResolvedRuntimeModel,
         input: &ProviderTurnInput,
     ) -> ProviderSdkOutcome {
-        let codec = match codec_for(deployment.protocol_kind(), self.codec_limits) {
+        let codec = match codec_for(deployment.protocol(), self.codec_limits) {
             Ok(codec) => codec,
             Err(error) => return confirmed_not_sent(error.to_string()),
         };
@@ -130,6 +130,7 @@ where
             tools: &input.tools,
             max_output_tokens: deployment.max_output_tokens(),
             reasoning_effort: deployment.reasoning_effort(),
+            reasoning_mode: deployment.reasoning_mode(),
         }) {
             Ok(prepared) => prepared,
             Err(error) => return confirmed_not_sent(error.to_string()),
@@ -158,15 +159,22 @@ where
 }
 
 fn codec_for(
-    kind: ProtocolKind,
+    protocol: &alloyport_core::ProtocolConfig,
     limits: CodecLimits,
 ) -> Result<Box<dyn ProtocolCodec>, CodecError> {
-    match kind {
-        ProtocolKind::OpenAiResponses => Ok(Box::new(OpenAiResponsesCodec::new(limits)?)),
-        ProtocolKind::OpenAiChatCompletions => {
-            Ok(Box::new(OpenAiChatCompletionsCodec::new(limits)?))
+    match protocol {
+        alloyport_core::ProtocolConfig::OpenAiResponses { .. } => {
+            Ok(Box::new(OpenAiResponsesCodec::new(limits)?))
         }
-        ProtocolKind::AnthropicMessages => Ok(Box::new(AnthropicMessagesCodec::new(limits)?)),
+        alloyport_core::ProtocolConfig::OpenAiChatCompletions { thinking_parameter } => {
+            Ok(Box::new(
+                OpenAiChatCompletionsCodec::new(limits)?
+                    .with_thinking_parameter(*thinking_parameter),
+            ))
+        }
+        alloyport_core::ProtocolConfig::AnthropicMessages { .. } => {
+            Ok(Box::new(AnthropicMessagesCodec::new(limits)?))
+        }
     }
 }
 

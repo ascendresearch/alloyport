@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OpenAiChatCompletionsCodec {
     limits: CodecLimits,
+    thinking_parameter: bool,
 }
 
 impl OpenAiChatCompletionsCodec {
@@ -25,7 +26,15 @@ impl OpenAiChatCompletionsCodec {
     pub fn new(limits: CodecLimits) -> Result<Self, CodecError> {
         Ok(Self {
             limits: limits.validate()?,
+            thinking_parameter: false,
         })
+    }
+
+    /// Enables the optional `thinking.type` request extension for compatible deployments.
+    #[must_use]
+    pub const fn with_thinking_parameter(mut self, enabled: bool) -> Self {
+        self.thinking_parameter = enabled;
+        self
     }
 
     fn initial_history(input: NativeTurnInput<'_>) -> Value {
@@ -123,6 +132,15 @@ impl ProtocolCodec for OpenAiChatCompletionsCodec {
             body.as_object_mut()
                 .expect("chat request body is an object")
                 .insert("reasoning_effort".into(), json!(effort));
+        }
+        if self.thinking_parameter {
+            let mode = match input.reasoning_mode {
+                crate::model::ReasoningMode::Disabled => "disabled",
+                crate::model::ReasoningMode::Enabled => "enabled",
+            };
+            body.as_object_mut()
+                .expect("chat request body is an object")
+                .insert("thinking".into(), json!({"type": mode}));
         }
         PreparedModelPayload::new(&body, continuation, input.tools, self.limits)
     }

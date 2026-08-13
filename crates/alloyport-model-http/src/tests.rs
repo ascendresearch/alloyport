@@ -128,6 +128,7 @@ fn prepared(kind: ProtocolKind) -> PreparedModelPayload {
         tools: &tools,
         max_output_tokens: 4096,
         reasoning_effort: None,
+        reasoning_mode: alloyport_core::ReasoningMode::Disabled,
     };
     match kind {
         ProtocolKind::OpenAiResponses => OpenAiResponsesCodec::default()

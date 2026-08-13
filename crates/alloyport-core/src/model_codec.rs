@@ -78,6 +78,7 @@ pub struct NativeTurnInput<'a> {
     pub tools: &'a [CodecToolDefinition],
     pub max_output_tokens: u32,
     pub reasoning_effort: Option<crate::model::ReasoningEffort>,
+    pub reasoning_mode: crate::model::ReasoningMode,
 }
 
 /// Exact native state replayed locally on a later request.
