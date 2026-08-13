@@ -16,6 +16,7 @@ const SERVER_NAME: &str = "alloyport-server";
 #[derive(Clone, Copy, Debug)]
 enum WorkerRole {
     AscendBuild,
+    AscendCandidate,
     CudaCorrectness,
     AscendCorrectness,
 }
@@ -24,10 +25,11 @@ impl WorkerRole {
     fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
         match value {
             "ascend-build" => Ok(Self::AscendBuild),
+            "ascend-candidate" => Ok(Self::AscendCandidate),
             "cuda-correctness" => Ok(Self::CudaCorrectness),
             "ascend-correctness" => Ok(Self::AscendCorrectness),
             _ => Err(format!(
-                "unsupported worker role {value}; expected ascend-build, cuda-correctness, or ascend-correctness"
+                "unsupported worker role {value}; expected ascend-candidate, cuda-correctness, ascend-build, or ascend-correctness"
             )
             .into()),
         }
@@ -36,6 +38,7 @@ impl WorkerRole {
     const fn worker_id(self) -> &'static str {
         match self {
             Self::AscendBuild => "ascend-build-worker-1",
+            Self::AscendCandidate => "ascend-worker-1",
             Self::CudaCorrectness => "cuda-correctness-worker-1",
             Self::AscendCorrectness => "ascend-correctness-worker-1",
         }
@@ -45,6 +48,9 @@ impl WorkerRole {
         match self {
             Self::AscendBuild => {
                 include_str!("../../../../docs/ascend-build-worker-config.example.json")
+            }
+            Self::AscendCandidate => {
+                include_str!("../../../../docs/ascend-candidate-worker-config.example.json")
             }
             Self::CudaCorrectness => {
                 include_str!("../../../../docs/cuda-correctness-worker-config.example.json")

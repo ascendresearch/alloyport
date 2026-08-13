@@ -1,5 +1,6 @@
 //! One schema-validated configuration file for an outbound accelerator worker.
 
+use super::ascend_candidate_config::AscendCandidateWorkerConfig;
 use super::backend_config::{AscendWorkerConfig, CudaWorkerConfig};
 use super::build_config::AscendBuildWorkerConfig;
 use super::correctness_config::{AscendCorrectnessWorkerConfig, CudaCorrectnessWorkerConfig};
@@ -72,6 +73,10 @@ enum RuntimeConfig {
     AscendCorrectness {
         policy: AscendCorrectnessWorkerConfig,
     },
+    #[serde(rename = "ascend_candidate")]
+    AscendCandidate {
+        policy: AscendCandidateWorkerConfig,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +93,7 @@ pub(super) enum BackendPolicy {
     AscendBuild(AscendBuildWorkerConfig),
     CudaCorrectness(CudaCorrectnessWorkerConfig),
     AscendCorrectness(AscendCorrectnessWorkerConfig),
+    AscendCandidate(AscendCandidateWorkerConfig),
 }
 
 pub(super) struct LoadedWorkerConfig {
@@ -153,11 +159,13 @@ impl WorkerFileConfig {
                 policy.validate()?;
             }
             RuntimeConfig::AscendCorrectness { policy } => policy.validate()?,
+            RuntimeConfig::AscendCandidate { policy } => policy.validate()?,
         }
         self.server.endpoint()?;
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn into_loaded(self) -> Result<LoadedWorkerConfig, Box<dyn Error>> {
         let endpoint = self.server.endpoint()?;
         let worker_id = self.worker.id;
@@ -232,6 +240,19 @@ impl WorkerFileConfig {
                     devices: vec![policy.wire_device()],
                 },
                 BackendPolicy::AscendCorrectness(policy),
+            ),
+            RuntimeConfig::AscendCandidate { policy } => (
+                WorkerCapabilities {
+                    backend: Backend::Ascend.into(),
+                    architecture: policy.environment.architecture.clone(),
+                    device_count: 1,
+                    max_concurrency: 1,
+                    driver_version: policy.environment.driver_version.clone(),
+                    toolkit_version: policy.environment.cann_version.clone(),
+                    container_runtime: "docker".into(),
+                    devices: vec![policy.wire_device()],
+                },
+                BackendPolicy::AscendCandidate(policy),
             ),
         };
         Ok(LoadedWorkerConfig {
@@ -522,6 +543,22 @@ mod tests {
         ))?
         .into_loaded()?;
         assert!(matches!(build.backend, BackendPolicy::AscendBuild(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn checked_in_ascend_candidate_example_exposes_the_shared_backend() -> Result<(), Box<dyn Error>>
+    {
+        let candidate = WorkerFileConfig::parse(include_bytes!(
+            "../../../../docs/ascend-candidate-worker-config.example.json"
+        ))?
+        .into_loaded()?;
+        assert!(matches!(
+            candidate.backend,
+            BackendPolicy::AscendCandidate(_)
+        ));
+        assert_eq!(candidate.hello.worker_id, "ascend-worker-1");
+        assert_eq!(candidate.hello.capabilities.unwrap().max_concurrency, 1);
         Ok(())
     }
 

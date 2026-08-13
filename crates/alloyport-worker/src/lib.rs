@@ -70,7 +70,7 @@ use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, Semaphore, broadcast};
 use tonic::transport::Endpoint;
 
 const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -222,6 +222,13 @@ impl AdmissionPolicy {
         self
     }
 
+    /// Returns a policy that permits the reduction Ascend DUT runner.
+    #[must_use]
+    pub const fn allowing_ascend_correctness(mut self) -> Self {
+        self.allowed_fixed_executors |= ALLOW_ASCEND_CORRECTNESS;
+        self
+    }
+
     /// Returns a policy that permits only the policy-bound Ascend build executor.
     #[must_use]
     pub const fn ascend_build_only(mut self) -> Self {
@@ -295,10 +302,14 @@ pub struct OutboundWorker {
 struct ExecutionIntegration {
     backends: ExecutionBackendRegistry,
     active: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
+    permits: Arc<Semaphore>,
 }
 
 impl ExecutionIntegration {
-    fn with_backend(backend: Arc<dyn ExecutionBackend>) -> Result<Self, WorkerError> {
+    fn with_backend(
+        backend: Arc<dyn ExecutionBackend>,
+        max_concurrency: usize,
+    ) -> Result<Self, WorkerError> {
         let mut backends = ExecutionBackendRegistry::default();
         backends
             .register(backend)
@@ -306,6 +317,7 @@ impl ExecutionIntegration {
         Ok(Self {
             backends,
             active: Arc::new(Mutex::new(BTreeMap::new())),
+            permits: Arc::new(Semaphore::new(max_concurrency)),
         })
     }
 
@@ -466,8 +478,29 @@ impl OutboundWorker {
     ///
     /// Returns an error for identity, backend, environment, static-device, or composition mismatch.
     pub fn with_ascend_executor(
+        self,
+        runtime: Arc<AscendExecutionRuntime>,
+    ) -> Result<Self, WorkerError> {
+        self.attach_ascend_executor(runtime, true)
+    }
+
+    /// Attaches one of the sequential Build/Correctness runtimes owned by a shared Ascend worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for identity, backend, environment, device, executor, or composition
+    /// mismatch.
+    pub fn with_shared_ascend_executor(
+        self,
+        runtime: Arc<AscendExecutionRuntime>,
+    ) -> Result<Self, WorkerError> {
+        self.attach_ascend_executor(runtime, false)
+    }
+
+    fn attach_ascend_executor(
         mut self,
         runtime: Arc<AscendExecutionRuntime>,
+        exclusive: bool,
     ) -> Result<Self, WorkerError> {
         if runtime.worker_id() != self.hello.worker_id {
             return Err(WorkerError::Execution(format!(
@@ -525,10 +558,17 @@ impl OutboundWorker {
                 "Ascend runtime must be attached before sharing the worker state".into(),
             )
         })?;
-        state.policy = match executor_kind {
-            ExecutionKind::AscendFixture => state.policy.ascend_fixture_only(),
-            ExecutionKind::AscendBuild => state.policy.ascend_build_only(),
-            ExecutionKind::AscendCorrectness => state.policy.ascend_correctness_only(),
+        state.policy = match (executor_kind, exclusive) {
+            (ExecutionKind::AscendFixture, true) => state.policy.ascend_fixture_only(),
+            (ExecutionKind::AscendBuild, true) => state.policy.ascend_build_only(),
+            (ExecutionKind::AscendCorrectness, true) => state.policy.ascend_correctness_only(),
+            (ExecutionKind::AscendBuild, false) => state.policy.allowing_ascend_build(),
+            (ExecutionKind::AscendCorrectness, false) => state.policy.allowing_ascend_correctness(),
+            (ExecutionKind::AscendFixture, false) => {
+                return Err(WorkerError::Execution(
+                    "the fixture executor cannot join a shared Ascend candidate worker".into(),
+                ));
+            }
             _ => unreachable!("executor kind was validated before policy composition"),
         };
         self.with_execution_backend(Arc::new(AscendExecutionBackend::new(runtime)))
@@ -553,7 +593,23 @@ impl OutboundWorker {
                 })?
                 .register(backend)?;
         } else {
-            self.execution = Some(Arc::new(ExecutionIntegration::with_backend(backend)?));
+            let max_concurrency = self
+                .hello
+                .capabilities
+                .as_ref()
+                .map_or(1, |capabilities| capabilities.max_concurrency);
+            let max_concurrency = usize::try_from(max_concurrency).map_err(|_| {
+                WorkerError::Execution("worker max concurrency exceeds usize".into())
+            })?;
+            if max_concurrency == 0 {
+                return Err(WorkerError::Execution(
+                    "worker max concurrency must be positive".into(),
+                ));
+            }
+            self.execution = Some(Arc::new(ExecutionIntegration::with_backend(
+                backend,
+                max_concurrency,
+            )?));
         }
         Ok(self)
     }

@@ -53,18 +53,24 @@ impl OutboundWorker {
         let artifact_input = self.artifact_input.clone();
         let artifact_publisher = self.artifact_publisher.clone();
         let updates = self.execution_updates.clone();
+        let permits = Arc::clone(&integration.permits);
         tokio::spawn(async move {
-            let result = run_registered_execution(
-                backend.as_ref(),
-                state.as_ref(),
-                &attempt_id,
-                &cancellation_for_task,
-                artifact_input.as_deref(),
-                artifact_publisher.as_deref(),
-                &updates,
-            )
-            .await
-            .map(|_| ());
+            let result = match permits.acquire_owned().await {
+                Ok(_permit) => run_registered_execution(
+                    backend.as_ref(),
+                    state.as_ref(),
+                    &attempt_id,
+                    &cancellation_for_task,
+                    artifact_input.as_deref(),
+                    artifact_publisher.as_deref(),
+                    &updates,
+                )
+                .await
+                .map(|_| ()),
+                Err(_) => Err(BackendError::retryable(
+                    "worker execution concurrency gate closed",
+                )),
+            };
             integration.active.lock().await.remove(&attempt_id);
             let _ = updates.send(ExecutionUpdate::Completed { attempt_id, result });
         });

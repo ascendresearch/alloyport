@@ -125,6 +125,11 @@ alloyport-worker bootstrap cuda-correctness \
 # replace the image/hardware placeholders reported by bootstrap, then keep the agent running
 alloyport-worker --config ./alloyport-worker/worker.json
 
+# on an Ascend executor, one agent serves Build and Correctness sequentially on one NPU
+alloyport-worker bootstrap ascend-candidate \
+  ./ascend-worker-1 ./alloyport-worker https://SERVER_ADDRESS:50051
+alloyport-worker --config ./alloyport-worker/worker.json
+
 # from the server host
 alloyport-cli --config ./alloyport-deployment/clients/admin/client.json server status
 alloyport-cli --config ./alloyport-deployment/clients/admin/client.json workers

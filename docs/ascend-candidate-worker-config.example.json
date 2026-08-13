@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "server": {
+    "endpoint": "http://127.0.0.1:50051"
+  },
+  "worker": {
+    "id": "ascend-worker-1",
+    "journal": "/var/lib/alloyport/ascend-worker.sqlite3"
+  },
+  "runtime": {
+    "backend": "ascend_candidate",
+    "policy": {
+      "schema_version": 1,
+      "image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "image_reference": "alloyport-ascend-correctness-v1:local",
+      "image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "device": {
+        "device_id": "0",
+        "product_name": "REPLACE_WITH_NPU_SMI_PRODUCT",
+        "serial_number": "REPLACE_WITH_NPU_SMI_SERIAL",
+        "firmware_version": "REPLACE_WITH_NPU_SMI_FIRMWARE"
+      },
+      "device_nodes": [
+        "/dev/davinci0",
+        "/dev/davinci_manager",
+        "/dev/hisi_hdc"
+      ],
+      "driver_path": "/usr/local/Ascend/driver",
+      "sandbox_root": "/var/lib/alloyport/ascend-sandboxes",
+      "environment": {
+        "architecture": "REPLACE_WITH_NPU_SMI_PRODUCT",
+        "cann_version": "REPLACE_WITH_PINNED_IMAGE_CANN",
+        "driver_version": "REPLACE_WITH_HOST_DRIVER",
+        "firmware_version": "REPLACE_WITH_NPU_SMI_FIRMWARE"
+      },
+      "ceilings": {
+        "timeout_ms": 120000,
+        "cpu_millis": 4000,
+        "memory_bytes": 8589934592,
+        "disk_bytes": 1073741824,
+        "process_count": 128,
+        "output_bytes": 8388608
+      },
+      "local_artifact_root": "/var/lib/alloyport/ascend-artifacts",
+      "local_artifact_max_bytes": 67108864,
+      "max_input_bytes": 33554432,
+      "upload_chunk_bytes": 1048576,
+      "upload_ttl_ms": 3600000,
+      "docker_binary": "/usr/bin/docker",
+      "docker_stop_timeout_seconds": 10,
+      "npu_smi_binary": "/usr/local/Ascend/driver/tools/npu-smi"
+    }
+  }
+}

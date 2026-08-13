@@ -15,11 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SERVER_NAME: &str = "alloyport-server";
-const WORKER_IDS: [&str; 3] = [
-    "ascend-build-worker-1",
-    "cuda-correctness-worker-1",
-    "ascend-correctness-worker-1",
-];
+const WORKER_IDS: [&str; 2] = ["cuda-correctness-worker-1", "ascend-worker-1"];
 
 struct PemIdentity {
     certificate: String,
@@ -31,9 +27,8 @@ pub(super) fn run(directory: &Path) -> Result<(), Box<dyn Error>> {
     for relative in [
         "pki",
         "clients/admin",
-        "workers/ascend-build-worker-1",
         "workers/cuda-correctness-worker-1",
-        "workers/ascend-correctness-worker-1",
+        "workers/ascend-worker-1",
         "state/artifacts",
         "state/migrations",
     ] {
@@ -117,9 +112,8 @@ pub(super) fn run(directory: &Path) -> Result<(), Box<dyn Error>> {
     );
     println!("On each executor host, copy its enrollment bundle and run:");
     for (role, worker_id) in [
-        ("ascend-build", "ascend-build-worker-1"),
         ("cuda-correctness", "cuda-correctness-worker-1"),
-        ("ascend-correctness", "ascend-correctness-worker-1"),
+        ("ascend-candidate", "ascend-worker-1"),
     ] {
         println!(
             "  alloyport-worker bootstrap {role} {} ./alloyport-worker https://SERVER_ADDRESS:50051",

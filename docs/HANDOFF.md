@@ -1196,7 +1196,7 @@ The explicit process boundary is now complete under
 [Design 0037](design/0037-explicit-candidate-episode-bootstrap.md). Normal `serve` remains inert.
 `candidate-episode validate` performs strict local catalog/credential/spec/reference/prompt/path and
 worker-policy preflight without binding or network dispatch. The live form requires the literal
-`--authorize-provider-dispatch`, starts the shared services, waits for three distinct connected
+`--authorize-provider-dispatch`, starts the shared services, waits for the configured connected
 workers with exact advertised features, and polls pending Gate work under bounded configuration.
 The bootstrap also renders the validated MigrationSpec and every declared CUDA source into a
 delimited controller-owned context projection and derives both projection and input-root identities;
@@ -1248,7 +1248,8 @@ device workload, provider call, or process eviction was attempted.
 The next action remains product-plan item 5, now narrowed to worker deployment and the first genuine
 candidate plus paired hardware acceptance:
 
-> Prepare all three exact worker deployment files, then run the configuration-selected model
+> Prepare the CUDA Correctness worker and the shared single-NPU Ascend candidate worker, then run
+> the configuration-selected model
 > through the Source/Build correction
 > loop until it produces a
 > genuine Source- and Build-Gate-passing Ascend reduction candidate. Then

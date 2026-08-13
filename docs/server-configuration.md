@@ -114,13 +114,14 @@ cargo run -p alloyport-server -- --config server.json \
 This checks the complete runtime-model catalog, secure secret file and protocol headers,
 MigrationSpec and reference sources, derives an exact delimited source context and its input-root
 identity, derives subtask/data-boundary/episode-budget/request-budget identities from their actual
-policies, enforces prompt bounds and durable paths, and validates three distinct worker targets,
+policies, enforces prompt bounds and durable paths, and validates the configured worker targets,
 OCI image descriptors, resource ceilings, and loop/codec budgets. It does not bind a listener,
 contact a worker, or send a provider request.
 
 The live command starts the normal worker-control/Artifact/Interaction services, waits for the
-configured Build, CUDA Correctness, and Ascend Correctness workers to be connected with their exact
-features, and only then advances the Episode:
+configured Build, CUDA Correctness, and Ascend Correctness features to be connected, and only then
+advances the Episode. Build and Ascend Correctness may be advertised by one serial single-NPU
+worker:
 
 ```bash
 cargo run -p alloyport-server -- --config server.json \

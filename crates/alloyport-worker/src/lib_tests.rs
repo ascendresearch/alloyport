@@ -87,6 +87,28 @@ fn execution_backends_are_registered_without_control_state_machine_changes()
     Ok(())
 }
 
+#[tokio::test]
+async fn worker_concurrency_one_serializes_registered_backends() -> Result<(), Box<dyn Error>> {
+    let integration = ExecutionIntegration::with_backend(
+        Arc::new(ProbeBackend(&[ExecutionKind::AscendBuild])),
+        1,
+    )?;
+    let first = Arc::clone(&integration.permits).acquire_owned().await?;
+    let blocked = tokio::time::timeout(
+        Duration::from_millis(10),
+        Arc::clone(&integration.permits).acquire_owned(),
+    )
+    .await;
+    assert!(blocked.is_err(), "a second backend entered the single slot");
+    drop(first);
+    let _second = tokio::time::timeout(
+        Duration::from_millis(100),
+        Arc::clone(&integration.permits).acquire_owned(),
+    )
+    .await??;
+    Ok(())
+}
+
 #[derive(Debug)]
 struct ProbeBackend(&'static [ExecutionKind]);
 

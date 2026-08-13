@@ -12,7 +12,7 @@ use alloyport_core::{
 use alloyport_llm_provider::ReqwestModelTransport;
 use alloyport_proto::v1::Backend;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -381,15 +381,8 @@ fn load_worker_policies(
         "Ascend correctness worker ID",
         file.correctness.ascend.worker_id.clone(),
     )?;
-    let unique_workers = BTreeSet::from([
-        build_worker_id.as_str(),
-        cuda_worker_id.as_str(),
-        ascend_worker_id.as_str(),
-    ]);
-    if unique_workers.len() != 3 {
-        return Err(
-            "build, CUDA correctness, and Ascend correctness workers must be distinct".into(),
-        );
+    if cuda_worker_id == build_worker_id || cuda_worker_id == ascend_worker_id {
+        return Err("CUDA correctness must use a worker distinct from Ascend execution".into());
     }
 
     let build_policy = CandidateBuildToolConfig::new(
@@ -676,6 +669,7 @@ mod tests {
         let config = CandidateEpisodeConfig::load(config_path)?;
         config.preflight_provider().await?;
         assert_eq!(config.required_workers.len(), 3);
+        assert_eq!(config.required_workers[0].id, config.required_workers[2].id);
         assert_eq!(
             config.tools.workspace_root,
             directory.path().join("workspace")
@@ -791,7 +785,7 @@ mod tests {
                     "limits": limits.clone()
                 },
                 "ascend": {
-                    "worker_id": "ascend-correctness-1",
+                    "worker_id": "ascend-build-1",
                     "image": image("ascend-image"),
                     "timeout_ms": 120_000,
                     "limits": limits

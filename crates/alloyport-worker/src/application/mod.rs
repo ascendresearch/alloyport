@@ -4,6 +4,7 @@
 //! lifecycle are deliberately separate. Execution and control-plane modules
 //! remain topology-agnostic and do not read process arguments or environment.
 
+mod ascend_candidate_config;
 mod assembly;
 mod backend_config;
 mod bootstrap;

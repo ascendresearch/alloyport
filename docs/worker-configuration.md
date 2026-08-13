@@ -20,10 +20,16 @@ and reports every supported location when discovery finds nothing. Backend facts
 across environment variables. Start from the checked-in
 [CUDA fixture](cuda-worker-config.example.json),
 [Ascend fixture](ascend-worker-config.example.json),
+[combined Ascend candidate](ascend-candidate-worker-config.example.json),
 [Ascend Build](ascend-build-worker-config.example.json),
 [CUDA correctness](cuda-correctness-worker-config.example.json), or
 [Ascend correctness](ascend-correctness-worker-config.example.json) example and replace every
 placeholder and all-zero digest.
+
+The combined `ascend_candidate` variant is the normal single-NPU deployment. One persistent worker
+advertises both Build and Ascend Correctness, and `max_concurrency=1` serializes every device
+execution. The separate role variants remain available when an operator intentionally dedicates
+different devices or hosts.
 
 For a single worker role per host, `/etc/alloyport-worker/worker.json` is the conventional
 system-wide location. For multiple roles on one host, install each binary and its
@@ -32,10 +38,10 @@ system-wide location. For multiple roles on one host, install each binary and it
 distinct explicit files under `/etc/alloyport-worker/`. Configuration, journals, Artifact stores,
 and sandboxes should use persistent deployment directories rather than `/tmp`.
 
-The `ascend_build`, `cuda_correctness`, and `ascend_correctness` variants intentionally contain no
-fixture ID or bundle digest. They admit only their role-specific execution kind; each controller
-assignment supplies its immutable build or correctness bundle while the file retains authority over
-the local image, device, environment, sandbox, and resource ceilings.
+The `ascend_candidate`, `ascend_build`, `cuda_correctness`, and `ascend_correctness` variants
+intentionally contain no fixture ID or bundle digest. Each controller assignment supplies its
+immutable build or correctness bundle while the file retains authority over the local image,
+device, environment, sandbox, and resource ceilings.
 
 ## Server connection
 

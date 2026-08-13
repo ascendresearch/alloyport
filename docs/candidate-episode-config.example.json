@@ -25,7 +25,7 @@
     "initial_user_text": "candidate-user-prompt.example.md"
   },
   "build": {
-    "worker_id": "ascend-build-worker-1",
+    "worker_id": "ascend-worker-1",
     "image": {
       "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "size_bytes": 0,
@@ -60,7 +60,7 @@
       }
     },
     "ascend": {
-      "worker_id": "ascend-correctness-worker-1",
+      "worker_id": "ascend-worker-1",
       "image": {
         "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "size_bytes": 0,
