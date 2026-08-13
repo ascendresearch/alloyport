@@ -93,6 +93,8 @@ Read these documents before changing architecture or implementation:
 32. [`design/0037-explicit-candidate-episode-bootstrap.md`](design/0037-explicit-candidate-episode-bootstrap.md)
     for strict operator preflight, per-run provider authorization, worker readiness, and supervised
     Candidate execution.
+33. [`design/0038-standalone-ascend-build-worker.md`](design/0038-standalone-ascend-build-worker.md)
+    for the strict Build-only worker file and production NPU/runtime composition.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -697,7 +699,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 285 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 287 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1187,13 +1189,19 @@ workers with exact advertised features, and polls pending Gate work under bounde
 The example remains deliberately unrunnable until real digests, image descriptor sizes, context
 digests, a secure catalog secret, and runtime paths are supplied.
 
+The previously missing Build process role is now complete under
+[Design 0038](design/0038-standalone-ascend-build-worker.md). The unified worker schema accepts an
+`ascend_build` variant without fixture/bundle authority, and production assembly binds the existing
+Build policy/supervisor/runtime to one dynamically verified NPU while advertising only
+`ascend-build-v1`. The checked-in example still requires actual host/image/TLS facts before launch.
+
 ## Suggested first task for the next Codex session
 
 The next action remains product-plan item 5, now narrowed to worker deployment and the first genuine
 candidate plus paired hardware acceptance:
 
-> Add the missing standalone `ascend_build` worker application mode, prepare all three exact worker
-> deployment files, then run the configuration-selected model through the Source/Build correction
+> Prepare all three exact worker deployment files, then run the configuration-selected model
+> through the Source/Build correction
 > loop until it produces a
 > genuine Source- and Build-Gate-passing Ascend reduction candidate. Then
 > execute the exact frozen corpus through both standalone correctness workers and capture the paired

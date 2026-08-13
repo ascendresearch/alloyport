@@ -11,14 +11,15 @@ cargo run -p alloyport-worker -- --config /absolute/path/to/worker.json
 manager. Backend facts are not split across environment variables. Start from the checked-in
 [CUDA fixture](cuda-worker-config.example.json),
 [Ascend fixture](ascend-worker-config.example.json),
+[Ascend Build](ascend-build-worker-config.example.json),
 [CUDA correctness](cuda-correctness-worker-config.example.json), or
 [Ascend correctness](ascend-correctness-worker-config.example.json) example and replace every
 placeholder and all-zero digest.
 
-The `cuda_correctness` and `ascend_correctness` variants intentionally contain no fixture ID or
-bundle digest. They admit only the role-specific correctness execution kind; each controller
-assignment supplies its immutable execution bundle while the file retains authority over the local
-image, device, environment, sandbox, and resource ceilings.
+The `ascend_build`, `cuda_correctness`, and `ascend_correctness` variants intentionally contain no
+fixture ID or bundle digest. They admit only their role-specific execution kind; each controller
+assignment supplies its immutable build or correctness bundle while the file retains authority over
+the local image, device, environment, sandbox, and resource ceilings.
 
 ## Server connection
 

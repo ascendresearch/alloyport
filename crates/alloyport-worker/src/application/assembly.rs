@@ -23,6 +23,7 @@ use std::sync::Arc;
 use tonic::transport::Endpoint;
 
 use super::backend_config::{AscendWorkerConfig, CudaWorkerConfig};
+use super::build_config::AscendBuildWorkerConfig;
 use super::config::{BackendPolicy, LoadedWorkerConfig};
 use super::correctness_config::{AscendCorrectnessWorkerConfig, CudaCorrectnessWorkerConfig};
 
@@ -33,6 +34,9 @@ pub(super) async fn assemble(loaded: LoadedWorkerConfig) -> Result<OutboundWorke
     match loaded.backend {
         BackendPolicy::Cuda(config) => attach_cuda(worker, endpoint, &hello, config).await,
         BackendPolicy::Ascend(config) => attach_ascend(worker, endpoint, &hello, config).await,
+        BackendPolicy::AscendBuild(config) => {
+            attach_ascend_build(worker, endpoint, &hello, config).await
+        }
         BackendPolicy::CudaCorrectness(config) => {
             attach_cuda_correctness(worker, endpoint, &hello, config).await
         }
@@ -289,6 +293,100 @@ async fn attach_cuda_correctness(
     worker
         .with_bound_device(selected_identity)?
         .with_cuda_executor(runtime)
+        .map_err(|error: WorkerError| -> Box<dyn Error> { Box::new(error) })
+        .map(|worker| {
+            worker
+                .with_artifact_downloader(downloader)
+                .with_artifact_publisher(publisher)
+                .with_device_status_provider(status_provider)
+        })
+}
+
+async fn attach_ascend_build(
+    worker: OutboundWorker,
+    endpoint: Endpoint,
+    hello: &WorkerHello,
+    config: AscendBuildWorkerConfig,
+) -> Result<OutboundWorker, Box<dyn Error>> {
+    let capabilities = hello
+        .capabilities
+        .as_ref()
+        .ok_or("Ascend build worker capabilities are missing")?;
+    if capabilities.device_count != 1
+        || capabilities.max_concurrency != 1
+        || capabilities.container_runtime != "docker"
+    {
+        return Err(
+            "the Ascend build worker requires one device, concurrency one, and Docker".into(),
+        );
+    }
+    let expected_environment = config.environment()?;
+    if capabilities.architecture != expected_environment.architecture
+        || capabilities.driver_version != expected_environment.driver_version
+        || capabilities.toolkit_version != expected_environment.cann_version
+    {
+        return Err("Ascend build environment does not match worker capabilities".into());
+    }
+    let discovered_nodes = discover_ascend_device_nodes(Path::new("/dev"))?;
+    require_exact_ascend_device_nodes(&config.device_nodes, &discovered_nodes)?;
+    let manager = Arc::new(NpuSmi::new(
+        &config.npu_smi_binary,
+        &config.environment.firmware_version,
+    )?);
+    let inventory = manager.inventory().await?;
+    let configured_device = config.device();
+    let snapshot = manager.snapshot().await?;
+    let selected = bind_worker_device(
+        &inventory,
+        &snapshot,
+        &worker.state().active_device_leases()?,
+        &DeviceSelectionPolicy::new(
+            vec![configured_device.device_id.clone()],
+            Some(configured_device.device_id.clone()),
+        )?,
+    )?;
+    if selected.identity != configured_device {
+        return Err("selected NPU identity does not match Ascend build config".into());
+    }
+    let status_provider = Arc::new(BoundDeviceStatusProvider::new(
+        manager.clone(),
+        &selected.identity.device_id,
+    )?);
+    let policy = Arc::new(config.policy()?);
+    let engine: Arc<dyn AscendContainerEngine> = Arc::new(
+        DockerCliEngine::new(&config.docker_binary)?
+            .with_stop_timeout_seconds(config.docker_stop_timeout_seconds),
+    );
+    let artifacts = Arc::new(FilesystemArtifactStore::open(
+        &config.local_artifact_root,
+        config.local_artifact_max_bytes,
+    )?);
+    let supervisor = Arc::new(AscendContainerSupervisor::new_build(
+        policy,
+        artifacts.clone(),
+    ));
+    let device_manager: Arc<dyn AscendDeviceManager> = manager.clone();
+    let runtime = Arc::new(AscendExecutionRuntime::new(
+        &hello.worker_id,
+        artifacts.clone(),
+        supervisor,
+        engine,
+        device_manager,
+    )?);
+    let downloader = Arc::new(RemoteArtifactDownloader::new(
+        endpoint.clone(),
+        artifacts.clone(),
+        config.max_input_bytes,
+    )?);
+    let publisher = Arc::new(RemoteArtifactPublisher::new(
+        endpoint,
+        artifacts,
+        config.upload_chunk_bytes,
+        Some(config.upload_ttl_ms),
+    )?);
+    worker
+        .with_bound_device(selected.identity)?
+        .with_ascend_executor(runtime)
         .map_err(|error: WorkerError| -> Box<dyn Error> { Box::new(error) })
         .map(|worker| {
             worker

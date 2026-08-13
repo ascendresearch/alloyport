@@ -6,6 +6,7 @@
 
 mod assembly;
 mod backend_config;
+mod build_config;
 mod config;
 mod correctness_config;
 mod runtime;

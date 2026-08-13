@@ -45,6 +45,7 @@ stable identifier.
 | 0035 | [Controller Episode application](0035-controller-episode-application.md) | Implemented application slice |
 | 0036 | [Gated Candidate Episode composition](0036-gated-candidate-episode-composition.md) | Implemented composition slice |
 | 0037 | [Explicit Candidate Episode bootstrap](0037-explicit-candidate-episode-bootstrap.md) | Implemented |
+| 0038 | [Standalone Ascend Build worker](0038-standalone-ascend-build-worker.md) | Implemented |
 
 ## Convention
 

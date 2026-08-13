@@ -1,6 +1,7 @@
 //! One schema-validated configuration file for an outbound accelerator worker.
 
 use super::backend_config::{AscendWorkerConfig, CudaWorkerConfig};
+use super::build_config::AscendBuildWorkerConfig;
 use super::correctness_config::{AscendCorrectnessWorkerConfig, CudaCorrectnessWorkerConfig};
 use alloyport_proto::v1::{Backend, WorkerCapabilities, WorkerHello};
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
@@ -54,6 +55,10 @@ enum RuntimeConfig {
     Ascend {
         policy: AscendWorkerConfig,
     },
+    #[serde(rename = "ascend_build")]
+    AscendBuild {
+        policy: AscendBuildWorkerConfig,
+    },
     #[serde(rename = "cuda_correctness")]
     CudaCorrectness {
         environment: CudaEnvironmentConfig,
@@ -76,6 +81,7 @@ struct CudaEnvironmentConfig {
 pub(super) enum BackendPolicy {
     Cuda(CudaWorkerConfig),
     Ascend(AscendWorkerConfig),
+    AscendBuild(AscendBuildWorkerConfig),
     CudaCorrectness(CudaCorrectnessWorkerConfig),
     AscendCorrectness(AscendCorrectnessWorkerConfig),
 }
@@ -135,6 +141,7 @@ impl WorkerFileConfig {
                 policy.validate()?;
             }
             RuntimeConfig::Ascend { policy } => policy.validate()?,
+            RuntimeConfig::AscendBuild { policy } => policy.validate()?,
             RuntimeConfig::CudaCorrectness {
                 environment,
                 policy,
@@ -180,6 +187,19 @@ impl WorkerFileConfig {
                     devices: vec![policy.wire_device()],
                 },
                 BackendPolicy::Ascend(policy),
+            ),
+            RuntimeConfig::AscendBuild { policy } => (
+                WorkerCapabilities {
+                    backend: Backend::Ascend.into(),
+                    architecture: policy.environment.architecture.clone(),
+                    device_count: 1,
+                    max_concurrency: 1,
+                    driver_version: policy.environment.driver_version.clone(),
+                    toolkit_version: policy.environment.cann_version.clone(),
+                    container_runtime: "docker".into(),
+                    devices: vec![policy.wire_device()],
+                },
+                BackendPolicy::AscendBuild(policy),
             ),
             RuntimeConfig::CudaCorrectness {
                 environment,
@@ -282,6 +302,7 @@ fn instance_id(worker_id: &str) -> Result<String, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloyport_artifacts::Sha256Digest;
 
     #[test]
     fn unified_config_carries_connection_identity_and_backend() -> Result<(), Box<dyn Error>> {
@@ -410,6 +431,73 @@ mod tests {
             ascend.backend,
             BackendPolicy::AscendCorrectness(_)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn checked_in_ascend_build_example_matches_the_strict_schema() -> Result<(), Box<dyn Error>> {
+        let build = WorkerFileConfig::parse(include_bytes!(
+            "../../../../docs/ascend-build-worker-config.example.json"
+        ))?
+        .into_loaded()?;
+        assert!(matches!(build.backend, BackendPolicy::AscendBuild(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn ascend_build_backend_is_exclusive_and_has_no_fixture_bundle() -> Result<(), Box<dyn Error>> {
+        let image = Sha256Digest::digest_bytes(b"ascend-build-image");
+        let config = format!(
+            r#"{{
+              "schema_version": 1,
+              "server": {{"endpoint": "http://127.0.0.1:50051"}},
+              "worker": {{"id": "ascend-build", "journal": "build.sqlite3"}},
+              "runtime": {{
+                "backend": "ascend_build",
+                "policy": {{
+                  "schema_version": 1,
+                  "image_digest": "{image}",
+                  "image_reference": "alloyport-ascend-build:local",
+                  "image_id": "{image}",
+                  "device": {{
+                    "device_id": "0", "product_name": "Ascend950PR",
+                    "serial_number": "serial", "firmware_version": "firmware"
+                  }},
+                  "device_nodes": [
+                    "/dev/davinci0", "/dev/davinci_manager", "/dev/hisi_hdc"
+                  ],
+                  "driver_path": "/usr/local/Ascend/driver",
+                  "sandbox_root": "/tmp/ascend-build-sandboxes",
+                  "environment": {{
+                    "architecture": "Ascend950PR", "cann_version": "9.1.0-beta.1",
+                    "driver_version": "25.7.rc1.6", "firmware_version": "firmware"
+                  }},
+                  "ceilings": {{
+                    "timeout_ms": 120000, "cpu_millis": 4000,
+                    "memory_bytes": 8589934592, "disk_bytes": 1073741824,
+                    "process_count": 128, "output_bytes": 8388608
+                  }},
+                  "local_artifact_root": "/tmp/ascend-build-artifacts",
+                  "local_artifact_max_bytes": 67108864,
+                  "max_input_bytes": 33554432,
+                  "upload_chunk_bytes": 1048576,
+                  "upload_ttl_ms": 3600000,
+                  "docker_binary": "/usr/bin/docker",
+                  "docker_stop_timeout_seconds": 10,
+                  "npu_smi_binary": "/usr/local/Ascend/driver/tools/npu-smi"
+                }}
+              }}
+            }}"#
+        );
+        let loaded = WorkerFileConfig::parse(config.as_bytes())?.into_loaded()?;
+        assert!(matches!(loaded.backend, BackendPolicy::AscendBuild(_)));
+        assert_eq!(loaded.hello.worker_id, "ascend-build");
+        assert_eq!(
+            loaded.hello.capabilities.unwrap().backend,
+            Backend::Ascend as i32
+        );
+        assert!(!config.contains("fixture_id"));
+        assert!(!config.contains("bundle_digest"));
         Ok(())
     }
 }
