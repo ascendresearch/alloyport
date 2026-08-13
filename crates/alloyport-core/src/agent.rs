@@ -207,6 +207,29 @@ impl AgentEpisodeRecord {
     pub fn runtime_model_alias(&self) -> &str {
         &self.runtime_model_alias
     }
+
+    #[must_use]
+    pub const fn resolved_model_digest(&self) -> Sha256Digest {
+        self.resolved_model_digest
+    }
+
+    pub(crate) fn matches_immutable(&self, expected: &Self) -> bool {
+        self.schema_version == expected.schema_version
+            && self.id == expected.id
+            && self.task_id == expected.task_id
+            && self.search_run_id == expected.search_run_id
+            && self.parent_candidate_id == expected.parent_candidate_id
+            && self.subtask_contract_digest == expected.subtask_contract_digest
+            && self.context_projection_digest == expected.context_projection_digest
+            && self.input_artifact_root_digest == expected.input_artifact_root_digest
+            && self.runtime_model_alias == expected.runtime_model_alias
+            && self.resolved_model_digest == expected.resolved_model_digest
+            && self.prompt_revision == expected.prompt_revision
+            && self.tool_catalog_digest == expected.tool_catalog_digest
+            && self.loop_policy_digest == expected.loop_policy_digest
+            && self.data_boundary_policy_digest == expected.data_boundary_policy_digest
+            && self.budget_snapshot_digest == expected.budget_snapshot_digest
+    }
 }
 
 /// Effect boundary used to authorize and recover one model-visible tool.

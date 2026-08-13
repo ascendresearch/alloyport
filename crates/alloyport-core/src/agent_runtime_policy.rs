@@ -16,6 +16,15 @@ pub struct AgentLoopPolicy {
 }
 
 impl AgentLoopPolicy {
+    /// Computes the identity of the exact Episode budget policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if canonical JSON serialization fails.
+    pub fn digest(self) -> Result<crate::Sha256Digest, serde_json::Error> {
+        serde_json::to_vec(&self).map(|bytes| crate::Sha256Digest::digest_bytes(&bytes))
+    }
+
     /// Validates positive hard limits and their ordering.
     ///
     /// # Errors

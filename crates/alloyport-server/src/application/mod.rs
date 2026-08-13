@@ -3,10 +3,13 @@
 mod assembly;
 mod command;
 mod config;
+mod episode;
 mod identity_admin;
 mod runtime;
 
 use std::error::Error;
+
+pub use episode::{ControllerEpisodeApplication, ControllerEpisodeError, ControllerEpisodeSpec};
 
 /// Runs an offline identity command or starts the configured server process.
 ///

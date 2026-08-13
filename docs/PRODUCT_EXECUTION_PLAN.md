@@ -194,8 +194,9 @@ research report and complete Design 0025 now precede provider refactoring or Sou
    - [x] Add crash-durable, compare-and-swap `SQLite` persistence for complete Agent Episode state.
    - [x] Persist exact provider exchanges, native continuation, and Candidate-tool result context
      with the same next-input identity derived by the Agent reducer.
-   - [ ] Compose the production controller Episode use case required to generate the first real
-     candidate.
+   - [x] Compose the production controller Episode use case with catalog-derived identities,
+     exact recovery checks, bounded HTTPS transport, and narrow Candidate-tool injection.
+   - [ ] Add the explicit operator bootstrap/configuration and run the first real candidate.
    - [ ] Capture a Build-Gate-authorized paired CUDA/Ascend run and Correctness receipt for a real
      generated candidate.
 6. Produce the first complete release and evidence bundle.

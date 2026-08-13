@@ -37,7 +37,7 @@ pub use agent::{
     ToolOperationStatus, ToolResultAuthority,
 };
 pub use agent_runtime::{
-    AgentLoopRunner, AgentLoopRuntimeSpec, DURABLE_EPISODE_STATE_SCHEMA_V1, DurableEpisodeState,
+    AgentLoopRunner, AgentLoopRuntimeSpec, DURABLE_EPISODE_STATE_SCHEMA_V2, DurableEpisodeState,
 };
 pub use agent_runtime_helpers::AgentLoopRuntimeError;
 pub use agent_runtime_helpers::derive_model_continuation_input_digest;

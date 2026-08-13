@@ -181,8 +181,31 @@ impl SqliteModelContextStore {
                 ],
             )
             .map_err(adapter_error)?;
-        if inserted != 1 {
-            return Err(format!("model context already exists for {episode_id}"));
+        if inserted == 0 {
+            let existing = connection
+                .query_row(
+                    "SELECT system_prompt, initial_user_text, tools_json, initial_input_digest \
+                     FROM model_episode_contexts WHERE episode_id = ?1",
+                    [episode_id.to_string()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Vec<u8>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .map_err(adapter_error)?;
+            let expected = (
+                system_prompt.to_owned(),
+                initial_user_text.to_owned(),
+                tools_json,
+                initial_input_digest.to_string(),
+            );
+            if existing != expected {
+                return Err(format!("model context conflicts for {episode_id}"));
+            }
         }
         Ok(initial_input_digest)
     }

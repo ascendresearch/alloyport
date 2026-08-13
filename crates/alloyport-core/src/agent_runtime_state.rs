@@ -1,4 +1,4 @@
-use super::{AgentLoopRuntimeSpec, DURABLE_EPISODE_STATE_SCHEMA_V1, DurableEpisodeState};
+use super::{AgentLoopRuntimeSpec, DURABLE_EPISODE_STATE_SCHEMA_V2, DurableEpisodeState};
 use crate::{AgentEpisodeRecord, AgentLoopRuntimeError, EpisodeId, ToolOperationStatus};
 
 impl DurableEpisodeState {
@@ -10,9 +10,10 @@ impl DurableEpisodeState {
     pub fn new(spec: AgentLoopRuntimeSpec) -> Result<Self, AgentLoopRuntimeError> {
         spec.policy.validate()?;
         Ok(Self {
-            schema_version: DURABLE_EPISODE_STATE_SCHEMA_V1,
+            schema_version: DURABLE_EPISODE_STATE_SCHEMA_V2,
             episode: spec.episode,
             policy: spec.policy,
+            initial_input_digest: spec.initial_input_digest,
             next_input_digest: spec.initial_input_digest,
             resolved_model_digest: spec.resolved_model_digest,
             deployment_digest: spec.deployment_digest,
@@ -40,7 +41,7 @@ impl DurableEpisodeState {
     /// Returns an error for an unsupported schema, invalid policy, impossible record counts, or
     /// an invalid recovered semantic turn.
     pub fn validate_recovered(&self) -> Result<(), AgentLoopRuntimeError> {
-        if self.schema_version != DURABLE_EPISODE_STATE_SCHEMA_V1 {
+        if self.schema_version != DURABLE_EPISODE_STATE_SCHEMA_V2 {
             return Err(AgentLoopRuntimeError::InvalidDurableState(
                 "unsupported durable episode schema",
             ));
@@ -55,6 +56,17 @@ impl DurableEpisodeState {
             turn.semantic_turn.validate()?;
         }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn matches_runtime_spec(&self, spec: &AgentLoopRuntimeSpec) -> bool {
+        self.episode.matches_immutable(&spec.episode)
+            && self.policy == spec.policy
+            && self.initial_input_digest == spec.initial_input_digest
+            && self.resolved_model_digest == spec.resolved_model_digest
+            && self.deployment_digest == spec.deployment_digest
+            && self.model_profile_digest == spec.model_profile_digest
+            && self.request_budget_digest == spec.request_budget_digest
     }
 
     #[must_use]

@@ -297,6 +297,44 @@ pub struct ResolvedRuntimeModel {
 }
 
 impl ResolvedRuntimeModel {
+    /// Computes the identity of the complete resolved model snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if canonical JSON serialization fails.
+    pub fn digest(&self) -> Result<Sha256Digest, serde_json::Error> {
+        serde_json::to_vec(self).map(|bytes| Sha256Digest::digest_bytes(&bytes))
+    }
+
+    /// Computes the independently captured deployment identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if canonical JSON serialization fails.
+    pub fn deployment_digest(&self) -> Result<Sha256Digest, serde_json::Error> {
+        serde_json::to_vec(&(
+            &self.deployment_name,
+            &self.vendor,
+            &self.protocol,
+            &self.endpoint,
+            &self.auth,
+            &self.transport,
+            self.data_boundary,
+            self.conformance_receipt_digest,
+        ))
+        .map(|bytes| Sha256Digest::digest_bytes(&bytes))
+    }
+
+    /// Computes the configured model-profile identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if canonical JSON serialization fails.
+    pub fn profile_digest(&self) -> Result<Sha256Digest, serde_json::Error> {
+        serde_json::to_vec(&(&self.profile_name, &self.profile))
+            .map(|bytes| Sha256Digest::digest_bytes(&bytes))
+    }
+
     #[must_use]
     pub fn alias(&self) -> &str {
         &self.alias

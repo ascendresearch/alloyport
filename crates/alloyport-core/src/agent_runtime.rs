@@ -18,7 +18,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const DURABLE_EPISODE_STATE_SCHEMA_V1: u16 = 1;
+pub const DURABLE_EPISODE_STATE_SCHEMA_V2: u16 = 2;
 
 /// Immutable runtime values not interpreted by a provider adapter.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +53,7 @@ pub struct DurableEpisodeState {
     schema_version: u16,
     episode: AgentEpisodeRecord,
     policy: AgentLoopPolicy,
+    initial_input_digest: Sha256Digest,
     next_input_digest: Sha256Digest,
     resolved_model_digest: Sha256Digest,
     deployment_digest: Sha256Digest,
