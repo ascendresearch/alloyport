@@ -257,7 +257,7 @@ async fn heartbeat_reports_dynamic_health_occupancy_and_durable_device_lease()
     alloyport_proto::validate_heartbeat(&heartbeat)?;
     assert_eq!(
         heartbeat.health,
-        alloyport_proto::v1::WorkerHealth::Degraded as i32
+        alloyport_proto::v1::WorkerHealth::Ready as i32
     );
     assert_eq!(heartbeat.available_slots, 0);
     assert_eq!(heartbeat.devices.len(), 1);

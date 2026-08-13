@@ -162,13 +162,19 @@ impl OutboundWorker {
             },
             None => (crate::device::DeviceSnapshot::default(), false),
         };
-        let device_available = !device_probe_failed
+        let device_healthy = !device_probe_failed
             && (self.device_status.is_none()
                 || (!device_snapshot.devices.is_empty()
-                    && device_snapshot.devices.iter().all(|device| {
-                        device.health == DeviceHealth::Ready && device.process_count == 0
-                    })));
-        let health = if device_available {
+                    && device_snapshot
+                        .devices
+                        .iter()
+                        .all(|device| device.health == DeviceHealth::Ready)));
+        let device_available = device_healthy
+            && device_snapshot
+                .devices
+                .iter()
+                .all(|device| device.process_count == 0);
+        let health = if device_healthy {
             WorkerHealth::Ready
         } else {
             WorkerHealth::Degraded

@@ -589,6 +589,15 @@ async fn list_workers() -> Result<(), String> {
         let health = WorkerHealth::try_from(worker.health)
             .unwrap_or(WorkerHealth::Unspecified)
             .as_str_name();
+        let availability = if !worker.connected {
+            "offline"
+        } else if worker.health == WorkerHealth::Ready as i32 && worker.available_slots == 0 {
+            "busy"
+        } else if worker.health == WorkerHealth::Ready as i32 {
+            "available"
+        } else {
+            "unavailable"
+        };
         let devices = worker
             .devices
             .iter()
@@ -599,11 +608,7 @@ async fn list_workers() -> Result<(), String> {
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             worker.worker_id,
             worker.instance_id,
-            if worker.connected {
-                "connected"
-            } else {
-                "offline"
-            },
+            availability,
             health,
             worker.available_slots,
             devices,
