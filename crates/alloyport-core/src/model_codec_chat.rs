@@ -118,7 +118,7 @@ impl ProtocolCodec for OpenAiChatCompletionsCodec {
                 "model": input.wire_model,
                 "messages": history,
                 "tools": Self::tools(input.tools),
-                "max_completion_tokens": input.max_output_tokens
+                "max_tokens": input.max_output_tokens
             }),
             continuation,
             input.tools,
