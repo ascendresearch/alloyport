@@ -4,6 +4,8 @@ AlloyPort is a verified CUDA-to-Ascend-C source migration and optimization facto
 
 For a new development session, start with [`docs/NEXT_SESSION.md`](docs/NEXT_SESSION.md).
 [`docs/HANDOFF.md`](docs/HANDOFF.md) is the accumulated architecture record behind it.
+[`CLAUDE.md`](CLAUDE.md) records how this project decides what counts as evidence, and the
+defects that produced those rules.
 
 The completed architecture remediation baseline is tracked in
 [`docs/ARCHITECTURE_REMEDIATION.md`](docs/ARCHITECTURE_REMEDIATION.md).
