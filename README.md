@@ -2,7 +2,8 @@
 
 AlloyPort is a verified CUDA-to-Ascend-C source migration and optimization factory.
 
-For a new development session, start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
+For a new development session, start with [`docs/NEXT_SESSION.md`](docs/NEXT_SESSION.md).
+[`docs/HANDOFF.md`](docs/HANDOFF.md) is the accumulated architecture record behind it.
 
 The completed architecture remediation baseline is tracked in
 [`docs/ARCHITECTURE_REMEDIATION.md`](docs/ARCHITECTURE_REMEDIATION.md).

@@ -12,9 +12,11 @@
   for a configured card. The first authorized provider-driven migration reached a real Source Gate
   correction loop and exposed one recoverability defect described in the 2026-08-13 closeout below.
 
-This document is the entry point for a new Codex session. It separates product intent, accepted
-architecture, implemented behavior, and planned behavior so that work does not drift simply because
-the previous conversation is unavailable.
+**Start a new session with [`NEXT_SESSION.md`](NEXT_SESSION.md)**, which carries current state, the
+next action, and the open defects. This document is the accumulated architecture record: it
+separates product intent, accepted architecture, implemented behavior, and planned behavior so that
+work does not drift simply because the previous conversation is unavailable. Read it for what a
+subsystem does, not for what to do next.
 
 For this checkout, read `.alloyport-local/host-connections.md` when it exists. It is ignored local
 deployment state containing the CUDA and Ascend SSH targets, installed paths, and tunnel commands;
@@ -1339,27 +1341,6 @@ itself is not yet diagnosed.
 
 ## Suggested first task for the next Codex session
 
-The previously suggested first task — making deterministic, side-effect-free candidate-tool input
-validation failures model-visible and recoverable — is **done** under
-[Design 0040](design/0040-measured-tolerance-and-advisory-source-gate.md), together with two
-corrections that were found while doing it: the correctness tolerance is now derived from a measured
-floor instead of an asserted constant, and the Source Gate no longer prescribes how a kernel must be
-written. `docs/evidence/reduction-noise-floor-20260814.md` records what the frozen tolerance was
-actually doing.
-
-Next: rebuild/redeploy only the server, restart the server and both persistent worker/tunnel
-processes using `.alloyport-local/host-connections.md`, and explicitly retry the existing migration
-through `alloyport-cli`. Observe which automatically selected Ascend device receives the durable
-lease and container mapping. Continue through Source, sequential Ascend Build, paired CUDA/Ascend
-Correctness, and capture the immutable receipts. Do not add performance optimization, release
-automation, TUI polish, retention policy, or generalized execution until this first genuine
-migration completes.
-
-Two things to watch on that run, because they are new and unproven on hardware:
-
-1. The trusted CUDA harness now emits `reorder_output_bits`. If the pairwise order disagrees with
-   the reference by much more than its run-to-run spread, the derived tolerance widens and
-   calibration will start reporting mutants in `undetected` rather than silently passing. That
-   report is the signal — do not widen anything by hand.
-2. `battery_scope` is `ComparatorOnly` on every calibration receipt. Nothing yet proves a broken
-   kernel would be caught before the comparator sees it.
+Moved to [`NEXT_SESSION.md`](NEXT_SESSION.md), so that what to do next is stated in exactly one
+place. In short: run the first real migration end to end, and record what the three new and
+hardware-unproven mechanisms say rather than adjusting them by hand.
