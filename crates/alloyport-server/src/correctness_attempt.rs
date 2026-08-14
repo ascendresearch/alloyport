@@ -662,6 +662,7 @@ mod tests {
             input_digest: case.input_digest(),
             status: 0,
             output_bits: Some(0),
+            reorder_output_bits: Some(0),
         };
         let valid = ReductionRunReceipt::new(
             experiment.experiment_digest(),

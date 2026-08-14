@@ -1,5 +1,5 @@
 use super::*;
-use crate::{REDUCTION_CORPUS_REVISION_V1, ReductionOraclePolicy, TaskId};
+use crate::{REDUCTION_CORPUS_REVISION_V1, ReductionTolerancePlan, TaskId};
 
 fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::digest_bytes(label.as_bytes())
@@ -17,9 +17,9 @@ fn experiment(
         digest("source"),
         digest("build"),
         corpus.digest().expect("corpus digest"),
-        ReductionOraclePolicy::fixture_v1()
+        ReductionTolerancePlan::fixture_v1()
             .digest()
-            .expect("policy digest"),
+            .expect("tolerance plan digest"),
     )
 }
 

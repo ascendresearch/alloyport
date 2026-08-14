@@ -1,11 +1,21 @@
 //! Deliberately faulty candidate observations used to calibrate the reduction oracle.
+//!
+//! These mutate a receipt, not an implementation. They exercise the comparator; they cannot show
+//! that a broken kernel would be caught on the way here. Every kind except `JustOutsideTolerance`
+//! is deliberately far outside any plausible tolerance, which is why that one exists: a battery of
+//! sledgehammers cannot tell you where the edge is.
 
-use super::{ReductionMutantKind, ReductionRunReceipt, ReductionRunRole};
+use super::{
+    ReductionMutantKind, ReductionOraclePolicy, ReductionRunReceipt, ReductionRunRole,
+    tolerance_bound,
+};
 use crate::CandidateId;
 
+#[allow(clippy::cast_possible_truncation)]
 pub(super) fn apply_mutant(
     mut run: ReductionRunReceipt,
     mutant: ReductionMutantKind,
+    policy: &ReductionOraclePolicy,
 ) -> Option<ReductionRunReceipt> {
     run.role = ReductionRunRole::AscendCandidate;
     run.candidate_id = Some(CandidateId::try_from("candidate-calibration-mutant").ok()?);
@@ -38,6 +48,26 @@ pub(super) fn apply_mutant(
                 .find(|item| item.status == 0 && item.repetition > 1)?;
             let value = f32::from_bits(item.output_bits?);
             item.output_bits = Some((value + 1.0).to_bits());
+        }
+        // Sized by the policy: just past the boundary the gate claims to enforce. Widening the
+        // tolerance widens this mutant too, so it cannot be satisfied by loosening the gate.
+        ReductionMutantKind::JustOutsideTolerance => {
+            let item = run
+                .observations
+                .iter_mut()
+                .find(|item| item.status == 0 && item.output_bits.is_some())?;
+            let value = f32::from_bits(item.output_bits?);
+            let bound = tolerance_bound(f64::from(value), policy);
+            let mut perturbed = value + (bound as f32).mul_add(1.05, f32::EPSILON);
+            // A tolerance below one representable step cannot be exceeded by adding to the value,
+            // so step to the next float instead of reporting a mutant that does not perturb.
+            if perturbed.to_bits() == value.to_bits() {
+                perturbed = f32::from_bits(value.to_bits().checked_add(1)?);
+            }
+            if perturbed.to_bits() == value.to_bits() || !perturbed.is_finite() {
+                return None;
+            }
+            item.output_bits = Some(perturbed.to_bits());
         }
         ReductionMutantKind::IndexingSwap => {
             let indices: Vec<_> = run

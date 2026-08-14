@@ -197,6 +197,7 @@ mod tests {
                 input_digest: digest,
                 status: 0,
                 output_bits: Some(0),
+                reorder_output_bits: Some(0),
             }],
         )
         .expect("valid run receipt");

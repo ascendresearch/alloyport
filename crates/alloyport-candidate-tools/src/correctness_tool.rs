@@ -9,7 +9,7 @@ use alloyport_core::{
     AscendBuildReceipt, CandidateSourceManifest, CorrectnessVerdict, ReductionCorpus,
     ReductionCorrectnessAttemptObservation, ReductionCorrectnessAttemptPort,
     ReductionCorrectnessAttemptSpec, ReductionCorrectnessExperiment, ReductionExecutionBundle,
-    ReductionExecutionFile, ReductionOraclePolicy, ReductionRunReceipt, Sha256Digest,
+    ReductionExecutionFile, ReductionRunReceipt, ReductionTolerancePlan, Sha256Digest,
     ToolGatewayError, ToolGatewayOutcome, ToolInvocation, ToolOperationStatus,
     calibrate_reduction_oracle, evaluate_reduction_correctness,
 };
@@ -23,10 +23,13 @@ const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_RUN_RECEIPT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_EXECUTION_BUNDLE_BYTES: u64 = 32 * 1024 * 1024;
 
-/// Frozen oracle/corpus policy injected by the controller and hidden from model arguments.
+/// Frozen corpus and tolerance plan injected by the controller and hidden from model arguments.
+///
+/// The plan is frozen; the tolerance is not, because it does not exist until the authority has run.
+/// The oracle derives it from that run's own measured spread.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CandidateCorrectnessToolConfig {
-    policy: ReductionOraclePolicy,
+    tolerance_plan: ReductionTolerancePlan,
     corpus: ReductionCorpus,
     reference_files: Vec<ReductionExecutionFile>,
 }
@@ -50,7 +53,7 @@ impl CandidateCorrectnessToolConfig {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
-            policy: ReductionOraclePolicy::fixture_v1(),
+            tolerance_plan: ReductionTolerancePlan::fixture_v1(),
             corpus: ReductionCorpus::fixture_v1(),
             reference_files,
         })
@@ -173,9 +176,9 @@ impl CandidateCorrectnessTool {
                     .map_err(|error| adapter_error(error.to_string()))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let policy_digest = self
+        let tolerance_plan_digest = self
             .config
-            .policy
+            .tolerance_plan
             .digest()
             .map_err(|error| adapter_error(error.to_string()))?;
         let corpus_digest = self
@@ -191,7 +194,7 @@ impl CandidateCorrectnessTool {
             arguments.source_gate_receipt_digest,
             arguments.build_gate_receipt_digest,
             corpus_digest,
-            policy_digest,
+            tolerance_plan_digest,
         );
         let reference_bundle = ReductionExecutionBundle::new(
             experiment.clone(),
@@ -246,9 +249,12 @@ impl CandidateCorrectnessTool {
                 "correctness run receipt does not bind the assigned implementation bundle",
             ));
         }
-        let calibration =
-            calibrate_reduction_oracle(&reference, &self.config.policy, &self.config.corpus)
-                .map_err(|error| adapter_error(error.to_string()))?;
+        let calibration = calibrate_reduction_oracle(
+            &reference,
+            &self.config.tolerance_plan,
+            &self.config.corpus,
+        )
+        .map_err(|error| adapter_error(error.to_string()))?;
         let calibration_bytes = serde_json::to_vec(&calibration).map_err(|error| {
             adapter_error(format!("cannot encode calibration receipt: {error}"))
         })?;
@@ -257,7 +263,7 @@ impl CandidateCorrectnessTool {
             spec.experiment.clone(),
             &reference,
             &candidate,
-            &self.config.policy,
+            &self.config.tolerance_plan,
             &self.config.corpus,
             &calibration,
         )

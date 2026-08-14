@@ -4,7 +4,7 @@
 
 use alloyport_core::{
     BundlePath, CandidateId, ReductionCorpus, ReductionCorrectnessExperiment,
-    ReductionExecutionBundle, ReductionExecutionFile, ReductionOraclePolicy, ReductionRunRole,
+    ReductionExecutionBundle, ReductionExecutionFile, ReductionRunRole, ReductionTolerancePlan,
     Sha256Digest, TaskId,
 };
 use std::error::Error;
@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         digest("diagnostic-source-gate"),
         digest("diagnostic-build-gate"),
         corpus.digest()?,
-        ReductionOraclePolicy::fixture_v1().digest()?,
+        ReductionTolerancePlan::fixture_v1().digest()?,
     );
     let mut paths = Vec::new();
     collect_files(&source_root, &source_root, &mut paths)?;

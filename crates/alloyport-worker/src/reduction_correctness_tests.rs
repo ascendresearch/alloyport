@@ -313,11 +313,25 @@ fn real_cuda_diagnostic_evidence_remains_schema_valid_and_complete() -> Result<(
             "sha256:b495ea483e83b074eb71a559a85a6d5c1644c271b144625c5ca430d6a24579ed"
         )?
     );
+    // The real run is genuine evidence and stays. What it can now also do is state this task's own
+    // numeric spread, because the corpus already makes the authority sum every input twice.
+    let floor = alloyport_core::measure_reduction_noise_floor(
+        &receipt,
+        &alloyport_core::ReductionCorpus::fixture_v1(),
+    )?;
+    assert!(floor.repetition_pairs() > 0);
+
     let calibration: ReductionCalibrationReceipt = serde_json::from_slice(include_bytes!(
         "../../../docs/evidence/cuda-reduction-calibration-diagnostic-20260812.json"
     ))?;
-    assert!(calibration.passed());
     assert_eq!(calibration.detections().len(), 10);
     assert!(calibration.detections().iter().all(|item| item.detected));
+    // It caught all ten of its mutants and it still does not pass. Every one of them is orders of
+    // magnitude larger than the tolerance it ran under, and that tolerance was asserted rather than
+    // measured, so the receipt cannot say whether the gate would have rejected a correct port.
+    assert!(
+        !calibration.passed(),
+        "an archived calibration must not keep vouching for a tolerance nobody measured"
+    );
     Ok(())
 }

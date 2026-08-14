@@ -358,6 +358,7 @@ fn correctness_fixture() -> Result<(Fixture, Vec<u8>), Box<dyn std::error::Error
             input_digest: Sha256Digest::digest_bytes(b"input"),
             status: 0,
             output_bits: Some(0),
+            reorder_output_bits: Some(0),
         }],
     )?;
     Ok((

@@ -66,12 +66,13 @@ pub use candidate_source::{
 };
 pub use correctness::{
     CorrectnessVerdict, REDUCTION_CALIBRATION_RECEIPT_SCHEMA_V1, REDUCTION_CORPUS_REVISION_V1,
-    REDUCTION_CORRECTNESS_RECEIPT_SCHEMA_V1, REDUCTION_ORACLE_REVISION_V1,
-    REDUCTION_RUN_RECEIPT_SCHEMA_V1, ReductionCalibrationReceipt, ReductionCorrectnessExperiment,
-    ReductionCorrectnessReceipt, ReductionMutantKind, ReductionMutationDetection,
-    ReductionObservation, ReductionOracleFailure, ReductionOracleFailureKind,
-    ReductionOraclePolicy, ReductionRunReceipt, ReductionRunRole, calibrate_reduction_oracle,
-    evaluate_reduction_correctness,
+    REDUCTION_CORRECTNESS_RECEIPT_SCHEMA_V1, REDUCTION_NOISE_FLOOR_SCHEMA_V1,
+    REDUCTION_ORACLE_REVISION_V1, REDUCTION_RUN_RECEIPT_SCHEMA_V1, ReductionBatteryScope,
+    ReductionCalibrationReceipt, ReductionCorrectnessExperiment, ReductionCorrectnessReceipt,
+    ReductionMutantKind, ReductionMutationDetection, ReductionNoiseFloor, ReductionObservation,
+    ReductionOracleFailure, ReductionOracleFailureKind, ReductionOraclePolicy, ReductionRunReceipt,
+    ReductionRunRole, ReductionTolerancePlan, ToleranceProvenance, calibrate_reduction_oracle,
+    evaluate_reduction_correctness, measure_reduction_noise_floor,
 };
 pub use correctness_attempt::{
     ReductionCorrectnessAttemptError, ReductionCorrectnessAttemptFuture,

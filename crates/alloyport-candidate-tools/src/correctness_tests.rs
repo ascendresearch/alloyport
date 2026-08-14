@@ -131,6 +131,7 @@ fn observations(corpus: &ReductionCorpus) -> Vec<ReductionObservation> {
                 input_digest: case.input_digest(),
                 status,
                 output_bits: output.map(f32::to_bits),
+                reorder_output_bits: output.map(f32::to_bits),
             }
         })
         .collect()

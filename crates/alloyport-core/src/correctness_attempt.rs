@@ -85,6 +85,7 @@ pub enum ReductionCorrectnessError {
     InvalidCorpus,
     InvalidExecutionSource,
     InvalidExecutionBundle,
+    NoiseFloorUnavailable,
     Serialization(serde_json::Error),
 }
 
@@ -101,6 +102,11 @@ impl Display for ReductionCorrectnessError {
             Self::InvalidCorpus => write!(formatter, "invalid reduction correctness corpus"),
             Self::InvalidExecutionSource => write!(formatter, "invalid reduction execution source"),
             Self::InvalidExecutionBundle => write!(formatter, "invalid reduction execution bundle"),
+            Self::NoiseFloorUnavailable => write!(
+                formatter,
+                "the reference run carries no second summation order, so this task's own numeric \
+                 spread was never measured"
+            ),
             Self::Serialization(error) => {
                 write!(formatter, "cannot encode correctness evidence: {error}")
             }

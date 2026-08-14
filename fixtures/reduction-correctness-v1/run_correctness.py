@@ -103,6 +103,23 @@ static std::vector<float> make_input(size_t elements, uint32_t seed) {{
     return input;
 }}
 
+// A second legitimate fp32 summation order of the same mathematics over the same bytes: a pairwise
+// tree with a leaf block unrelated to the reference kernel's block size. It is not a check of the
+// implementation and never decides a verdict; the oracle uses the distance between the two orders
+// to measure how far a correct implementation may legitimately land from the authority. Without it
+// the tolerance would have to be asserted, and an asserted tolerance either rejects correct ports
+// or admits broken ones with nothing to say which.
+static float pairwise_sum(const float *values, size_t count) {{
+    if (count == 0) return 0.0F;
+    if (count <= 37) {{
+        float total = 0.0F;
+        for (size_t index = 0; index < count; ++index) total += values[index];
+        return total;
+    }}
+    const size_t half = count / 2;
+    return pairwise_sum(values, half) + pairwise_sum(values + half, count - half);
+}}
+
 int main() {{
     static const Case cases[] = {{
 {chr(10).join(case_rows)}
@@ -143,13 +160,16 @@ int main() {{
         }}
         uint32_t output_bits = 0;
         std::memcpy(&output_bits, &output, sizeof(output_bits));
+        const float reordered = pairwise_sum(input.empty() ? nullptr : input.data(), input.size());
+        uint32_t reorder_bits = 0;
+        std::memcpy(&reorder_bits, &reordered, sizeof(reorder_bits));
         if (!first) std::printf(",");
         first = false;
         std::printf("{{\\\"case_id\\\":\\\"%s\\\",\\\"repetition\\\":%u,"
                     "\\\"elements\\\":%llu,\\\"input_digest\\\":\\\"%s\\\","
                     "\\\"status\\\":%d,\\\"output_bits\\\":",
                     item.id, item.repetition, item.elements, item.input_digest, status);
-        if (status == 0) std::printf("%u", output_bits);
+        if (status == 0) std::printf("%u,\\\"reorder_output_bits\\\":%u", output_bits, reorder_bits);
         else std::printf("null");
         std::printf("}}");
     }}
@@ -225,6 +245,8 @@ target_link_libraries(alloyport_reduction_harness PRIVATE {target})
             or observation.get("input_digest") != input_digest(case)
             or not isinstance(observation.get("status"), int)
             or (observation["status"] == 0) != isinstance(observation.get("output_bits"), int)
+            or (observation["status"] == 0)
+            != isinstance(observation.get("reorder_output_bits"), int)
         ):
             fail("trusted harness emitted a mismatched observation")
     sys.stdout.buffer.write(completed.stdout)
