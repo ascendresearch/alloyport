@@ -68,6 +68,7 @@ fn bundle(role: ReductionRunRole) -> ReductionExecutionBundle {
     ReductionExecutionBundle::new(
         experiment,
         role,
+        correctness_callable(),
         corpus,
         vec![
             ReductionExecutionFile::new(
@@ -334,4 +335,40 @@ fn real_cuda_diagnostic_evidence_remains_schema_valid_and_complete() -> Result<(
         "an archived calibration must not keep vouching for a tolerance nobody measured"
     );
     Ok(())
+}
+
+fn correctness_callable() -> alloyport_core::CorrectnessCallable {
+    alloyport_core::CorrectnessCallable {
+        public_symbol: "alloyport_reduce_sum_f32".to_owned(),
+        reference_build_target: "reduce_sum".to_owned(),
+        candidate_build_target: "alloyport_reduction_candidate".to_owned(),
+    }
+}
+
+#[test]
+fn the_trusted_runner_names_no_specimen() {
+    // This runner is trusted and ships inside the worker binary, so a specimen name compiled into
+    // it makes onboarding a second operator family an edit inside the trust boundary. The names
+    // now arrive in the controller-authored bundle; this test fails if any are put back.
+    let runner = include_str!("../../../fixtures/reduction-correctness-v1/run_correctness.py");
+    for name in [
+        "alloyport_reduce_sum_f32",
+        "alloyport_reduction_candidate",
+        "reduce_sum",
+    ] {
+        assert!(
+            !runner.contains(name),
+            "trusted runner hard-codes the specimen name {name}"
+        );
+    }
+    for carried in [
+        "public_symbol",
+        "reference_build_target",
+        "candidate_build_target",
+    ] {
+        assert!(
+            runner.contains(carried),
+            "trusted runner does not read {carried} from the bundle"
+        );
+    }
 }

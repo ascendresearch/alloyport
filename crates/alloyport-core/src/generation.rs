@@ -575,7 +575,12 @@ mod tests {
                 "reduce_sum_candidate",
             )
             .expect("public entry"),
-            ReferenceWorkload::new(path("."), ["./build/reference".to_owned()]).expect("reference"),
+            ReferenceWorkload::new(
+                path("."),
+                ["./build/reference".to_owned()],
+                "reference_library",
+            )
+            .expect("reference"),
             AscendTarget::new("Ascend950PR", "9.1", "ccec", "25.7", "acl-9.1").expect("target"),
             "1 <= elements <= 1024",
             Vec::new(),

@@ -25,7 +25,8 @@
       "./build/reduction_reference",
       "--case-set",
       "release"
-    ]
+    ],
+    "library_target": "reduce_sum"
   },
   "target": {
     "soc": "Ascend950PR",

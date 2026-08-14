@@ -404,7 +404,7 @@ fn load_worker_policies(
     )?;
     let reference_sources = read_reference_sources(reference_root, migration_spec)?;
     let correctness_policy =
-        CandidateCorrectnessToolConfig::reduction_fixture_v1(reference_sources)?;
+        CandidateCorrectnessToolConfig::reduction_fixture_v1(migration_spec, reference_sources)?;
     let required_workers = vec![
         RequiredWorker {
             id: build_worker_id.clone(),

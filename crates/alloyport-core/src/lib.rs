@@ -80,7 +80,7 @@ pub use correctness_attempt::{
     ReductionCorrectnessAttemptSpec, ReductionCorrectnessError,
 };
 pub use correctness_execution::{
-    ASCEND_REDUCTION_CORRECTNESS_FEATURE, CUDA_REDUCTION_CORRECTNESS_FEATURE,
+    ASCEND_REDUCTION_CORRECTNESS_FEATURE, CUDA_REDUCTION_CORRECTNESS_FEATURE, CorrectnessCallable,
     REDUCTION_EXECUTION_BUNDLE_MEDIA_TYPE, REDUCTION_EXECUTION_BUNDLE_SCHEMA_V1, ReductionCaseKind,
     ReductionCorpus, ReductionCorpusCase, ReductionExecutionBundle, ReductionExecutionFile,
 };

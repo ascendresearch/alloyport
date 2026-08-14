@@ -249,6 +249,7 @@ pub struct ReductionExecutionBundle {
     role: ReductionRunRole,
     candidate_id: Option<CandidateId>,
     implementation_digest: Sha256Digest,
+    callable: CorrectnessCallable,
     corpus: ReductionCorpus,
     files: Vec<ReductionExecutionFile>,
 }
@@ -261,6 +262,7 @@ struct ReductionExecutionBundleDocument {
     role: ReductionRunRole,
     candidate_id: Option<CandidateId>,
     implementation_digest: Sha256Digest,
+    callable: CorrectnessCallable,
     corpus: ReductionCorpus,
     files: Vec<ReductionExecutionFile>,
 }
@@ -279,6 +281,7 @@ impl<'de> Deserialize<'de> for ReductionExecutionBundle {
         let bundle = Self::new(
             document.experiment,
             document.role,
+            document.callable.clone(),
             document.corpus,
             document.files,
         )
@@ -294,6 +297,50 @@ impl<'de> Deserialize<'de> for ReductionExecutionBundle {
     }
 }
 
+/// Names the trusted harness must use, carried as data instead of compiled into it.
+///
+/// The harness runs inside the trust boundary and used to hard-code this specimen's public symbol
+/// and both `CMake` target names, so onboarding a second operator family meant editing a trusted
+/// runner. The names come from `MigrationSpec`; the call shape it generates around them
+/// — `int (const float *, size_t, float *)` — is still fixed for the phase-1 scope.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorrectnessCallable {
+    pub public_symbol: String,
+    pub reference_build_target: String,
+    pub candidate_build_target: String,
+}
+
+impl CorrectnessCallable {
+    /// Rejects blank or non-identifier names before they reach generated source.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        [
+            &self.public_symbol,
+            &self.reference_build_target,
+            &self.candidate_build_target,
+        ]
+        .into_iter()
+        .all(|name| {
+            !name.is_empty()
+                && name.len() <= 128
+                && !name.starts_with(|first: char| first.is_ascii_digit())
+                && name
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        })
+    }
+
+    /// Build target for the role under execution.
+    #[must_use]
+    pub fn build_target(&self, role: ReductionRunRole) -> &str {
+        match role {
+            ReductionRunRole::CudaReference => &self.reference_build_target,
+            ReductionRunRole::AscendCandidate => &self.candidate_build_target,
+        }
+    }
+}
+
 impl ReductionExecutionBundle {
     /// Creates a role-isolated source bundle for a trusted runner.
     ///
@@ -303,9 +350,13 @@ impl ReductionExecutionBundle {
     pub fn new(
         experiment: ReductionCorrectnessExperiment,
         role: ReductionRunRole,
+        callable: CorrectnessCallable,
         corpus: ReductionCorpus,
         files: Vec<ReductionExecutionFile>,
     ) -> Result<Self, ReductionCorrectnessError> {
+        if !callable.is_valid() {
+            return Err(ReductionCorrectnessError::InvalidExecutionBundle);
+        }
         if files.is_empty()
             || corpus.digest()? != experiment.corpus_digest()
             || files
@@ -337,6 +388,7 @@ impl ReductionExecutionBundle {
         }
         Ok(Self {
             schema_version: REDUCTION_EXECUTION_BUNDLE_SCHEMA_V1,
+            callable,
             experiment,
             role,
             candidate_id,
@@ -349,6 +401,11 @@ impl ReductionExecutionBundle {
     #[must_use]
     pub const fn experiment(&self) -> &ReductionCorrectnessExperiment {
         &self.experiment
+    }
+
+    #[must_use]
+    pub const fn callable(&self) -> &CorrectnessCallable {
+        &self.callable
     }
 
     #[must_use]

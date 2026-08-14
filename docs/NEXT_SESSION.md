@@ -89,21 +89,30 @@ adjusting anything by hand:
 Ordered by how much each would cost to leave. None is scheduled; all are observations with their
 evidence, not adopted decisions.
 
-1. **The specimen is welded into the core types and the wire.** `ReductionRunReceipt`,
-   `ReductionCorpus`, `ReductionMutantKind`, and the protocol-minor-6 executor kinds all name one
-   operator family. Onboarding a second specimen costs new core types, a protocol version, and a
-   fleet redeploy — while `PRODUCT_EXECUTION_PLAN.md` phase P4 assumes it costs a manifest. 0040
-   removed the two literals from the gates (`alloyport_reduce_sum_f32`,
-   `alloyport_reduction_candidate`), which is the smallest part of this. **This gets more expensive
-   every time a fixture is added, and it is the reason to do it before P4, not during.**
+1. **The specimen is welded into the types and the trusted harness — but not into the wire.**
+   Measured: `Reduction*` appears 351 times in `alloyport-core`, 101 in `alloyport-server`, 92 in
+   `alloyport-candidate-tools`, 75 in `alloyport-worker`, and **0 times in `alloyport-proto`**. The
+   executor kinds are role×backend (`CUDA_CORRECTNESS`, `ASCEND_CORRECTNESS`, `ASCEND_BUILD`), so a
+   second operator family reuses them unchanged.
+
+   *An earlier revision of this list claimed a second specimen would cost a protocol version. It
+   does not; the claim had never been checked against the proto. Corrected here rather than quietly
+   edited, because the same discipline applies to this document.*
+
+   The expensive part is the trusted correctness harness, which is inside the trust boundary and
+   hard-codes the specimen: the callable ABI, the call sites, and both CMake target names. Note it
+   is `include_str!`'d into the worker binary and materialized at execution time, so changing it
+   costs a worker redeploy and **not** an image rebuild. `PRODUCT_EXECUTION_PLAN.md` phase P4
+   assumes onboarding costs a manifest; it currently costs a code change in four crates.
 2. **The trusted harness self-reports two of the oracle's inputs.** `implementation_invoked` and
    `synchronized` are emitted as literals in the generated C++, so no real candidate can move them
    and the two mutants that do are testing nothing. A fallback bypass would set them *true*.
 3. **No performance evidence path exists.** `grep -ril 'roofline\|throughput\|speedup' crates/*/src`
    returns nothing. Design 0006 is unimplemented. The product sentence says "migration and
    optimization factory"; the second half currently has no gate, no metric, and no receipt.
-4. **No knowledge lifecycle.** Design 0008 is unimplemented; the only matches for "knowledge" in
-   the code are `already_known`. Acceptable while the first migration is unfinished, but the
+4. **No knowledge lifecycle.** Design 0008 is unimplemented; outside of `acknowledge*` the word
+   appears twice in the workspace, both as "durable local attempt knowledge" in the worker.
+   Acceptable while the first migration is unfinished, but the
    promote/retract gates are needed the moment there are verdicts worth keeping.
 5. **The Agent has four tools** — submit, source gate, build, correctness — and no way to inspect,
    measure, or learn. That is enough to iterate on a candidate and not enough to diagnose one. It is

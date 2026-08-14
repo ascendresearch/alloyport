@@ -6,8 +6,11 @@ from __future__ import annotations
 import hashlib
 import json
 import pathlib
+import re
 import subprocess
 import sys
+
+IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
 BUNDLE_ROOT = pathlib.Path("/alloyport/bundle")
 WORK_ROOT = pathlib.Path("/alloyport/work")
@@ -44,6 +47,11 @@ def cpp_string(value: str) -> str:
 
 def harness_source(bundle: dict[str, object], config: dict[str, object]) -> str:
     experiment = bundle["experiment"]
+    # The symbol under test is carried by the controller-authored bundle. This runner is trusted and
+    # ships with the worker, so a specimen name compiled into it would make onboarding a second
+    # operator family an edit inside the trust boundary. The call SHAPE below —
+    # int(const float *, size_t, float *) — is still fixed for the phase-1 scope.
+    symbol = str(bundle["callable"]["public_symbol"])
     corpus = bundle["corpus"]
     role = str(bundle["role"])
     candidate_id = bundle["candidate_id"]
@@ -77,7 +85,7 @@ def harness_source(bundle: dict[str, object], config: dict[str, object]) -> str:
 #include <cstring>
 #include <vector>
 
-extern "C" int alloyport_reduce_sum_f32(const float *, size_t, float *);
+extern "C" int {symbol}(const float *, size_t, float *);
 
 enum class CaseKind {{ Valid, NullInput, NullOutput, UnsupportedSize }};
 struct Case {{
@@ -146,16 +154,16 @@ int main() {{
         int status = 0;
         switch (item.kind) {{
             case CaseKind::Valid:
-                status = alloyport_reduce_sum_f32(data, input.size(), &output);
+                status = {symbol}(data, input.size(), &output);
                 break;
             case CaseKind::NullInput:
-                status = alloyport_reduce_sum_f32(nullptr, input.size(), &output);
+                status = {symbol}(nullptr, input.size(), &output);
                 break;
             case CaseKind::NullOutput:
-                status = alloyport_reduce_sum_f32(data, input.size(), nullptr);
+                status = {symbol}(data, input.size(), nullptr);
                 break;
             case CaseKind::UnsupportedSize:
-                status = alloyport_reduce_sum_f32(data, input.size(), &output);
+                status = {symbol}(data, input.size(), &output);
                 break;
         }}
         uint32_t output_bits = 0;
@@ -205,10 +213,21 @@ def main() -> None:
         "ascend_candidate",
     }:
         fail("invalid trusted reduction execution bundle")
+    callable_block = bundle.get("callable")
+    if not isinstance(callable_block, dict) or not all(
+        isinstance(callable_block.get(key), str) and IDENTIFIER.fullmatch(callable_block[key])
+        for key in ("public_symbol", "reference_build_target", "candidate_build_target")
+    ):
+        fail("trusted reduction execution bundle carries no valid callable names")
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
     HARNESS_PATH.write_text(harness_source(bundle, config), encoding="utf-8")
     source_root = "input" if bundle["role"] == "cuda_reference" else "generated"
-    target = "reduce_sum" if bundle["role"] == "cuda_reference" else "alloyport_reduction_candidate"
+    callable_names = bundle["callable"]
+    target = (
+        callable_names["reference_build_target"]
+        if bundle["role"] == "cuda_reference"
+        else callable_names["candidate_build_target"]
+    )
     languages = "CXX CUDA" if bundle["role"] == "cuda_reference" else "CXX"
     cmake = f"""cmake_minimum_required(VERSION 3.24)
 project(alloyport_reduction_correctness LANGUAGES {languages})

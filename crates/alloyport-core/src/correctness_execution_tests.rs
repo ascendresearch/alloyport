@@ -1,4 +1,12 @@
 use super::*;
+
+fn callable() -> CorrectnessCallable {
+    CorrectnessCallable {
+        public_symbol: "alloyport_reduce_sum_f32".to_owned(),
+        reference_build_target: "reduce_sum".to_owned(),
+        candidate_build_target: "alloyport_reduction_candidate".to_owned(),
+    }
+}
 use crate::{REDUCTION_CORPUS_REVISION_V1, ReductionTolerancePlan, TaskId};
 
 fn digest(label: &str) -> Sha256Digest {
@@ -32,6 +40,7 @@ fn role_bundles_keep_reference_and_candidate_source_roots_separate() {
     let reference = ReductionExecutionBundle::new(
         experiment.clone(),
         ReductionRunRole::CudaReference,
+        callable(),
         corpus.clone(),
         vec![
             ReductionExecutionFile::new(
@@ -45,6 +54,7 @@ fn role_bundles_keep_reference_and_candidate_source_roots_separate() {
     let candidate = ReductionExecutionBundle::new(
         experiment,
         ReductionRunRole::AscendCandidate,
+        callable(),
         corpus,
         vec![
             ReductionExecutionFile::new(
@@ -81,6 +91,7 @@ fn bundle_rejects_cross_role_paths_and_authored_identity() {
         ReductionExecutionBundle::new(
             experiment.clone(),
             ReductionRunRole::CudaReference,
+            callable(),
             corpus.clone(),
             vec![
                 ReductionExecutionFile::new(
@@ -95,6 +106,7 @@ fn bundle_rejects_cross_role_paths_and_authored_identity() {
     let bundle = ReductionExecutionBundle::new(
         experiment,
         ReductionRunRole::AscendCandidate,
+        callable(),
         corpus,
         vec![
             ReductionExecutionFile::new(

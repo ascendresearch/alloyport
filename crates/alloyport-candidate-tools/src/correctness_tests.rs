@@ -295,7 +295,10 @@ fn passing_build_dispatches_one_stable_calibrated_correctness_experiment()
     };
     let mut gateway = CandidateToolGateway::new(context, artifacts.clone(), workspace.path())?
         .with_reduction_correctness(
-            CandidateCorrectnessToolConfig::reduction_fixture_v1(reference_sources())?,
+            CandidateCorrectnessToolConfig::reduction_fixture_v1(
+                &migration_spec(),
+                reference_sources(),
+            )?,
             Box::new(correctness),
         );
     assert!(
@@ -363,7 +366,10 @@ fn correctness_rejects_non_build_evidence_before_dispatch() -> Result<(), Box<dy
         workspace.path(),
     )?
     .with_reduction_correctness(
-        CandidateCorrectnessToolConfig::reduction_fixture_v1(reference_sources())?,
+        CandidateCorrectnessToolConfig::reduction_fixture_v1(
+            &migration_spec(),
+            reference_sources(),
+        )?,
         Box::new(correctness),
     );
     let fake_receipt = ingest_json(
@@ -450,7 +456,10 @@ fn durable_episode_completes_only_after_the_calibrated_correctness_gate()
     };
     let mut tools = CandidateToolGateway::new(context, artifacts, workspace.path())?
         .with_reduction_correctness(
-            CandidateCorrectnessToolConfig::reduction_fixture_v1(reference_sources())?,
+            CandidateCorrectnessToolConfig::reduction_fixture_v1(
+                &migration_spec(),
+                reference_sources(),
+            )?,
             Box::new(correctness),
         );
     let continuations = [

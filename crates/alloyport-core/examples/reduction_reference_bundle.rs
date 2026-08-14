@@ -3,9 +3,9 @@
 //! This example does not create Build Gate authority and must not be used as release evidence.
 
 use alloyport_core::{
-    BundlePath, CandidateId, ReductionCorpus, ReductionCorrectnessExperiment,
-    ReductionExecutionBundle, ReductionExecutionFile, ReductionRunRole, ReductionTolerancePlan,
-    Sha256Digest, TaskId,
+    BundlePath, CandidateId, CorrectnessCallable, MigrationSpec, ReductionCorpus,
+    ReductionCorrectnessExperiment, ReductionExecutionBundle, ReductionExecutionFile,
+    ReductionRunRole, ReductionTolerancePlan, Sha256Digest, TaskId,
 };
 use std::error::Error;
 use std::fs;
@@ -13,10 +13,14 @@ use std::path::{Path, PathBuf};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let [source_root, output] = arguments.as_slice() else {
-        return Err("usage: reduction_reference_bundle SOURCE_ROOT OUTPUT_JSON".into());
+    let [source_root, spec_path, output] = arguments.as_slice() else {
+        return Err(
+            "usage: reduction_reference_bundle SOURCE_ROOT MIGRATION_SPEC OUTPUT_JSON".into(),
+        );
     };
     let source_root = PathBuf::from(source_root);
+    // The callable names come from the migration, so this diagnostic names no specimen either.
+    let spec: MigrationSpec = serde_json::from_slice(&fs::read(spec_path)?)?;
     let corpus = ReductionCorpus::fixture_v1();
     let experiment = ReductionCorrectnessExperiment::new(
         TaskId::try_from("diagnostic-cuda-reference")?,
@@ -42,8 +46,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             )?)
         })
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-    let bundle =
-        ReductionExecutionBundle::new(experiment, ReductionRunRole::CudaReference, corpus, files)?;
+    let bundle = ReductionExecutionBundle::new(
+        experiment,
+        ReductionRunRole::CudaReference,
+        CorrectnessCallable {
+            public_symbol: spec.public_entry().symbol().to_owned(),
+            reference_build_target: spec.reference().library_target().to_owned(),
+            candidate_build_target: spec.public_entry().build_target().to_owned(),
+        },
+        corpus,
+        files,
+    )?;
     let bytes = serde_json::to_vec(&bundle)?;
     fs::write(output, &bytes)?;
     println!("bundle_digest={}", Sha256Digest::digest_bytes(&bytes));

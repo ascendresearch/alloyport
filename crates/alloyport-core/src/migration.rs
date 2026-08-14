@@ -208,19 +208,25 @@ impl PublicEntryPoint {
 pub struct ReferenceWorkload {
     working_directory: BundlePath,
     argv: Vec<String>,
+    library_target: String,
 }
 
 #[derive(Deserialize)]
 struct ReferenceWorkloadDocument {
     working_directory: BundlePath,
     argv: Vec<String>,
+    library_target: String,
 }
 
 impl TryFrom<ReferenceWorkloadDocument> for ReferenceWorkload {
     type Error = MigrationSpecError;
 
     fn try_from(document: ReferenceWorkloadDocument) -> Result<Self, Self::Error> {
-        Self::new(document.working_directory, document.argv)
+        Self::new(
+            document.working_directory,
+            document.argv,
+            document.library_target,
+        )
     }
 }
 
@@ -229,19 +235,31 @@ impl ReferenceWorkload {
     ///
     /// # Errors
     ///
-    /// Returns an error for an empty command or an empty argv element.
+    /// Returns an error for an empty command, an empty argv element, or no library target.
     pub fn new(
         working_directory: BundlePath,
         argv: impl IntoIterator<Item = String>,
+        library_target: impl Into<String>,
     ) -> Result<Self, MigrationSpecError> {
         let argv: Vec<_> = argv.into_iter().collect();
-        if argv.is_empty() || argv.iter().any(|argument| argument.trim().is_empty()) {
+        let library_target = library_target.into();
+        if argv.is_empty()
+            || argv.iter().any(|argument| argument.trim().is_empty())
+            || library_target.trim().is_empty()
+        {
             return Err(MigrationSpecError::InvalidReferenceCommand);
         }
         Ok(Self {
             working_directory,
             argv,
+            library_target,
         })
+    }
+
+    /// Build target carrying the authority implementation, which a trusted harness links against.
+    #[must_use]
+    pub fn library_target(&self) -> &str {
+        &self.library_target
     }
 
     /// Working directory relative to the source bundle.
@@ -631,8 +649,12 @@ mod tests {
                 "reduce_sum_candidate",
             )
             .expect("entry point"),
-            ReferenceWorkload::new(path("."), ["./build/reduce_test".to_owned()])
-                .expect("reference"),
+            ReferenceWorkload::new(
+                path("."),
+                ["./build/reduce_test".to_owned()],
+                "reference_library",
+            )
+            .expect("reference"),
             target(),
             "1 <= elements <= 1048576; contiguous fp32",
             ["cooperative groups".to_owned()],
@@ -737,7 +759,9 @@ mod tests {
     fn migration_spec_rejects_undeclared_domain_and_fallback() {
         let entry = PublicEntryPoint::new("reduce_sum", "sum input", "reduce_sum_candidate")
             .expect("entry point");
-        let reference = ReferenceWorkload::new(path("."), ["./run".to_owned()]).expect("reference");
+        let reference =
+            ReferenceWorkload::new(path("."), ["./run".to_owned()], "reference_library")
+                .expect("reference");
         assert_eq!(
             MigrationSpec::new_v1(
                 "source-sha",

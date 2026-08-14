@@ -271,6 +271,7 @@ fn correctness_fixture() -> Result<(Fixture, Vec<u8>), Box<dyn std::error::Error
     let bundle = ReductionExecutionBundle::new(
         experiment.clone(),
         ReductionRunRole::CudaReference,
+        correctness_callable(),
         corpus,
         vec![ReductionExecutionFile::new(
             BundlePath::try_from("input/CMakeLists.txt")?,
@@ -520,5 +521,13 @@ impl CudaContainerEngine for FakeEngine {
             self.state.lock().map_err(|_| "lock")?.snapshot = None;
             Ok(())
         })
+    }
+}
+
+fn correctness_callable() -> alloyport_core::CorrectnessCallable {
+    alloyport_core::CorrectnessCallable {
+        public_symbol: "alloyport_reduce_sum_f32".to_owned(),
+        reference_build_target: "reduce_sum".to_owned(),
+        candidate_build_target: "alloyport_reduction_candidate".to_owned(),
     }
 }

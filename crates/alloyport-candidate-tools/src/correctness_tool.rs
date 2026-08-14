@@ -30,6 +30,7 @@ const MAX_EXECUTION_BUNDLE_BYTES: u64 = 32 * 1024 * 1024;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CandidateCorrectnessToolConfig {
     tolerance_plan: ReductionTolerancePlan,
+    callable: alloyport_core::CorrectnessCallable,
     corpus: ReductionCorpus,
     reference_files: Vec<ReductionExecutionFile>,
 }
@@ -41,6 +42,7 @@ impl CandidateCorrectnessToolConfig {
     ///
     /// Returns an error for non-UTF-8, empty, or invalid reference source files.
     pub fn reduction_fixture_v1(
+        migration_spec: &alloyport_core::MigrationSpec,
         reference_sources: BTreeMap<alloyport_core::BundlePath, Vec<u8>>,
     ) -> Result<Self, ToolGatewayError> {
         let reference_files = reference_sources
@@ -54,6 +56,11 @@ impl CandidateCorrectnessToolConfig {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             tolerance_plan: ReductionTolerancePlan::fixture_v1(),
+            callable: alloyport_core::CorrectnessCallable {
+                public_symbol: migration_spec.public_entry().symbol().to_owned(),
+                reference_build_target: migration_spec.reference().library_target().to_owned(),
+                candidate_build_target: migration_spec.public_entry().build_target().to_owned(),
+            },
             corpus: ReductionCorpus::fixture_v1(),
             reference_files,
         })
@@ -199,6 +206,7 @@ impl CandidateCorrectnessTool {
         let reference_bundle = ReductionExecutionBundle::new(
             experiment.clone(),
             alloyport_core::ReductionRunRole::CudaReference,
+            self.config.callable.clone(),
             self.config.corpus.clone(),
             self.config.reference_files.clone(),
         )
@@ -206,6 +214,7 @@ impl CandidateCorrectnessTool {
         let candidate_bundle = ReductionExecutionBundle::new(
             experiment.clone(),
             alloyport_core::ReductionRunRole::AscendCandidate,
+            self.config.callable.clone(),
             self.config.corpus.clone(),
             candidate_files,
         )
