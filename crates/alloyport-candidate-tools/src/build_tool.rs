@@ -298,3 +298,11 @@ struct RequestAscendBuildArguments {
     manifest_digest: Sha256Digest,
     source_gate_receipt_digest: Sha256Digest,
 }
+
+pub(crate) const REQUEST_ASCEND_BUILD_ARGUMENT_CONTRACT: &str =
+    "{\"manifest_digest\": \"sha256:...\", \"source_gate_receipt_digest\": \"sha256:...\"}";
+
+/// Decodes the arguments without any effect, so a malformed call can be returned to the model.
+pub(crate) fn check_ascend_build_arguments(raw: &[u8]) -> Result<(), serde_json::Error> {
+    serde_json::from_slice::<RequestAscendBuildArguments>(raw).map(|_| ())
+}

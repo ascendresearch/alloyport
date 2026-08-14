@@ -6,10 +6,11 @@ use crate::materialization::{CandidateMaterialization, CandidateMaterializationE
 use alloyport_artifacts::{ArtifactStore, ArtifactStoreError, IngestRequest};
 use alloyport_core::{
     AgentToolGateway, ArtifactDescriptor, BundlePath, CandidateId, CandidateSourceFile,
-    CandidateSourceManifest, CandidateSourceManifestSpec, GeneratedSourceBundle,
+    CandidateSourceManifest, CandidateSourceManifestSpec, GatewayToolCall, GeneratedSourceBundle,
     GenerationStrategy, MigrationSpec, RuntimeToolDescriptor, Sha256Digest, SourceGateReceipt,
     TaskId, ToolEffectClass, ToolGatewayError, ToolGatewayFuture, ToolGatewayOutcome,
-    ToolInvocation, ToolOperationStatus, ToolResultAuthority, evaluate_source_gate,
+    ToolInputRejection, ToolInvocation, ToolOperationStatus, ToolResultAuthority,
+    evaluate_source_gate,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -311,7 +312,81 @@ impl CandidateToolGateway {
     }
 }
 
+/// Decodes the arguments of one call without touching the workspace or any worker.
+fn check_arguments(name: &str, raw: &[u8]) -> Result<(), (String, &'static str)> {
+    let decoded = match name {
+        SUBMIT_CANDIDATE_BUNDLE_TOOL => {
+            serde_json::from_slice::<SubmitCandidateBundleArguments>(raw).map(|_| ())
+        }
+        REQUEST_SOURCE_GATE_TOOL => serde_json::from_slice::<SourceGateArguments>(raw).map(|_| ()),
+        REQUEST_ASCEND_BUILD_TOOL => crate::build_tool::check_ascend_build_arguments(raw),
+        REQUEST_REDUCTION_CORRECTNESS_TOOL => {
+            crate::correctness_tool::check_reduction_correctness_arguments(raw)
+        }
+        _ => return Err((format!("unknown tool {name}"), "")),
+    };
+    decoded.map_err(|error| (error.to_string(), argument_contract(name)))
+}
+
+fn argument_contract(name: &str) -> &'static str {
+    match name {
+        SUBMIT_CANDIDATE_BUNDLE_TOOL => SUBMIT_CANDIDATE_BUNDLE_ARGUMENT_CONTRACT,
+        REQUEST_SOURCE_GATE_TOOL => SOURCE_GATE_ARGUMENT_CONTRACT,
+        REQUEST_ASCEND_BUILD_TOOL => crate::build_tool::REQUEST_ASCEND_BUILD_ARGUMENT_CONTRACT,
+        REQUEST_REDUCTION_CORRECTNESS_TOOL => {
+            crate::correctness_tool::REQUEST_REDUCTION_CORRECTNESS_ARGUMENT_CONTRACT
+        }
+        _ => "",
+    }
+}
+
+const SUBMIT_CANDIDATE_BUNDLE_ARGUMENT_CONTRACT: &str = concat!(
+    r#"{"parent_candidate_id": "candidate-... (optional)", "bundle": {"files": [{"#,
+    r#""path": "generated/...", "kind": "ascend_c_device|ascend_host|build_integration"#,
+    r#"|component_mapping", "contents": "..."}]}}"#
+);
+
+const SOURCE_GATE_ARGUMENT_CONTRACT: &str = r#"{"manifest_digest": "sha256:..."}"#;
+
 impl AgentToolGateway for CandidateToolGateway {
+    fn validate_call(&self, call: &GatewayToolCall) -> Result<(), ToolInputRejection> {
+        let (reason, contract) = if self.descriptor(&call.name).is_none() {
+            (
+                format!("tool {} is not available in this migration", call.name),
+                "",
+            )
+        } else {
+            match check_arguments(&call.name, &call.raw_arguments) {
+                Ok(()) => return Ok(()),
+                Err(rejection) => rejection,
+            }
+        };
+        let diagnostic = format!("{}: {reason}", call.name);
+        let explanation = serde_json::json!({
+            "rejected": true,
+            "tool": call.name,
+            "reason": reason,
+            "expected_arguments": contract,
+            "recoverable": true,
+            "guidance": "the arguments were not decodable; no candidate, build, or run was affected. \
+                         Reissue this call with corrected arguments.",
+        });
+        // A rejection the model cannot read is worse than no rejection: the controller opens this
+        // digest to build the next model input. If publication fails the store itself is broken,
+        // which is an infrastructure failure and not the model's to correct, so the call proceeds
+        // and surfaces that failure through the normal adapter path.
+        let Ok(bytes) = serde_json::to_vec(&explanation) else {
+            return Ok(());
+        };
+        match ingest_bytes(self.artifacts.as_ref(), &bytes) {
+            Ok(artifact) => Err(ToolInputRejection {
+                result_digest: artifact.digest,
+                diagnostic,
+            }),
+            Err(_) => Ok(()),
+        }
+    }
+
     fn descriptor(&self, name: &str) -> Option<RuntimeToolDescriptor> {
         match name {
             SUBMIT_CANDIDATE_BUNDLE_TOOL => Some(RuntimeToolDescriptor {

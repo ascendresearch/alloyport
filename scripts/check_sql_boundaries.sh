@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# A gate that cannot run must not report success. Every search below ends in `|| true` so that an
+# empty result is not an error; that also swallowed a missing `rg` and printed a clean pass.
+if ! command -v rg >/dev/null 2>&1; then
+    printf 'SQL boundary check cannot run: ripgrep (rg) is not installed.\n' >&2
+    exit 2
+fi
+
 sql_pattern='SELECT |INSERT |UPDATE |DELETE |CREATE TABLE|ALTER TABLE|PRAGMA |BEGIN IMMEDIATE|COMMIT;'
 driver_pattern='(^|[^[:alnum:]_])rusqlite(::|\{)|use[[:space:]]+rusqlite'
 

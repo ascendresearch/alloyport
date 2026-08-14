@@ -46,8 +46,8 @@ pub use agent_runtime_support::{
     AgentLoopAdvance, AgentRuntimeFaultInjector, AgentRuntimeFaultPoint, AgentToolGateway,
     EpisodeRepository, EpisodeRepositoryError, InMemoryEpisodeRepository, NoAgentRuntimeFault,
     OneShotAgentRuntimeFault, RuntimeToolDescriptor, ScriptedFakeToolGateway, ScriptedToolStep,
-    ToolGatewayAction, ToolGatewayError, ToolGatewayFuture, ToolGatewayOutcome, ToolInvocation,
-    VersionedEpisodeState,
+    ToolGatewayAction, ToolGatewayError, ToolGatewayFuture, ToolGatewayOutcome, ToolInputRejection,
+    ToolInvocation, VersionedEpisodeState,
 };
 pub use artifact::{ArtifactDescriptor, DigestParseError, Sha256Digest};
 pub use assignment::{AssignmentContract, EnvironmentEntry, ExecutionContract, ResourceContract};

@@ -552,7 +552,19 @@ impl AgentLoopRunner {
                 arguments_digest,
                 input_identity_digest: versioned.state.next_input_digest,
             })?;
-            if tools.descriptor(&call.name).is_none() {
+            if let Err(rejection) = tools.validate_call(&call) {
+                // A defect in the model's own arguments is recoverable: the operation is terminal,
+                // its published explanation becomes the next model input, and the episode continues.
+                record.finish(
+                    ToolOperationStatus::RejectedAsInvalid,
+                    rejection.result_digest,
+                    Vec::new(),
+                )?;
+            } else if tools.descriptor(&call.name).is_none() {
+                // Defense in depth only: every protocol codec already fails closed on a tool name
+                // that was not declared, and a real gateway rejects an unknown name through
+                // `validate_call` with a readable artifact. This label names no artifact, so a
+                // gateway that reaches it has not published the explanation the model needs.
                 record.finish(
                     ToolOperationStatus::RejectedAsInvalid,
                     digest_label("unknown-tool"),

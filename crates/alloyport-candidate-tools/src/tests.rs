@@ -730,6 +730,248 @@ fn same_episode_consumes_real_source_failure_and_submits_a_correction() -> Resul
     Ok(())
 }
 
+/// The exact defect that ended the 2026-08-13 live migration: one file object omits `path`.
+fn malformed_bundle() -> Value {
+    json!({
+        "bundle": {
+            "files": [
+                {"kind":"ascend_c_device","contents":"#include <kernel_operator.h>\n"}
+            ]
+        }
+    })
+}
+
+fn rejection_runtime_state() -> Result<DurableEpisodeState, Box<dyn Error>> {
+    let episode = AgentEpisodeRecord::new(EpisodeSpec {
+        id: EpisodeId::try_from("episode-invalid-arguments")?,
+        task_id: TaskId::try_from("task-candidate-tools")?,
+        search_run_id: SearchRunId::try_from("search-invalid-arguments")?,
+        parent_candidate_id: None,
+        subtask_contract_digest: digest("subtask"),
+        context_projection_digest: digest("context"),
+        input_artifact_root_digest: digest("input-root"),
+        runtime_model_alias: "configured-model".to_owned(),
+        resolved_model_digest: digest("resolved-model"),
+        prompt_revision: "fixture-v1".to_owned(),
+        tool_catalog_digest: digest("tools"),
+        loop_policy_digest: digest("policy"),
+        data_boundary_policy_digest: digest("boundary"),
+        budget_snapshot_digest: digest("budget"),
+    })?;
+    Ok(DurableEpisodeState::new(AgentLoopRuntimeSpec {
+        episode,
+        policy: AgentLoopPolicy {
+            max_model_turns: 6,
+            max_model_attempts: 6,
+            max_ambiguous_model_attempts: 1,
+            max_tool_calls_per_turn: 1,
+            max_total_tool_operations: 4,
+            max_stop_feedback_turns: 0,
+        },
+        initial_input_digest: digest("initial-input"),
+        resolved_model_digest: digest("resolved-model"),
+        deployment_digest: digest("deployment"),
+        model_profile_digest: digest("profile"),
+        request_budget_digest: digest("request-budget"),
+    })?)
+}
+
+#[test]
+fn malformed_arguments_publish_a_readable_rejection_instead_of_failing_the_migration()
+-> Result<(), Box<dyn Error>> {
+    let artifacts: Arc<dyn ArtifactStore> = Arc::new(InMemoryArtifactStore::new(16 * 1024 * 1024));
+    let workspace = tempfile::tempdir()?;
+    let config = CandidateToolConfig::new(
+        TaskId::try_from("task-candidate-tools")?,
+        &migration_spec(),
+        alloyport_core::GenerationStrategy::DirectAscendC,
+    );
+    let tools = CandidateToolGateway::new(config, artifacts.clone(), workspace.path())?;
+
+    let call = GatewayToolCall {
+        native_call_id: "call-malformed".to_owned(),
+        name: SUBMIT_CANDIDATE_BUNDLE_TOOL.to_owned(),
+        raw_arguments: serde_json::to_vec(&malformed_bundle())?,
+    };
+    let rejection = tools
+        .validate_call(&call)
+        .expect_err("a file object without a path cannot be decoded");
+    let explanation = read_json(artifacts.as_ref(), rejection.result_digest);
+    assert_eq!(explanation["rejected"], json!(true));
+    assert_eq!(explanation["tool"], json!(SUBMIT_CANDIDATE_BUNDLE_TOOL));
+    assert!(
+        explanation["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("path")),
+        "the model must be told which field was missing: {explanation}"
+    );
+    assert!(
+        explanation["expected_arguments"]
+            .as_str()
+            .is_some_and(|contract| contract.contains("\"path\"")),
+        "the rejection must restate the tool's own argument contract"
+    );
+
+    let unknown = GatewayToolCall {
+        native_call_id: "call-unknown".to_owned(),
+        name: "request_reduction_correctness".to_owned(),
+        raw_arguments: b"{}".to_vec(),
+    };
+    let unknown_rejection = tools
+        .validate_call(&unknown)
+        .expect_err("a tool that is not enabled is not dispatchable");
+    read_json(artifacts.as_ref(), unknown_rejection.result_digest);
+
+    let good = GatewayToolCall {
+        native_call_id: "call-good".to_owned(),
+        name: SUBMIT_CANDIDATE_BUNDLE_TOOL.to_owned(),
+        raw_arguments: serde_json::to_vec(&bundle(true, None))?,
+    };
+    assert!(
+        tools.validate_call(&good).is_ok(),
+        "validation must not change the good case"
+    );
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn an_invalid_tool_call_is_terminal_and_the_same_episode_continues() -> Result<(), Box<dyn Error>> {
+    let artifacts: Arc<dyn ArtifactStore> = Arc::new(InMemoryArtifactStore::new(16 * 1024 * 1024));
+    let workspace = tempfile::tempdir()?;
+    let config = CandidateToolConfig::new(
+        TaskId::try_from("task-candidate-tools")?,
+        &migration_spec(),
+        alloyport_core::GenerationStrategy::DirectAscendC,
+    );
+    let mut tools = CandidateToolGateway::new(config, artifacts.clone(), workspace.path())?;
+
+    // Content-addressed publication is idempotent, so precomputing the rejection and result
+    // digests scripts the model without changing what the run itself produces.
+    let rejection_digest = tools
+        .validate_call(&GatewayToolCall {
+            native_call_id: "probe".to_owned(),
+            name: SUBMIT_CANDIDATE_BUNDLE_TOOL.to_owned(),
+            raw_arguments: serde_json::to_vec(&malformed_bundle())?,
+        })
+        .expect_err("malformed")
+        .result_digest;
+    let good_bundle = bundle(true, None);
+    let (_, submit_result) = execute(
+        &mut tools,
+        &invocation(SUBMIT_CANDIDATE_BUNDLE_TOOL, &good_bundle, "pre-good"),
+    );
+    let manifest: Sha256Digest = serde_json::from_value(
+        read_json(artifacts.as_ref(), submit_result)["manifest"]["digest"].clone(),
+    )?;
+    let gate_arguments = json!({ "manifest_digest": manifest });
+    let (_, gate_receipt) = execute(
+        &mut tools,
+        &invocation(REQUEST_SOURCE_GATE_TOOL, &gate_arguments, "pre-gate"),
+    );
+
+    let continuations = [digest("r1"), digest("r2"), digest("r3")];
+    let input2 = alloyport_core::derive_model_continuation_input_digest(
+        continuations[0],
+        [rejection_digest],
+    );
+    let input3 =
+        alloyport_core::derive_model_continuation_input_digest(continuations[1], [submit_result]);
+    let input4 =
+        alloyport_core::derive_model_continuation_input_digest(continuations[2], [gate_receipt]);
+    let mut models = ScriptedFakeModelGateway::new([
+        ScriptedGatewayStep {
+            expected_turn_index: 1,
+            expected_input_digest: digest("initial-input"),
+            outcome: ModelGatewayOutcome::Turn(exchange(
+                "submit-malformed",
+                tool_turn(
+                    "submit-malformed",
+                    SUBMIT_CANDIDATE_BUNDLE_TOOL,
+                    &malformed_bundle(),
+                ),
+                continuations[0],
+            )),
+        },
+        ScriptedGatewayStep {
+            expected_turn_index: 2,
+            expected_input_digest: input2,
+            outcome: ModelGatewayOutcome::Turn(exchange(
+                "submit-corrected",
+                tool_turn(
+                    "submit-corrected",
+                    SUBMIT_CANDIDATE_BUNDLE_TOOL,
+                    &good_bundle,
+                ),
+                continuations[1],
+            )),
+        },
+        ScriptedGatewayStep {
+            expected_turn_index: 3,
+            expected_input_digest: input3,
+            outcome: ModelGatewayOutcome::Turn(exchange(
+                "gate",
+                tool_turn("gate", REQUEST_SOURCE_GATE_TOOL, &gate_arguments),
+                continuations[2],
+            )),
+        },
+        ScriptedGatewayStep {
+            expected_turn_index: 4,
+            expected_input_digest: input4,
+            outcome: ModelGatewayOutcome::Turn(exchange(
+                "final",
+                GatewayTurn {
+                    narrative: vec!["corrected the malformed call and passed".to_owned()],
+                    tool_calls: Vec::new(),
+                    stop_reason: NormalizedStopReason::Stop,
+                    usage: None,
+                },
+                digest("r4"),
+            )),
+        },
+    ]);
+    let episode_id = EpisodeId::try_from("episode-invalid-arguments")?;
+    let mut repository = InMemoryEpisodeRepository::default();
+    repository.create(rejection_runtime_state()?)?;
+    let runner = AgentLoopRunner::new(episode_id.clone());
+    let outcome = complete_immediate(async {
+        for _ in 0..64 {
+            let outcome = runner
+                .advance(
+                    &mut repository,
+                    &mut models,
+                    &mut tools,
+                    &mut NoAgentRuntimeFault,
+                )
+                .await?;
+            if matches!(outcome, AgentLoopAdvance::Terminal(_)) {
+                return Ok::<_, alloyport_core::AgentLoopRuntimeError>(outcome);
+            }
+        }
+        Ok(AgentLoopAdvance::Progressed(EpisodeStatus::Created))
+    })?;
+    assert_eq!(
+        outcome,
+        AgentLoopAdvance::Terminal(EpisodeStatus::Succeeded),
+        "a defect in the model's own arguments must not end the migration"
+    );
+    let state = repository.load(&episode_id)?.state;
+    assert_eq!(
+        state.tool_statuses(),
+        vec![
+            ToolOperationStatus::RejectedAsInvalid,
+            ToolOperationStatus::Succeeded,
+            ToolOperationStatus::Succeeded,
+        ]
+    );
+    for result in state.tool_result_digests() {
+        // Every result the controller will feed back must be a real artifact; a rejection whose
+        // digest names nothing fails the next model turn instead of the malformed call.
+        read_json(artifacts.as_ref(), result.expect("terminal result digest"));
+    }
+    Ok(())
+}
+
 #[path = "build_episode_tests.rs"]
 mod build_episode_tests;
 

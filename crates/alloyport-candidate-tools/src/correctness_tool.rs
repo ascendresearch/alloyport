@@ -348,3 +348,13 @@ struct RequestReductionCorrectnessArguments {
     source_gate_receipt_digest: Sha256Digest,
     build_gate_receipt_digest: Sha256Digest,
 }
+
+pub(crate) const REQUEST_REDUCTION_CORRECTNESS_ARGUMENT_CONTRACT: &str = concat!(
+    r#"{"candidate_id": "candidate-...", "manifest_digest": "sha256:...", "#,
+    r#""source_gate_receipt_digest": "sha256:...", "build_gate_receipt_digest": "sha256:..."}"#
+);
+
+/// Decodes the arguments without any effect, so a malformed call can be returned to the model.
+pub(crate) fn check_reduction_correctness_arguments(raw: &[u8]) -> Result<(), serde_json::Error> {
+    serde_json::from_slice::<RequestReductionCorrectnessArguments>(raw).map(|_| ())
+}

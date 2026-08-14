@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Fail with one legible reason rather than dozens of `rg: command not found` lines that read as
+# architecture violations.
+if ! command -v rg >/dev/null 2>&1; then
+    printf 'Architecture boundary check cannot run: ripgrep (rg) is not installed.\n' >&2
+    exit 2
+fi
+
 max_production_module_lines=800
 violations=()
 

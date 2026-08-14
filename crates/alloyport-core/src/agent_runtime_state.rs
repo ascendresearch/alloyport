@@ -97,6 +97,15 @@ impl DurableEpisodeState {
             .collect()
     }
 
+    /// Result digests in operation order, so a caller can prove each one names a real artifact.
+    #[must_use]
+    pub fn tool_result_digests(&self) -> Vec<Option<crate::Sha256Digest>> {
+        self.tool_operations
+            .iter()
+            .map(|operation| operation.record.result_digest())
+            .collect()
+    }
+
     pub(crate) const fn episode_id(&self) -> &EpisodeId {
         self.episode.id()
     }

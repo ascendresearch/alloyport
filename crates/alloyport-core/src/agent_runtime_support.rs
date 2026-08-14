@@ -154,8 +154,38 @@ pub enum ToolGatewayOutcome {
 pub type ToolGatewayFuture<'a> =
     Pin<Box<dyn Future<Output = Result<ToolGatewayOutcome, ToolGatewayError>> + Send + 'a>>;
 
+/// A model-authored call refused before any external effect.
+///
+/// `result_digest` must name an artifact the model can actually read. A rejection is a tool result
+/// like every other tool result: the controller feeds its bytes back into the next model input, so a
+/// digest that names nothing does not merely lose the explanation, it fails the whole episode when
+/// the context store opens it. Only a component with artifact authority can mint one, which is why
+/// this is produced by the gateway rather than by the reducer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolInputRejection {
+    pub result_digest: Sha256Digest,
+    pub diagnostic: String,
+}
+
 pub trait AgentToolGateway: Debug + Send {
     fn descriptor(&self, name: &str) -> Option<RuntimeToolDescriptor>;
+
+    /// Checks a model-authored call before it is authorized or dispatched.
+    ///
+    /// A defect the model can see and correct — an unknown tool name, malformed JSON, a missing or
+    /// unexpected field — is not an infrastructure failure and must not end the migration. It is
+    /// deterministic, side-effect-free, and belongs to the model's own turn, so the reducer records
+    /// it as a terminal `RejectedAsInvalid` operation and returns the explanation. Implementations
+    /// may publish that explanation as an immutable artifact — that is what makes the digest
+    /// readable — but must not materialize a candidate, dispatch remote work, or otherwise advance
+    /// the migration.
+    ///
+    /// # Errors
+    ///
+    /// Returns the published rejection when the call cannot be dispatched as written.
+    fn validate_call(&self, _call: &GatewayToolCall) -> Result<(), ToolInputRejection> {
+        Ok(())
+    }
 
     /// Executes one stable logical operation.
     ///
