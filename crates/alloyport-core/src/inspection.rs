@@ -472,7 +472,8 @@ mod tests {
                 [path("CMakeLists.txt")],
             )
             .expect("source set"),
-            PublicEntryPoint::new("reduce_sum", "sum contiguous fp32").expect("public entry"),
+            PublicEntryPoint::new("reduce_sum", "sum contiguous fp32", "reduce_sum_candidate")
+                .expect("public entry"),
             ReferenceWorkload::new(path("."), ["./build/test".to_owned()]).expect("reference"),
             AscendTarget::new("Ascend950PR", "9.1", "ccec", "25.7", "acl").expect("target"),
             "contiguous fp32",

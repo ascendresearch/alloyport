@@ -110,7 +110,12 @@ impl CandidateBuildTool {
         workspace_root: &Path,
         request: &ToolInvocation,
     ) -> Result<ToolGatewayOutcome, ToolGatewayError> {
-        let prepared = self.prepare(context, artifacts, workspace_root, request)?;
+        let prepared = match self.prepare(context, artifacts, workspace_root, request)? {
+            BuildPreparation::Ready(prepared) => *prepared,
+            BuildPreparation::CandidateRejected { result_digest } => {
+                return Ok(candidate_rejected(result_digest));
+            }
+        };
         let observation = self
             .attempts
             .dispatch(&prepared.assignment)
@@ -126,7 +131,12 @@ impl CandidateBuildTool {
         workspace_root: &Path,
         request: &ToolInvocation,
     ) -> Result<ToolGatewayOutcome, ToolGatewayError> {
-        let prepared = self.prepare(context, artifacts, workspace_root, request)?;
+        let prepared = match self.prepare(context, artifacts, workspace_root, request)? {
+            BuildPreparation::Ready(prepared) => *prepared,
+            BuildPreparation::CandidateRejected { result_digest } => {
+                return Ok(candidate_rejected(result_digest));
+            }
+        };
         let observation = self
             .attempts
             .reconcile(&prepared.assignment)
@@ -141,7 +151,7 @@ impl CandidateBuildTool {
         artifacts: &dyn ArtifactStore,
         workspace_root: &Path,
         request: &ToolInvocation,
-    ) -> Result<PreparedBuild, ToolGatewayError> {
+    ) -> Result<BuildPreparation, ToolGatewayError> {
         let arguments: RequestAscendBuildArguments =
             serde_json::from_slice(&request.call.raw_arguments)
                 .map_err(|error| adapter_error(format!("invalid Ascend build request: {error}")))?;
@@ -164,13 +174,15 @@ impl CandidateBuildTool {
         let sources = materialization
             .read_verified_sources(&manifest)
             .map_err(|error| materialization_error(&error))?;
-        verify_source_gate_receipt(
+        if let Some(result_digest) = verify_source_gate_receipt(
             artifacts,
             &manifest,
             arguments.manifest_digest,
             arguments.source_gate_receipt_digest,
             &sources,
-        )?;
+        )? {
+            return Ok(BuildPreparation::CandidateRejected { result_digest });
+        }
         let bundle = CandidateBuildBundle::new(
             &manifest,
             arguments.manifest_digest,
@@ -188,7 +200,10 @@ impl CandidateBuildTool {
             media_type: ASCEND_BUILD_BUNDLE_MEDIA_TYPE.to_owned(),
         };
         let assignment = self.assignment(request, &bundle, bundle_artifact)?;
-        Ok(PreparedBuild { bundle, assignment })
+        Ok(BuildPreparation::Ready(Box::new(PreparedBuild {
+            bundle,
+            assignment,
+        })))
     }
 
     fn assignment(
@@ -263,19 +278,26 @@ impl CandidateBuildTool {
     }
 }
 
+/// Confirms the model cited the receipt this exact tree actually produces.
+///
+/// A candidate whose Source Gate found something blocking is a defect the model can read and fix,
+/// not an infrastructure failure. It publishes the receipt and returns its digest so the caller can
+/// hand the model a terminal candidate failure and keep the migration alive.
 fn verify_source_gate_receipt(
     artifacts: &dyn ArtifactStore,
     manifest: &CandidateSourceManifest,
     manifest_digest: Sha256Digest,
     receipt_digest: Sha256Digest,
     sources: &std::collections::BTreeMap<alloyport_core::BundlePath, Vec<u8>>,
-) -> Result<(), ToolGatewayError> {
+) -> Result<Option<Sha256Digest>, ToolGatewayError> {
     let supplied = read_bounded(artifacts, receipt_digest, MAX_SOURCE_GATE_RECEIPT_BYTES)?;
     let expected = evaluate_source_gate(manifest, manifest_digest, sources);
     if !expected.passed() {
-        return Err(adapter_error(
-            alloyport_core::CandidateBuildError::SourceGateDidNotPass.to_string(),
-        ));
+        let bytes = serde_json::to_vec(&expected).map_err(|error| {
+            adapter_error(format!("cannot encode Source Gate receipt: {error}"))
+        })?;
+        return crate::gateway::ingest_bytes(artifacts, &bytes)
+            .map(|artifact| Some(artifact.digest));
     }
     let expected = serde_json::to_vec(&expected)
         .map_err(|error| adapter_error(format!("cannot encode Source Gate receipt: {error}")))?;
@@ -284,7 +306,21 @@ fn verify_source_gate_receipt(
             alloyport_core::CandidateBuildError::SourceGateReceiptMismatch.to_string(),
         ));
     }
-    Ok(())
+    Ok(None)
+}
+
+fn candidate_rejected(result_digest: Sha256Digest) -> ToolGatewayOutcome {
+    ToolGatewayOutcome::Completed {
+        status: ToolOperationStatus::CandidateFailed,
+        result_digest,
+        receipt_digests: vec![result_digest],
+        satisfies_subtask: false,
+    }
+}
+
+enum BuildPreparation {
+    Ready(Box<PreparedBuild>),
+    CandidateRejected { result_digest: Sha256Digest },
 }
 
 struct PreparedBuild {

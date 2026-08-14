@@ -16,7 +16,8 @@
   },
   "public_entry": {
     "symbol": "alloyport_reduce_sum_f32",
-    "contract": "For 0 <= elements <= 1048576, sum contiguous host fp32 input into one host fp32 output; zero elements returns +0.0; invalid pointers and unsupported sizes return declared status codes."
+    "contract": "For 0 <= elements <= 1048576, sum contiguous host fp32 input into one host fp32 output; zero elements returns +0.0; invalid pointers and unsupported sizes return declared status codes.",
+    "build_target": "alloyport_reduction_candidate"
   },
   "reference": {
     "working_directory": "input",
@@ -43,4 +44,3 @@
   ],
   "fallback": "Return ALLOYPORT_REDUCE_UNSUPPORTED before device allocation or launch; do not silently invoke a framework operator."
 }
-

@@ -14,7 +14,16 @@ fn file(path: &str, kind: GeneratedSourceKind, contents: &str) -> CandidateSourc
 }
 
 fn source_set(device: &str) -> (CandidateSourceManifest, BTreeMap<BundlePath, Vec<u8>>) {
-    let host = "extern \"C\" int alloyport_reduce_sum_f32(const float *input, size_t elements, float *output) { ACLRT_LAUNCH_KERNEL(reduce_sum); }";
+    source_set_with_host(
+        device,
+        "extern \"C\" int alloyport_reduce_sum_f32(const float *input, size_t elements, float *output) { ACLRT_LAUNCH_KERNEL(reduce_sum); }",
+    )
+}
+
+fn source_set_with_host(
+    device: &str,
+    host: &str,
+) -> (CandidateSourceManifest, BTreeMap<BundlePath, Vec<u8>>) {
     let build = "add_library(alloyport_reduction_candidate reduce.cpp host.cpp)";
     let mapping = "input/kernel.cu -> generated/reduce.cpp\ninput/host.cu -> generated/host.cpp\ngenerated/CMakeLists.txt";
     let files = vec![
@@ -42,6 +51,7 @@ fn source_set(device: &str) -> (CandidateSourceManifest, BTreeMap<BundlePath, Ve
         migration_spec_digest: Sha256Digest::digest_bytes(b"spec"),
         generation_strategy: GenerationStrategy::DirectAscendC,
         public_symbol: "alloyport_reduce_sum_f32".to_owned(),
+        build_target: "alloyport_reduction_candidate".to_owned(),
         input_source_paths: ["input/kernel.cu", "input/host.cu"]
             .into_iter()
             .map(|path| BundlePath::try_from(path).expect("input path"))
@@ -76,17 +86,58 @@ fn source_gate_accepts_structural_ascend_c_and_complete_mapping() {
 }
 
 #[test]
-fn source_gate_independently_rejects_framework_fallback_and_missing_kernel() {
+fn source_gate_independently_rejects_a_framework_fallback() {
     let device = "#include <torch/extension.h>\nauto reduce() { return at::sum(input); }";
     let (manifest, sources) = source_set(device);
     let receipt =
         evaluate_source_gate(&manifest, Sha256Digest::digest_bytes(b"manifest"), &sources);
     assert!(!receipt.passed());
-    let kinds: BTreeSet<_> = receipt
-        .failures()
-        .iter()
-        .map(|failure| failure.kind)
-        .collect();
+    let kinds: BTreeSet<_> = receipt.blocking().map(|failure| failure.kind).collect();
     assert!(kinds.contains(&SourceGateFailureKind::ForbiddenFallback));
-    assert!(kinds.contains(&SourceGateFailureKind::MissingAscendCKernel));
+}
+
+#[test]
+fn an_unfamiliar_ascend_c_surface_is_reported_and_still_allowed_through() {
+    // The low-level `Te` tensor API is the only route proven to work for a direct-launch Cube
+    // kernel, and it carries none of the markers the earlier gate demanded. Refusing it here would
+    // reject a correct port for spelling, before a compiler ever saw it.
+    let device = "#include \"mm_te_common.h\"\nextern \"C\" __global__ void reduce(uint8_t *x) {}";
+    let (manifest, sources) = source_set(device);
+    let receipt =
+        evaluate_source_gate(&manifest, Sha256Digest::digest_bytes(b"manifest"), &sources);
+    assert!(
+        receipt.passed(),
+        "{:?}",
+        receipt.blocking().collect::<Vec<_>>()
+    );
+    let advisories: Vec<_> = receipt.advisories().map(|item| item.kind).collect();
+    assert_eq!(
+        advisories,
+        vec![SourceGateFailureKind::UnrecognizedKernelStructure],
+        "the finding is reported to the model, it just does not decide anything"
+    );
+}
+
+#[test]
+fn a_bundle_with_no_device_source_cannot_pass() {
+    let (manifest, sources) = source_set("   \n");
+    let receipt =
+        evaluate_source_gate(&manifest, Sha256Digest::digest_bytes(b"manifest"), &sources);
+    assert!(!receipt.passed());
+    let kinds: BTreeSet<_> = receipt.blocking().map(|failure| failure.kind).collect();
+    assert!(kinds.contains(&SourceGateFailureKind::MissingDeviceSource));
+}
+
+#[test]
+fn dropping_the_public_symbol_blocks_the_candidate() {
+    let host = "extern \"C\" int something_else(const float *input) { return 0; }";
+    let (manifest, sources) = source_set_with_host(
+        "#include <kernel_operator.h>\n__aicore__ void reduce(GM_ADDR x) {}",
+        host,
+    );
+    let receipt =
+        evaluate_source_gate(&manifest, Sha256Digest::digest_bytes(b"manifest"), &sources);
+    assert!(!receipt.passed());
+    let kinds: BTreeSet<_> = receipt.blocking().map(|failure| failure.kind).collect();
+    assert!(kinds.contains(&SourceGateFailureKind::MissingHostEntryPoint));
 }

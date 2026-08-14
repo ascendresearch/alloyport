@@ -47,6 +47,7 @@ stable identifier.
 | 0037 | [Explicit Candidate Episode bootstrap](0037-explicit-candidate-episode-bootstrap.md) | Implemented |
 | 0038 | [Standalone Ascend Build worker](0038-standalone-ascend-build-worker.md) | Implemented |
 | 0039 | [Stable process configuration discovery](0039-stable-process-configuration-discovery.md) | Implemented |
+| 0040 | [Measured tolerance, recoverable tool inputs, and an advisory Source Gate](0040-measured-tolerance-and-advisory-source-gate.md) | Implemented |
 
 ## Convention
 

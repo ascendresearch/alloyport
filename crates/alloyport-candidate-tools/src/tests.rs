@@ -361,10 +361,18 @@ fn ascend_build_requires_the_exact_source_receipt_and_reconciles_one_stable_assi
         }),
         "build-failing-receipt",
     );
-    assert!(matches!(
-        complete_immediate(gateway.execute(&failing_build)),
-        Err(ToolGatewayError::Adapter(message)) if message.contains("SourceGateDidNotPass")
-    ));
+    // A candidate whose Source Gate found something blocking is the model's defect to correct, so
+    // it comes back as a terminal candidate failure carrying the readable receipt — never as an
+    // adapter error, which would end the whole migration over a recoverable mistake.
+    let (status, result_digest) = execute(&mut gateway, &failing_build);
+    assert_eq!(status, ToolOperationStatus::CandidateFailed);
+    let reported = read_json(artifacts.as_ref(), result_digest);
+    assert_eq!(reported["passed"], json!(false));
+    assert!(
+        reported["failures"]
+            .as_array()
+            .is_some_and(|failures| !failures.is_empty())
+    );
     assert!(assignments.lock().expect("assignment log").is_empty());
 
     let build = invocation(

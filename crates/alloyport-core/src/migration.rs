@@ -141,19 +141,21 @@ impl CudaSourceSet {
 pub struct PublicEntryPoint {
     symbol: String,
     contract: String,
+    build_target: String,
 }
 
 #[derive(Deserialize)]
 struct PublicEntryPointDocument {
     symbol: String,
     contract: String,
+    build_target: String,
 }
 
 impl TryFrom<PublicEntryPointDocument> for PublicEntryPoint {
     type Error = MigrationSpecError;
 
     fn try_from(document: PublicEntryPointDocument) -> Result<Self, Self::Error> {
-        Self::new(document.symbol, document.contract)
+        Self::new(document.symbol, document.contract, document.build_target)
     }
 }
 
@@ -162,14 +164,20 @@ impl PublicEntryPoint {
     ///
     /// # Errors
     ///
-    /// Returns an error when the symbol or caller-visible behavior is empty.
+    /// Returns an error when the symbol, caller-visible behavior, or build target is empty.
     pub fn new(
         symbol: impl Into<String>,
         contract: impl Into<String>,
+        build_target: impl Into<String>,
     ) -> Result<Self, MigrationSpecError> {
         let symbol = required_text(symbol, MigrationSpecError::MissingPublicSymbol)?;
         let contract = required_text(contract, MigrationSpecError::MissingPublicContract)?;
-        Ok(Self { symbol, contract })
+        let build_target = required_text(build_target, MigrationSpecError::MissingBuildTarget)?;
+        Ok(Self {
+            symbol,
+            contract,
+            build_target,
+        })
     }
 
     /// Public symbol or extension entry name.
@@ -182,6 +190,15 @@ impl PublicEntryPoint {
     #[must_use]
     pub fn contract(&self) -> &str {
         &self.contract
+    }
+
+    /// Build target the migrated extension must define so downstream harnesses can link it.
+    ///
+    /// This belongs to the migration, not to the factory. A gate that hard-codes it can only ever
+    /// gate one specimen.
+    #[must_use]
+    pub fn build_target(&self) -> &str {
+        &self.build_target
     }
 }
 
@@ -544,6 +561,7 @@ pub enum MigrationSpecError {
     MissingBuildFile,
     MissingPublicSymbol,
     MissingPublicContract,
+    MissingBuildTarget,
     InvalidReferenceCommand,
     MissingTargetFact(&'static str),
     MissingSourceRevision,
@@ -566,6 +584,7 @@ impl Display for MigrationSpecError {
             Self::MissingBuildFile => write!(formatter, "migration has no build file"),
             Self::MissingPublicSymbol => write!(formatter, "migration has no public symbol"),
             Self::MissingPublicContract => write!(formatter, "migration has no public contract"),
+            Self::MissingBuildTarget => write!(formatter, "migration has no build target"),
             Self::InvalidReferenceCommand => write!(formatter, "reference command argv is empty"),
             Self::MissingTargetFact(fact) => write!(formatter, "Ascend target is missing {fact}"),
             Self::MissingSourceRevision => write!(formatter, "migration has no source revision"),
@@ -606,8 +625,12 @@ mod tests {
         MigrationSpec::new_v1(
             "source-sha",
             source_set(),
-            PublicEntryPoint::new("reduce_sum", "sum fp32 input into one fp32 output")
-                .expect("entry point"),
+            PublicEntryPoint::new(
+                "reduce_sum",
+                "sum fp32 input into one fp32 output",
+                "reduce_sum_candidate",
+            )
+            .expect("entry point"),
             ReferenceWorkload::new(path("."), ["./build/reduce_test".to_owned()])
                 .expect("reference"),
             target(),
@@ -712,7 +735,8 @@ mod tests {
 
     #[test]
     fn migration_spec_rejects_undeclared_domain_and_fallback() {
-        let entry = PublicEntryPoint::new("reduce_sum", "sum input").expect("entry point");
+        let entry = PublicEntryPoint::new("reduce_sum", "sum input", "reduce_sum_candidate")
+            .expect("entry point");
         let reference = ReferenceWorkload::new(path("."), ["./run".to_owned()]).expect("reference");
         assert_eq!(
             MigrationSpec::new_v1(

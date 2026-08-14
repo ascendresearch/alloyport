@@ -105,6 +105,10 @@ Read these documents before changing architecture or implementation:
     for the strict Build-only worker file and production NPU/runtime composition.
 34. [`design/0039-stable-process-configuration-discovery.md`](design/0039-stable-process-configuration-discovery.md)
     for deterministic binary-sibling and system-wide server/worker configuration locations.
+35. [`design/0040-measured-tolerance-and-advisory-source-gate.md`](design/0040-measured-tolerance-and-advisory-source-gate.md)
+    for recoverable model-authored tool inputs, a correctness tolerance derived from a measured
+    floor rather than asserted, and a Source Gate that states the product boundary instead of
+    prescribing how a kernel is written. It supersedes parts of 0005, 0027, and 0028.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -715,7 +719,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 288 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 314 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 
@@ -1127,8 +1131,9 @@ same validated 24-observation corpus and exact role-separated source trees. The 
 both Artifact descriptors; candidate tooling rereads the immutable manifest/materialization before
 dispatch and binds returned run receipts to the assigned implementation digests. The oracle requires
 exact corpus coverage and recomputes case input identities, so coordinated case omission cannot
-calibrate. Source Gate v2 additionally requires the fixed reduction C ABI and
-`alloyport_reduction_candidate` CMake target.
+calibrate. Source Gate v2 additionally required the fixed reduction C ABI and `alloyport_reduction_candidate`
+CMake target. **Superseded by [Design 0040](design/0040-measured-tolerance-and-advisory-source-gate.md):**
+both now come from `MigrationSpec.public_entry`, and the gate names no specimen.
 
 The paired controller-dispatch slice is complete under
 [Design 0029](design/0029-paired-correctness-worker-dispatch.md). Protocol minor 6 adds separate
@@ -1160,7 +1165,12 @@ The pinned-image and first hardware diagnostic slice is complete under
 Ascend correctness Dockerfiles contain only their pinned build/runtime environments. Real attempts
 on the idle GB10 exposed and then closed missing Python-standard-library and CMake dependencies.
 The final image executed all 24 frozen CUDA observations under the offline/read-only container
-boundary, and the production oracle detected all ten mutants. The exact diagnostic run and
+boundary, and the production oracle detected all ten mutants. **Superseded by
+[Design 0040](design/0040-measured-tolerance-and-advisory-source-gate.md):** all ten mutants are
+orders of magnitude larger than the tolerance they ran against, and that tolerance was asserted
+rather than measured, so that calibration no longer reads as a passing gate. See
+[`reduction-noise-floor-20260814.md`](evidence/reduction-noise-floor-20260814.md). The exact
+diagnostic run and
 calibration receipts plus image/base identities are in
 [`evidence/reduction-correctness-harness-diagnostic-20260812.md`](evidence/reduction-correctness-harness-diagnostic-20260812.md).
 The Ascend image is built and toolchain-checked, but no developer-authored target was substituted
@@ -1329,15 +1339,27 @@ itself is not yet diagnosed.
 
 ## Suggested first task for the next Codex session
 
-Start by making deterministic, side-effect-free candidate-tool input validation failures
-model-visible and recoverable. Add an Agent-runtime/candidate-gateway regression proving that a
-malformed corrected submission is recorded as a failed tool result and that a following valid call
-can continue the same durable Episode. Run the full workspace tests and commit.
+The previously suggested first task — making deterministic, side-effect-free candidate-tool input
+validation failures model-visible and recoverable — is **done** under
+[Design 0040](design/0040-measured-tolerance-and-advisory-source-gate.md), together with two
+corrections that were found while doing it: the correctness tolerance is now derived from a measured
+floor instead of an asserted constant, and the Source Gate no longer prescribes how a kernel must be
+written. `docs/evidence/reduction-noise-floor-20260814.md` records what the frozen tolerance was
+actually doing.
 
-Then rebuild/redeploy only the server, restart the server and both persistent worker/tunnel
+Next: rebuild/redeploy only the server, restart the server and both persistent worker/tunnel
 processes using `.alloyport-local/host-connections.md`, and explicitly retry the existing migration
 through `alloyport-cli`. Observe which automatically selected Ascend device receives the durable
 lease and container mapping. Continue through Source, sequential Ascend Build, paired CUDA/Ascend
 Correctness, and capture the immutable receipts. Do not add performance optimization, release
 automation, TUI polish, retention policy, or generalized execution until this first genuine
 migration completes.
+
+Two things to watch on that run, because they are new and unproven on hardware:
+
+1. The trusted CUDA harness now emits `reorder_output_bits`. If the pairwise order disagrees with
+   the reference by much more than its run-to-run spread, the derived tolerance widens and
+   calibration will start reporting mutants in `undetected` rather than silently passing. That
+   report is the signal — do not widen anything by hand.
+2. `battery_scope` is `ComparatorOnly` on every calibration receipt. Nothing yet proves a broken
+   kernel would be caught before the comparator sees it.

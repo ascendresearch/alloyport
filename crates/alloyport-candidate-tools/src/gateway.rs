@@ -31,6 +31,7 @@ pub struct CandidateToolConfig {
     migration_spec_digest: Sha256Digest,
     generation_strategy: GenerationStrategy,
     public_symbol: String,
+    build_target: String,
     input_source_paths: BTreeSet<BundlePath>,
     target_architecture: String,
 }
@@ -55,6 +56,7 @@ impl CandidateToolConfig {
             migration_spec_digest: migration_spec.digest(),
             generation_strategy,
             public_symbol: migration_spec.public_entry().symbol().to_owned(),
+            build_target: migration_spec.public_entry().build_target().to_owned(),
             input_source_paths,
             target_architecture: migration_spec.target().soc().to_owned(),
         }
@@ -66,6 +68,7 @@ impl CandidateToolConfig {
             self.migration_spec_digest,
             self.generation_strategy,
             &self.public_symbol,
+            &self.build_target,
             &self.input_source_paths,
         )
     }
@@ -206,6 +209,7 @@ impl CandidateToolGateway {
             migration_spec_digest: self.config.migration_spec_digest,
             generation_strategy: self.config.generation_strategy,
             public_symbol: self.config.public_symbol.clone(),
+            build_target: self.config.build_target.clone(),
             input_source_paths: self.config.input_source_paths.clone(),
             source_bundle_digest: bundle_digest,
             files: source_files,
@@ -259,6 +263,7 @@ impl CandidateToolGateway {
             self.config.migration_spec_digest,
             self.config.generation_strategy,
             &self.config.public_symbol,
+            &self.config.build_target,
             &self.config.input_source_paths,
         ) {
             return Err(adapter_error(

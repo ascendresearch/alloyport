@@ -62,7 +62,7 @@ pub use candidate_source::{
     CANDIDATE_SOURCE_MANIFEST_SCHEMA_V1, CandidateSourceError, CandidateSourceFile,
     CandidateSourceManifest, CandidateSourceManifestSpec, SOURCE_GATE_RECEIPT_SCHEMA_V1,
     SOURCE_GATE_REVISION_V2, SourceGateFailure, SourceGateFailureKind, SourceGateReceipt,
-    evaluate_source_gate,
+    SourceGateSeverity, evaluate_source_gate,
 };
 pub use correctness::{
     CorrectnessVerdict, REDUCTION_CALIBRATION_RECEIPT_SCHEMA_V1, REDUCTION_CORPUS_REVISION_V1,
