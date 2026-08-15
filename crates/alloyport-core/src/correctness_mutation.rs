@@ -4,6 +4,10 @@
 //! that a broken kernel would be caught on the way here. Every kind except `JustOutsideTolerance`
 //! is deliberately far outside any plausible tolerance, which is why that one exists: a battery of
 //! sledgehammers cannot tell you where the edge is.
+//!
+//! Nothing here may perturb a field the trusted runner emits as a literal. Such a mutant is caught
+//! every time, cannot occur in a real candidate, and so raises the battery's detection count
+//! without raising what it establishes.
 
 use super::{
     ReductionMutantKind, ReductionOraclePolicy, ReductionRunReceipt, ReductionRunRole,
@@ -20,8 +24,12 @@ pub(super) fn apply_mutant(
     run.role = ReductionRunRole::AscendCandidate;
     run.candidate_id = Some(CandidateId::try_from("candidate-calibration-mutant").ok()?);
     match mutant {
-        ReductionMutantKind::FallbackBypass => run.implementation_invoked = false,
-        ReductionMutantKind::MissingSynchronization => run.synchronized = false,
+        // Retired: they moved a field the trusted runner emits as a literal. Absent from `ALL`, so
+        // this arm is unreachable through calibration; returning `None` keeps it that way if some
+        // future caller reaches for one by name.
+        ReductionMutantKind::FallbackBypass | ReductionMutantKind::MissingSynchronization => {
+            return None;
+        }
         ReductionMutantKind::ArithmeticScale => mutate_value(&mut run, |value| value * 1.1)?,
         ReductionMutantKind::BoundaryMask => mutate_sized_value(&mut run, 257, |_| 0.0)?,
         ReductionMutantKind::AccumulationError => mutate_value(&mut run, |value| value + 0.01)?,

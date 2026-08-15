@@ -67,6 +67,12 @@ impl ReductionObservation {
 }
 
 /// Immutable structured output authored by a trusted runner, not by the candidate process.
+///
+/// `implementation_invoked` and `synchronized` are **runner attestations, not observations**: the
+/// trusted harness emits both as literals, so no real candidate can move them and a candidate that
+/// bypassed its own implementation would report them `true`. The oracle still refuses a receipt
+/// that admits either is false — an admission is worth acting on — but their being `true` proves
+/// nothing, and [`ReductionCorrectnessReceipt::unverified`] says so on every verdict.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReductionRunReceipt {
     schema_version: u16,
@@ -518,10 +524,15 @@ impl ReductionOraclePolicy {
 ///
 /// Every kind here perturbs a **run receipt**, not an implementation. That bounds what the battery
 /// can prove: it exercises the comparator's own arithmetic and bookkeeping, and it says nothing
-/// about whether the surrounding pipeline would catch a genuinely broken kernel. `FallbackBypass`
-/// and `MissingSynchronization` are the clearest case — the trusted harness emits those two flags
-/// as literals, so no real candidate can set them false and no real bypass would be caught here.
-/// See [`ReductionBatteryScope`], which records that limitation inside the receipt.
+/// about whether the surrounding pipeline would catch a genuinely broken kernel. See
+/// [`ReductionBatteryScope`], which records that limitation inside the receipt.
+///
+/// Two kinds were removed rather than kept: they flipped `implementation_invoked` and
+/// `synchronized`, which the trusted runner emits as literals. No real candidate can move either,
+/// so the comparator caught them every time and the battery counted two guaranteed detections it
+/// had not earned. A mutant that cannot occur inflates the pass rate of the battery that contains
+/// it. The comparator's handling of those admissions is still covered, by a unit test that does not
+/// claim to be calibration.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReductionMutantKind {
@@ -532,9 +543,12 @@ pub enum ReductionMutantKind {
     InvalidStatus,
     SignedZero,
     NonFinite,
-    FallbackBypass,
-    MissingSynchronization,
     Nondeterminism,
+    /// Retired. Kept so archived calibration receipts still parse; never produced. These flipped
+    /// `implementation_invoked` and `synchronized`, which the trusted runner emits as literals.
+    FallbackBypass,
+    /// Retired for the same reason as [`Self::FallbackBypass`].
+    MissingSynchronization,
     /// A perturbation just above the configured tolerance. The battery is worthless if this
     /// survives: every other mutant is orders of magnitude larger, so ten of them can pass at a
     /// tolerance a hundred times too loose.
@@ -542,7 +556,7 @@ pub enum ReductionMutantKind {
 }
 
 impl ReductionMutantKind {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 9] = [
         Self::ArithmeticScale,
         Self::IndexingSwap,
         Self::BoundaryMask,
@@ -550,8 +564,6 @@ impl ReductionMutantKind {
         Self::InvalidStatus,
         Self::SignedZero,
         Self::NonFinite,
-        Self::FallbackBypass,
-        Self::MissingSynchronization,
         Self::Nondeterminism,
         Self::JustOutsideTolerance,
     ];
@@ -784,6 +796,34 @@ pub struct ReductionOracleFailure {
     pub detail: String,
 }
 
+/// Something a verdict rests on and did not check.
+///
+/// A gate that cannot state its own blind spots invites every reader to assume it has none. These
+/// travel with the verdict rather than living in a design document nobody opens while reading a
+/// receipt, and the list shrinks when an observation replaces an assumption.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnverifiedAssumption {
+    /// Nothing observed that the candidate executed on the accelerator. Plain host C++ that sums
+    /// the input compiles on the Ascend build worker, links, is called through the same ABI, and
+    /// matches the authority exactly. The Source Gate blocks delegating to a framework or a
+    /// prebuilt operator; it does not, and by itself cannot, establish that a device was used.
+    DeviceExecution,
+    /// Invocation and synchronization are attested by the trusted runner rather than observed.
+    RunnerAttestation,
+}
+
+/// What no run through this oracle has yet verified.
+///
+/// Constant until something observes it. It is derived rather than written by hand so that adding
+/// the observation is what removes the entry.
+fn unverified_assumptions() -> Vec<UnverifiedAssumption> {
+    vec![
+        UnverifiedAssumption::DeviceExecution,
+        UnverifiedAssumption::RunnerAttestation,
+    ]
+}
+
 /// Four-way correctness semantics. Only `Pass` promotes a candidate.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -805,6 +845,8 @@ pub struct ReductionCorrectnessReceipt {
     candidate_run_digest: Sha256Digest,
     calibration_receipt_digest: Sha256Digest,
     verdict: CorrectnessVerdict,
+    #[serde(default)]
+    unverified: Vec<UnverifiedAssumption>,
     failures: Vec<ReductionOracleFailure>,
 }
 
@@ -817,6 +859,12 @@ impl ReductionCorrectnessReceipt {
     #[must_use]
     pub fn failures(&self) -> &[ReductionOracleFailure] {
         &self.failures
+    }
+
+    /// What this verdict rests on and did not check. A `Pass` carries these too.
+    #[must_use]
+    pub fn unverified(&self) -> &[UnverifiedAssumption] {
+        &self.unverified
     }
 
     /// Computes the canonical correctness-receipt identity.
@@ -1033,6 +1081,7 @@ pub fn evaluate_reduction_correctness(
         candidate_run_digest,
         calibration_receipt_digest,
         verdict,
+        unverified: unverified_assumptions(),
         failures,
     })
 }

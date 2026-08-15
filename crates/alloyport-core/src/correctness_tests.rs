@@ -332,3 +332,57 @@ fn calibration_rejects_a_reference_that_omits_one_frozen_case() {
         calibrate_reduction_oracle(&reference, &plan, &corpus).expect("calibration receipt");
     assert!(!calibration.passed());
 }
+
+#[test]
+fn a_pass_states_what_it_did_not_check() {
+    let plan = ReductionTolerancePlan::fixture_v1();
+    let (experiment, reference, candidate, corpus) = runs();
+    let calibration = calibrate_reduction_oracle(&reference, &plan, &corpus).expect("calibration");
+    let receipt = evaluate_reduction_correctness(
+        experiment,
+        &reference,
+        &candidate,
+        &plan,
+        &corpus,
+        &calibration,
+    )
+    .expect("receipt");
+    assert_eq!(receipt.verdict(), CorrectnessVerdict::Pass);
+    assert!(
+        receipt
+            .unverified()
+            .contains(&UnverifiedAssumption::DeviceExecution),
+        "a passing verdict must say that nothing observed the candidate running on the device"
+    );
+    assert!(
+        receipt
+            .unverified()
+            .contains(&UnverifiedAssumption::RunnerAttestation)
+    );
+}
+
+#[test]
+fn the_battery_contains_no_mutant_that_moves_a_runner_attested_field() {
+    // Flipping a literal the trusted runner always emits is detected every time and cannot happen
+    // in a real candidate, so counting it would raise the battery's score without raising what it
+    // establishes. The comparator's handling of such an admission is covered below instead.
+    let plan = ReductionTolerancePlan::fixture_v1();
+    let (_, reference, mut candidate, corpus) = runs();
+    let calibration = calibrate_reduction_oracle(&reference, &plan, &corpus).expect("calibration");
+    assert_eq!(calibration.detections().len(), 9);
+    assert!(calibration.passed());
+
+    candidate.implementation_invoked = false;
+    let failures = compare_runs(
+        &reference,
+        &candidate,
+        &ReductionOraclePolicy::asserted_v1(),
+        &corpus,
+    );
+    assert!(
+        failures
+            .iter()
+            .any(|item| item.kind == ReductionOracleFailureKind::CandidatePathNotInvoked),
+        "an admission is still worth acting on, even though nothing can produce one"
+    );
+}

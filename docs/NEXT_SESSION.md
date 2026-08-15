@@ -104,9 +104,19 @@ evidence, not adopted decisions.
    is `include_str!`'d into the worker binary and materialized at execution time, so changing it
    costs a worker redeploy and **not** an image rebuild. `PRODUCT_EXECUTION_PLAN.md` phase P4
    assumes onboarding costs a manifest; it currently costs a code change in four crates.
-2. **The trusted harness self-reports two of the oracle's inputs.** `implementation_invoked` and
-   `synchronized` are emitted as literals in the generated C++, so no real candidate can move them
-   and the two mutants that do are testing nothing. A fallback bypass would set them *true*.
+2. **Nothing observes that the candidate ran on the device.** This is the real shape of what used
+   to be listed here as "the harness self-reports two oracle inputs". Plain host C++ that sums the
+   input passes the Source Gate (its kernel-structure check is advisory since 0040 — that change
+   widened this), compiles on the Ascend build worker because it is just C++, links, is called
+   through the same ABI, and matches the authority exactly. `implementation_invoked` and
+   `synchronized` are literals emitted by the trusted runner, so they cannot catch it.
+
+   Partly addressed: every verdict now carries `unverified: [device_execution, runner_attestation]`,
+   so a `PASS` states this rather than implying the opposite, and the two mutants that flipped those
+   literals are retired from the battery — a mutant no real candidate can produce was scoring a
+   guaranteed detection. **The observation itself is still missing.** The cheapest candidate is a
+   link-time check that the built candidate depends on the ACL runtime; it is necessary rather than
+   sufficient, and it cannot be designed honestly without a device to try it against.
 3. **No performance evidence path exists.** `grep -ril 'roofline\|throughput\|speedup' crates/*/src`
    returns nothing. Design 0006 is unimplemented. The product sentence says "migration and
    optimization factory"; the second half currently has no gate, no metric, and no receipt.
