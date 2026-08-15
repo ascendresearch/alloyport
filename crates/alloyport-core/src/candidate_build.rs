@@ -523,6 +523,27 @@ impl AscendBuildReceipt {
     }
 
     #[must_use]
+    pub const fn exit_code(&self) -> Option<i32> {
+        self.exit_code
+    }
+
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    /// Compiler output the worker published, which is the evidence a correction needs.
+    #[must_use]
+    pub const fn stdout(&self) -> Option<&ArtifactDescriptor> {
+        self.stdout.as_ref()
+    }
+
+    #[must_use]
+    pub const fn stderr(&self) -> Option<&ArtifactDescriptor> {
+        self.stderr.as_ref()
+    }
+
+    #[must_use]
     pub const fn outcome(&self) -> AttemptOutcome {
         self.outcome
     }

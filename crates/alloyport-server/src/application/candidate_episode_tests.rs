@@ -2,9 +2,13 @@ use super::*;
 use std::collections::BTreeSet;
 
 #[test]
-fn candidate_episode_catalog_exposes_only_the_four_gated_tools() {
+fn candidate_episode_catalog_is_closed_and_grants_authority_only_through_gates() {
     let tools = candidate_episode_tool_definitions();
     assert!(tools.iter().all(|tool| tool.strict));
+    // The catalog is fixed and closed. Model arguments cannot choose a worker, an image, a device,
+    // a command, the corpus, or the tolerance; that property is what this set is guarding, not the
+    // count. `read_build_diagnostics` is an instrument: it returns evidence the pipeline already
+    // published about this migration and approves nothing.
     assert_eq!(
         tools
             .iter()
@@ -14,6 +18,7 @@ fn candidate_episode_catalog_exposes_only_the_four_gated_tools() {
             SUBMIT_CANDIDATE_BUNDLE_TOOL,
             REQUEST_SOURCE_GATE_TOOL,
             REQUEST_ASCEND_BUILD_TOOL,
+            READ_BUILD_DIAGNOSTICS_TOOL,
             REQUEST_REDUCTION_CORRECTNESS_TOOL,
         ])
     );

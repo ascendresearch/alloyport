@@ -8,8 +8,8 @@ use crate::{
 use alloyport_artifacts::ArtifactStore;
 use alloyport_candidate_tools::{
     CandidateBuildToolConfig, CandidateCorrectnessToolConfig, CandidateToolConfig,
-    CandidateToolGateway, REQUEST_ASCEND_BUILD_TOOL, REQUEST_REDUCTION_CORRECTNESS_TOOL,
-    REQUEST_SOURCE_GATE_TOOL, SUBMIT_CANDIDATE_BUNDLE_TOOL,
+    CandidateToolGateway, READ_BUILD_DIAGNOSTICS_TOOL, REQUEST_ASCEND_BUILD_TOOL,
+    REQUEST_REDUCTION_CORRECTNESS_TOOL, REQUEST_SOURCE_GATE_TOOL, SUBMIT_CANDIDATE_BUNDLE_TOOL,
 };
 use alloyport_core::{CodecLimits, CodecToolDefinition, GenerationStrategy, MigrationSpec};
 use alloyport_llm_provider::ReqwestModelTransport;
@@ -139,6 +139,13 @@ pub fn candidate_episode_tool_definitions() -> Vec<CodecToolDefinition> {
                 "source_gate_receipt_digest": digest.clone()
             }),
             &["manifest_digest", "source_gate_receipt_digest"],
+        ),
+        tool(
+            READ_BUILD_DIAGNOSTICS_TOOL,
+            "Read the compiler output the Build Gate published for one of this migration's build \
+             receipts. Returns information only; it approves nothing.",
+            &json!({"build_gate_receipt_digest": digest.clone()}),
+            &["build_gate_receipt_digest"],
         ),
         tool(
             REQUEST_REDUCTION_CORRECTNESS_TOOL,

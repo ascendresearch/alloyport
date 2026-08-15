@@ -13,9 +13,10 @@ use alloyport_core::{
     ToolGatewayError, ToolGatewayOutcome, ToolInvocation, ToolOperationStatus,
     evaluate_source_gate,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
+use std::io::Read;
 use std::path::Path;
 
 pub const REQUEST_ASCEND_BUILD_TOOL: &str = "request_ascend_build";
@@ -341,4 +342,118 @@ pub(crate) const REQUEST_ASCEND_BUILD_ARGUMENT_CONTRACT: &str =
 /// Decodes the arguments without any effect, so a malformed call can be returned to the model.
 pub(crate) fn check_ascend_build_arguments(raw: &[u8]) -> Result<(), serde_json::Error> {
     serde_json::from_slice::<RequestAscendBuildArguments>(raw).map(|_| ())
+}
+
+pub const READ_BUILD_DIAGNOSTICS_TOOL: &str = "read_build_diagnostics";
+const MAX_DIAGNOSTIC_BYTES: u64 = 64 * 1024;
+
+pub(crate) const READ_BUILD_DIAGNOSTICS_ARGUMENT_CONTRACT: &str =
+    r#"{"build_gate_receipt_digest": "sha256:..."}"#;
+
+/// Decodes the arguments without any effect, so a malformed call can be returned to the model.
+pub(crate) fn check_read_build_diagnostics_arguments(raw: &[u8]) -> Result<(), serde_json::Error> {
+    serde_json::from_slice::<ReadBuildDiagnosticsArguments>(raw).map(|_| ())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadBuildDiagnosticsArguments {
+    build_gate_receipt_digest: Sha256Digest,
+}
+
+#[derive(Serialize)]
+struct DiagnosticStream {
+    text: String,
+    returned_bytes: u64,
+    total_bytes: u64,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+struct BuildDiagnostics {
+    outcome: AttemptOutcome,
+    exit_code: Option<i32>,
+    detail: String,
+    stdout: Option<DiagnosticStream>,
+    stderr: Option<DiagnosticStream>,
+}
+
+/// Returns the compiler output the Build Gate already published.
+///
+/// Until this existed the model was told a build failed, given a fixed classification string, and
+/// handed a descriptor it had no tool to open — so the only evidence about its own source was
+/// unreachable. The correction loop a deterministic Episode test appears to prove was resting on a
+/// fake port whose `detail` carried an invented message; on real hardware `detail` is a `&'static
+/// str` policy constant.
+///
+/// Authority flows from the receipt, not from the digest the model names: the receipt must belong
+/// to this migration, and only the artifacts that receipt itself points at are returned. The model
+/// cannot reach the reference implementation, the frozen corpus, or another task's bytes by naming
+/// a digest.
+pub(crate) fn read_build_diagnostics(
+    context: &CandidateToolConfig,
+    artifacts: &dyn ArtifactStore,
+    request: &ToolInvocation,
+) -> Result<ToolGatewayOutcome, ToolGatewayError> {
+    let arguments: ReadBuildDiagnosticsArguments =
+        serde_json::from_slice(&request.call.raw_arguments)
+            .map_err(|error| adapter_error(format!("invalid diagnostics request: {error}")))?;
+    let receipt_bytes = read_bounded(
+        artifacts,
+        arguments.build_gate_receipt_digest,
+        MAX_SOURCE_GATE_RECEIPT_BYTES,
+    )?;
+    let receipt: AscendBuildReceipt = serde_json::from_slice(&receipt_bytes)
+        .map_err(|error| adapter_error(format!("invalid Build Gate receipt: {error}")))?;
+    let manifest_bytes = read_bounded(artifacts, receipt.manifest_digest(), MAX_MANIFEST_BYTES)?;
+    let manifest: CandidateSourceManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|error| adapter_error(format!("invalid candidate manifest: {error}")))?;
+    if !context.matches_manifest(&manifest) {
+        return Err(adapter_error(
+            "Build Gate receipt does not belong to this migration context",
+        ));
+    }
+    let diagnostics = BuildDiagnostics {
+        outcome: receipt.outcome(),
+        exit_code: receipt.exit_code(),
+        detail: receipt.detail().to_owned(),
+        stdout: read_stream(artifacts, receipt.stdout())?,
+        stderr: read_stream(artifacts, receipt.stderr())?,
+    };
+    let bytes = serde_json::to_vec(&diagnostics)
+        .map_err(|error| adapter_error(format!("cannot encode diagnostics: {error}")))?;
+    let stored = crate::gateway::ingest_bytes(artifacts, &bytes)?;
+    Ok(ToolGatewayOutcome::Completed {
+        status: ToolOperationStatus::Succeeded,
+        result_digest: stored.digest,
+        receipt_digests: Vec::new(),
+        satisfies_subtask: false,
+    })
+}
+
+/// Reads one bounded stream, and says when it cut something rather than cutting it quietly.
+fn read_stream(
+    artifacts: &dyn ArtifactStore,
+    descriptor: Option<&ArtifactDescriptor>,
+) -> Result<Option<DiagnosticStream>, ToolGatewayError> {
+    let Some(descriptor) = descriptor else {
+        return Ok(None);
+    };
+    let mut reader = artifacts
+        .open(descriptor.digest)
+        .map_err(|error| adapter_error(error.to_string()))?;
+    let total_bytes = reader.identity().size_bytes;
+    let mut bytes = Vec::new();
+    Read::take(&mut reader, MAX_DIAGNOSTIC_BYTES)
+        .read_to_end(&mut bytes)
+        .map_err(|error| adapter_error(format!("cannot read diagnostics: {error}")))?;
+    // A compiler's first error is usually the one that matters, so the head is kept. Losing the
+    // tail silently is how a truncating layer becomes an agent bug, hence the explicit counts.
+    let returned_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    Ok(Some(DiagnosticStream {
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+        returned_bytes,
+        total_bytes,
+        truncated: returned_bytes < total_bytes,
+    }))
 }

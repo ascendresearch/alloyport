@@ -124,9 +124,18 @@ evidence, not adopted decisions.
    appears twice in the workspace, both as "durable local attempt knowledge" in the worker.
    Acceptable while the first migration is unfinished, but the
    promote/retract gates are needed the moment there are verdicts worth keeping.
-5. **The Agent has four tools** — submit, source gate, build, correctness — and no way to inspect,
-   measure, or learn. That is enough to iterate on a candidate and not enough to diagnose one. It is
-   also the prerequisite for (3) and (4).
+5. **The Agent has almost no instruments.** Submit, source gate, build, correctness, and — since
+   this session — `read_build_diagnostics`. That last one closed a hole rather than adding a
+   convenience: on real hardware a failed build handed the model a fixed classification string and
+   an artifact descriptor it had no tool to open, so the compiler's own diagnosis of the model's
+   source was unreachable. The correction loop that Design 0026's Episode test appears to prove was
+   resting on a fake port whose `detail` carried an invented message.
+
+   Still missing, in the order they would pay: **Ascend C reference material** — the model writes
+   against the API from its weights alone, and the sibling project's evidence is that vendor
+   documentation was what turned a failing kernel port into a passing one; **a scratch compile**, so
+   trying a ten-line construct does not cost a full submit/gate/build cycle; and anything at all for
+   measurement, which is (3).
 6. **Neither boundary script can run on the dev host** (`rg` is absent). They now exit 2 saying so
    instead of printing a pass; CI still runs them. Nothing has verified the architecture boundaries
    locally this session.

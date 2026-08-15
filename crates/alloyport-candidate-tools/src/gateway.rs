@@ -1,4 +1,7 @@
-use crate::build_tool::{CandidateBuildTool, CandidateBuildToolConfig, REQUEST_ASCEND_BUILD_TOOL};
+use crate::build_tool::{
+    CandidateBuildTool, CandidateBuildToolConfig, READ_BUILD_DIAGNOSTICS_TOOL,
+    REQUEST_ASCEND_BUILD_TOOL,
+};
 use crate::correctness_tool::{
     CandidateCorrectnessTool, CandidateCorrectnessToolConfig, REQUEST_REDUCTION_CORRECTNESS_TOOL,
 };
@@ -312,6 +315,11 @@ impl CandidateToolGateway {
         match request.call.name.as_str() {
             SUBMIT_CANDIDATE_BUNDLE_TOOL => self.submit(request),
             REQUEST_SOURCE_GATE_TOOL => self.source_gate(request),
+            READ_BUILD_DIAGNOSTICS_TOOL => crate::build_tool::read_build_diagnostics(
+                &self.config,
+                self.artifacts.as_ref(),
+                request,
+            ),
             _ => Err(ToolGatewayError::UnexpectedRequest),
         }
     }
@@ -325,6 +333,9 @@ fn check_arguments(name: &str, raw: &[u8]) -> Result<(), (String, &'static str)>
         }
         REQUEST_SOURCE_GATE_TOOL => serde_json::from_slice::<SourceGateArguments>(raw).map(|_| ()),
         REQUEST_ASCEND_BUILD_TOOL => crate::build_tool::check_ascend_build_arguments(raw),
+        READ_BUILD_DIAGNOSTICS_TOOL => {
+            crate::build_tool::check_read_build_diagnostics_arguments(raw)
+        }
         REQUEST_REDUCTION_CORRECTNESS_TOOL => {
             crate::correctness_tool::check_reduction_correctness_arguments(raw)
         }
@@ -338,6 +349,7 @@ fn argument_contract(name: &str) -> &'static str {
         SUBMIT_CANDIDATE_BUNDLE_TOOL => SUBMIT_CANDIDATE_BUNDLE_ARGUMENT_CONTRACT,
         REQUEST_SOURCE_GATE_TOOL => SOURCE_GATE_ARGUMENT_CONTRACT,
         REQUEST_ASCEND_BUILD_TOOL => crate::build_tool::REQUEST_ASCEND_BUILD_ARGUMENT_CONTRACT,
+        READ_BUILD_DIAGNOSTICS_TOOL => crate::build_tool::READ_BUILD_DIAGNOSTICS_ARGUMENT_CONTRACT,
         REQUEST_REDUCTION_CORRECTNESS_TOOL => {
             crate::correctness_tool::REQUEST_REDUCTION_CORRECTNESS_ARGUMENT_CONTRACT
         }
@@ -405,6 +417,14 @@ impl AgentToolGateway for CandidateToolGateway {
                 version: "1".to_owned(),
                 effect_class: ToolEffectClass::ReadOnly,
                 result_authority: ToolResultAuthority::VerifiedReference,
+            }),
+            // An instrument, not a gate: it returns information the pipeline already produced and
+            // grants no authority, so its result is `Observed` and cannot satisfy a subtask.
+            READ_BUILD_DIAGNOSTICS_TOOL if self.build.is_some() => Some(RuntimeToolDescriptor {
+                name: name.to_owned(),
+                version: "1".to_owned(),
+                effect_class: ToolEffectClass::ReadOnly,
+                result_authority: ToolResultAuthority::Observed,
             }),
             REQUEST_ASCEND_BUILD_TOOL if self.build.is_some() => Some(RuntimeToolDescriptor {
                 name: name.to_owned(),

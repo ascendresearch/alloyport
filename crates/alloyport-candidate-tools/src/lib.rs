@@ -6,7 +6,8 @@ mod gateway;
 mod materialization;
 
 pub use build_tool::{
-    CandidateBuildToolConfig, CandidateBuildToolConfigError, REQUEST_ASCEND_BUILD_TOOL,
+    CandidateBuildToolConfig, CandidateBuildToolConfigError, READ_BUILD_DIAGNOSTICS_TOOL,
+    REQUEST_ASCEND_BUILD_TOOL,
 };
 pub use correctness_tool::{CandidateCorrectnessToolConfig, REQUEST_REDUCTION_CORRECTNESS_TOOL};
 pub use gateway::{

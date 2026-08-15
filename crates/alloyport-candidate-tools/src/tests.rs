@@ -130,6 +130,8 @@ enum FakeBuildStep {
 struct FakeBuildAttemptPort {
     steps: VecDeque<FakeBuildStep>,
     assignments: Arc<Mutex<Vec<AssignmentContract>>>,
+    /// Compiler output a real worker publishes to the store and names by descriptor.
+    diagnostics: Option<(Arc<dyn ArtifactStore>, String)>,
 }
 
 impl FakeBuildAttemptPort {
@@ -140,7 +142,23 @@ impl FakeBuildAttemptPort {
         Self {
             steps: steps.into_iter().collect(),
             assignments,
+            diagnostics: None,
         }
+    }
+
+    fn publishing(mut self, artifacts: Arc<dyn ArtifactStore>, stderr: &str) -> Self {
+        self.diagnostics = Some((artifacts, stderr.to_owned()));
+        self
+    }
+
+    fn published_stderr(&self) -> Option<ArtifactDescriptor> {
+        let (artifacts, text) = self.diagnostics.as_ref()?;
+        let stored = crate::gateway::ingest_bytes(artifacts.as_ref(), text.as_bytes()).ok()?;
+        Some(ArtifactDescriptor {
+            digest: stored.digest,
+            size_bytes: stored.size_bytes,
+            media_type: "text/plain; charset=utf-8".to_owned(),
+        })
     }
 
     fn invoke(&mut self, assignment: &AssignmentContract) -> AscendBuildAttemptObservation {
@@ -171,7 +189,7 @@ impl FakeBuildAttemptPort {
                 },
                 worker_receipt: None,
                 stdout: None,
-                stderr: None,
+                stderr: self.published_stderr(),
             })),
         }
     }
@@ -977,6 +995,176 @@ fn an_invalid_tool_call_is_terminal_and_the_same_episode_continues() -> Result<(
         // digest names nothing fails the next model turn instead of the malformed call.
         read_json(artifacts.as_ref(), result.expect("terminal result digest"));
     }
+    Ok(())
+}
+
+#[test]
+fn a_failed_build_hands_the_model_the_compiler_output_not_a_digest_it_cannot_open()
+-> Result<(), Box<dyn Error>> {
+    let artifacts: Arc<dyn ArtifactStore> = Arc::new(InMemoryArtifactStore::new(16 * 1024 * 1024));
+    let workspace = tempfile::tempdir()?;
+    // Long enough to exceed the returned bound, because a layer that truncates the ground truth
+    // silently is how the important line disappears.
+    let compiler_output = format!(
+        "reduce_sum.cpp:12:5: error: use of undeclared identifier 'AscendC'\n{}",
+        "note: expanded from macro\n".repeat(4_000)
+    );
+    let attempts = FakeBuildAttemptPort::new(
+        [FakeBuildStep::Finished {
+            outcome: AttemptOutcome::CandidateFailed,
+            build_completed: false,
+        }],
+        Arc::new(Mutex::new(Vec::new())),
+    )
+    .publishing(artifacts.clone(), &compiler_output);
+    let config = CandidateToolConfig::new(
+        TaskId::try_from("task-candidate-tools")?,
+        &migration_spec(),
+        alloyport_core::GenerationStrategy::DirectAscendC,
+    );
+    let mut gateway = CandidateToolGateway::new(config, artifacts.clone(), workspace.path())?
+        .with_ascend_build(build_config()?, Box::new(attempts));
+
+    let bundle = bundle(true, None);
+    let (_, submitted) = execute(
+        &mut gateway,
+        &invocation(SUBMIT_CANDIDATE_BUNDLE_TOOL, &bundle, "diag-submit"),
+    );
+    let manifest: Sha256Digest = serde_json::from_value(
+        read_json(artifacts.as_ref(), submitted)["manifest"]["digest"].clone(),
+    )?;
+    let (_, source_receipt) = execute(
+        &mut gateway,
+        &invocation(
+            REQUEST_SOURCE_GATE_TOOL,
+            &json!({ "manifest_digest": manifest }),
+            "diag-gate",
+        ),
+    );
+    let (status, build_receipt) = execute(
+        &mut gateway,
+        &invocation(
+            REQUEST_ASCEND_BUILD_TOOL,
+            &json!({
+                "manifest_digest": manifest,
+                "source_gate_receipt_digest": source_receipt
+            }),
+            "diag-build",
+        ),
+    );
+    assert_eq!(status, ToolOperationStatus::CandidateFailed);
+    // What the build receipt itself gives the model is a descriptor, which it has no way to open.
+    let receipt = read_json(artifacts.as_ref(), build_receipt);
+    assert!(receipt["stderr"]["digest"].is_string());
+    assert!(receipt["stderr"]["text"].is_null());
+
+    let (status, diagnostics) = execute(
+        &mut gateway,
+        &invocation(
+            READ_BUILD_DIAGNOSTICS_TOOL,
+            &json!({ "build_gate_receipt_digest": build_receipt }),
+            "diag-read",
+        ),
+    );
+    assert_eq!(status, ToolOperationStatus::Succeeded);
+    let diagnostics = read_json(artifacts.as_ref(), diagnostics);
+    let stderr = &diagnostics["stderr"];
+    assert!(
+        stderr["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("use of undeclared identifier")),
+        "the first compiler error must reach the model"
+    );
+    assert_eq!(stderr["truncated"], json!(true));
+    assert!(
+        stderr["total_bytes"].as_u64() > stderr["returned_bytes"].as_u64(),
+        "truncation must state how much was withheld, not hide it"
+    );
+    Ok(())
+}
+
+#[test]
+fn diagnostics_cannot_be_read_for_a_receipt_from_another_migration() -> Result<(), Box<dyn Error>> {
+    let artifacts: Arc<dyn ArtifactStore> = Arc::new(InMemoryArtifactStore::new(16 * 1024 * 1024));
+    let workspace = tempfile::tempdir()?;
+    let attempts = FakeBuildAttemptPort::new(
+        [FakeBuildStep::Finished {
+            outcome: AttemptOutcome::CandidateFailed,
+            build_completed: false,
+        }],
+        Arc::new(Mutex::new(Vec::new())),
+    )
+    .publishing(artifacts.clone(), "error: something");
+    let mut gateway = CandidateToolGateway::new(
+        CandidateToolConfig::new(
+            TaskId::try_from("task-candidate-tools")?,
+            &migration_spec(),
+            alloyport_core::GenerationStrategy::DirectAscendC,
+        ),
+        artifacts.clone(),
+        workspace.path(),
+    )?
+    .with_ascend_build(build_config()?, Box::new(attempts));
+    let (_, submitted) = execute(
+        &mut gateway,
+        &invocation(
+            SUBMIT_CANDIDATE_BUNDLE_TOOL,
+            &bundle(true, None),
+            "foreign-submit",
+        ),
+    );
+    let manifest: Sha256Digest = serde_json::from_value(
+        read_json(artifacts.as_ref(), submitted)["manifest"]["digest"].clone(),
+    )?;
+    let (_, source_receipt) = execute(
+        &mut gateway,
+        &invocation(
+            REQUEST_SOURCE_GATE_TOOL,
+            &json!({ "manifest_digest": manifest }),
+            "foreign-gate",
+        ),
+    );
+    let (_, build_receipt) = execute(
+        &mut gateway,
+        &invocation(
+            REQUEST_ASCEND_BUILD_TOOL,
+            &json!({
+                "manifest_digest": manifest,
+                "source_gate_receipt_digest": source_receipt
+            }),
+            "foreign-build",
+        ),
+    );
+
+    // A second migration shares the store. Authority must come from the receipt belonging to this
+    // context, never from the model naming a digest.
+    let other_workspace = tempfile::tempdir()?;
+    let mut other = CandidateToolGateway::new(
+        CandidateToolConfig::new(
+            TaskId::try_from("task-somebody-else")?,
+            &migration_spec(),
+            alloyport_core::GenerationStrategy::DirectAscendC,
+        ),
+        artifacts.clone(),
+        other_workspace.path(),
+    )?
+    .with_ascend_build(
+        build_config()?,
+        Box::new(FakeBuildAttemptPort::new(
+            [],
+            Arc::new(Mutex::new(Vec::new())),
+        )),
+    );
+    let refused = complete_immediate(other.execute(&invocation(
+        READ_BUILD_DIAGNOSTICS_TOOL,
+        &json!({ "build_gate_receipt_digest": build_receipt }),
+        "foreign-read",
+    )));
+    assert!(matches!(
+        refused,
+        Err(ToolGatewayError::Adapter(message))
+            if message.contains("does not belong to this migration context")
+    ));
     Ok(())
 }
 
