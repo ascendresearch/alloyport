@@ -129,10 +129,21 @@ evidence, not adopted decisions.
    rather than for timing; and a **measured roof**, since the only honest ceiling for a
    memory-bound reduction is bandwidth probed on this hardware. Importing the sibling project's
    1.45 TB/s would be the imported-number-as-fact mistake the reference ledger exists to prevent.
-4. **No knowledge lifecycle.** Design 0008 is unimplemented; outside of `acknowledge*` the word
-   appears twice in the workspace, both as "durable local attempt knowledge" in the worker.
-   Acceptable while the first migration is unfinished, but the
-   promote/retract gates are needed the moment there are verdicts worth keeping.
+4. **Knowledge has an admission gate but no store.** `alloyport_core::knowledge` decides an
+   entry's status from resolved citations rather than from the entry: a claim citing nothing stays
+   proposed, a citation is opened and read rather than counted, evidence from another task supports
+   nothing, an entry without a scope is a claim about everything, a retraction needs evidence of
+   its own, and `audit` runs the gate backwards over what is already stored. Negative knowledge is
+   supported by the receipt that *failed*, because a gate that only accepts passing receipts leaves
+   the most valuable kind of entry with no honest way in. Each check is red without itself.
+
+   **Deliberately not built: the store, retrieval, and write-back.** No migration has completed, so
+   there is not yet one entry; shelving for an empty room is this repository's characteristic
+   failure. Two things the sibling project learned that should shape them when they are built:
+   retrieval must filter on hard scope *before* similarity, and **write-back must be event-driven
+   rather than a final step** — there, two runs finished an entire port and hit the turn limit with
+   everything still in their heads, because "write back what you learned" was step eight and step
+   eight never arrives for a budget-limited agent.
 5. **The Agent has almost no instruments.** Submit, source gate, build, correctness, and — since
    this session — `read_build_diagnostics`. That last one closed a hole rather than adding a
    convenience: on real hardware a failed build handed the model a fixed classification string and

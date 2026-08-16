@@ -17,6 +17,7 @@ mod execution;
 mod generation;
 mod identity;
 mod inspection;
+mod knowledge;
 mod migration;
 mod model;
 mod model_codec;
@@ -105,6 +106,10 @@ pub use identity::{
 pub use inspection::{
     InspectionEvidence, InspectionEvidenceKind, InspectionFailure, InspectionFailureKind,
     MigrationInspection, inspect_migration_source,
+};
+pub use knowledge::{
+    Admission, AdmissionRefusal, AuditFinding, Citation, KNOWLEDGE_ENTRY_SCHEMA_V1, KnowledgeEntry,
+    KnowledgeKind, KnowledgeScope, KnowledgeStatus, ResolvedCitation, Retraction, admit, audit,
 };
 pub use migration::{
     AscendTarget, BundlePath, CudaSourceSet, MIGRATION_SPEC_SCHEMA_V1, MigrationSpec,
