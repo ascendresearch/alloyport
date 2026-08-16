@@ -26,6 +26,7 @@ mod model_codec_responses;
 mod model_gateway;
 mod model_transport;
 mod model_transport_policy;
+mod performance;
 
 #[cfg(test)]
 mod model_codec_tests;
@@ -138,6 +139,11 @@ pub use model_transport::{
 };
 pub use model_transport_policy::{
     ModelProxyPolicy, ModelRedirectPolicy, ModelTlsMinimumVersion, ModelTransportPolicy,
+};
+pub use performance::{
+    MINIMUM_TIMED_SAMPLES, MeasuredDuration, PERFORMANCE_RECEIPT_SCHEMA_V1, PerformanceBaseline,
+    PerformanceComparison, PerformanceError, PerformanceReceipt, PerformanceRefusal,
+    PerformanceVerdict, judge_performance,
 };
 
 use std::collections::BTreeSet;

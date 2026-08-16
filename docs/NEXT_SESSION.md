@@ -117,9 +117,18 @@ evidence, not adopted decisions.
    guaranteed detection. **The observation itself is still missing.** The cheapest candidate is a
    link-time check that the built candidate depends on the ACL runtime; it is necessary rather than
    sufficient, and it cannot be designed honestly without a device to try it against.
-3. **No performance evidence path exists.** `grep -ril 'roofline\|throughput\|speedup' crates/*/src`
-   returns nothing. Design 0006 is unimplemented. The product sentence says "migration and
-   optimization factory"; the second half currently has no gate, no metric, and no receipt.
+3. **Performance has rules but no execution path.** `alloyport_core::performance` now decides
+   whether a set of timings said anything: a summary needs at least five samples and keeps them, an
+   effect inside the combined noise is `NoResult` rather than a small win, a proxy such as a launch
+   count can never reach `Improved`, and a comparison across two environments is refused because
+   most of that difference is the two chips. Each rule is red without its check.
+
+   **Nothing runs a timed workload yet, and that is deliberate** — the first real migration should
+   say what the execution path needs. Two things it will need that do not exist: a **workload shape**
+   distinct from the correctness corpus, which is chosen for coverage (zero elements, null pointers)
+   rather than for timing; and a **measured roof**, since the only honest ceiling for a
+   memory-bound reduction is bandwidth probed on this hardware. Importing the sibling project's
+   1.45 TB/s would be the imported-number-as-fact mistake the reference ledger exists to prevent.
 4. **No knowledge lifecycle.** Design 0008 is unimplemented; outside of `acknowledge*` the word
    appears twice in the workspace, both as "durable local attempt knowledge" in the worker.
    Acceptable while the first migration is unfinished, but the
