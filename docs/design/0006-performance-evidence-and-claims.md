@@ -1,6 +1,6 @@
 # 0006: Performance evidence and claims
 
-- Status: Proposed
+- Status: Proposed. **Partially implemented by [0041](0041-instruments-and-evidence-domains.md)**, which adds the evidence rules for timing claims and deliberately no execution path.
 - Date: 2026-08-09
 - Scope: benchmark protocol, baselines, uncertainty, profiler evidence, and release claims
 

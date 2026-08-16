@@ -111,6 +111,10 @@ Read these documents before changing architecture or implementation:
     for recoverable model-authored tool inputs, a correctness tolerance derived from a measured
     floor rather than asserted, and a Source Gate that states the product boundary instead of
     prescribing how a kernel is written. It supersedes parts of 0005, 0027, and 0028.
+36. [`design/0041-instruments-and-evidence-domains.md`](design/0041-instruments-and-evidence-domains.md)
+    for the model's read-only instruments, the vendored reference corpus and its trust ledger, and
+    the performance and knowledge evidence domains — including what each of them deliberately does
+    not build. It partially implements 0006 and 0008.
 
 For structural work, also read
 [`ARCHITECTURE_EVOLUTION_PLAN.md`](ARCHITECTURE_EVOLUTION_PLAN.md). It records the active,
@@ -721,7 +725,7 @@ bash scripts/check_sql_boundaries.sh
 cargo test --workspace --quiet -- --test-threads=1
 ```
 
-There are 314 passing Rust tests and two ignored by default because they explicitly require Docker
+There are 340 passing Rust tests and two ignored by default because they explicitly require Docker
 and a CUDA or Ascend device. Control-plane coverage includes real loopback gRPC streams and SQLite
 repository tests for:
 

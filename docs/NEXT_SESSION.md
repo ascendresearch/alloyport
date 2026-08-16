@@ -1,86 +1,95 @@
 # Start here
 
-- Session closeout: 2026-08-14
+- Session closeout: 2026-08-16
 - Branch: `main`, working tree clean, **nothing pushed**
-- Tip: `a79a1a6`. This session added three commits; `git log --oneline -3`.
+- This work sits on top of `79f914b`; see `git log --oneline 79f914b..HEAD`
+- 340 passing tests, 2 ignored because they require Docker and a real device
 
-This is the lean entry point. [`HANDOFF.md`](HANDOFF.md) remains the accumulated architecture
-record — read it for what a subsystem does, not for what to do next. Design documents state intended
-behavior; tests and code state what this revision implements.
+This is the lean entry point. [`CLAUDE.md`](../CLAUDE.md) is how this project decides what counts as
+evidence. [`HANDOFF.md`](HANDOFF.md) is the accumulated architecture record — read it for what a
+subsystem does, not for what to do next. Design documents state intended behavior; tests and code
+state what this revision implements.
 
 ---
 
 ## 1. The one fact that should shape the next session
 
-**The product has never produced its product.** 69 109 lines of Rust, 40 design documents, 314
-tests, an authenticated mTLS deployment across two real hosts — and by the record's own account, no
-generated Ascend C has ever been compiled and judged correct. The only `PASS` on hardware is
-`fixtures/ascend-add-v1`, an add kernel a person wrote.
+**The product has never produced its product.** 71 217 lines of Rust, 41 design documents, 340
+tests, an authenticated mTLS deployment across two real hosts — and no generated Ascend C has ever
+been compiled and judged correct. The only `PASS` on hardware is `fixtures/ascend-add-v1`, an add
+kernel a person wrote.
 
 Effort has not gone where the risk is:
 
 | | lines | |
 |---|---:|---|
-| `alloyport-worker` + `alloyport-server` | 42 995 | control plane: mTLS, CAS, quotas, GC, leases, outboxes |
-| `alloyport-core` | 13 925 | domain, gates, oracle, agent loop |
-| everything else | 12 189 | |
+| `alloyport-worker` + `alloyport-server` | 43 107 | control plane: mTLS, CAS, quotas, GC, leases, outboxes |
+| `alloyport-core` | 15 157 | domain, gates, oracle, agent loop, evidence rules |
+| everything else | 12 953 | |
 
-`PRODUCT_EXECUTION_PLAN.md` already froze infrastructure for this reason. The freeze is the right
-call; the next session's job is to spend the budget on the first genuine migration, not on the
-platform around it.
+`PRODUCT_EXECUTION_PLAN.md` froze infrastructure for this reason, and the freeze is right. Two
+sessions of gate and instrument work are now done. **The next thing that should happen is a real
+migration**, because most of what remains cannot be designed honestly without one.
 
 ---
 
-## 2. What this session changed
+## 2. What the last two sessions changed
 
-Three commits, each verified on its own in a detached worktree (build, tests, `fmt --check`,
-`clippy -D warnings`), so the history bisects cleanly.
-
-| commit | | tests |
-|---|---|---:|
-| `8a7b2d3` | Return malformed model tool arguments to the model | 307 |
-| `3acb3c4` | Derive the correctness tolerance from a measured floor | 311 |
-| `a79a1a6` | State the product boundary in the Source Gate instead of a method | 314 |
-
-The decision record is [Design 0040](design/0040-measured-tolerance-and-advisory-source-gate.md),
-which supersedes parts of 0005, 0027, and 0028. The measurement behind it is
+Recorded in [Design 0040](design/0040-measured-tolerance-and-advisory-source-gate.md) and
+[Design 0041](design/0041-instruments-and-evidence-domains.md), with the measurement behind 0040 in
 [`evidence/reduction-noise-floor-20260814.md`](evidence/reduction-noise-floor-20260814.md).
 
-The finding worth carrying forward, because it was invisible until something measured it:
-`alloyport_reduce_sum_blocks` ends in `atomicAdd`, so the CUDA authority **does not reproduce
-itself**. On the archived GB10 record it disagrees with itself by `1.95e-03` absolute and
-`5.20e-07` relative. Against that spread the frozen tolerance was wrong in both directions at once
-— its relative term 38× looser, its absolute term 19.5× tighter. Nobody had ever compared the two
-numbers, and its ten-mutant battery could not have revealed it: every mutant was orders of magnitude
-larger than the tolerance it was testing.
+Gates corrected:
+
+- A malformed tool argument no longer ends the migration; it becomes a recoverable rejection
+  carrying a readable artifact.
+- The correctness tolerance is derived from a floor measured on the reference run instead of an
+  asserted constant. The finding that produced it: `alloyport_reduce_sum_blocks` ends in
+  `atomicAdd`, so **the CUDA authority does not reproduce itself** — on the archived GB10 record it
+  disagrees with itself by `1.95e-03` absolute and `5.20e-07` relative. The frozen tolerance was
+  wrong in both directions at once, its relative term 38× looser and its absolute term 19.5×
+  tighter, and its ten-mutant battery could not have revealed it because every mutant was orders of
+  magnitude larger than the tolerance it tested.
+- The Source Gate states the product boundary instead of prescribing how a kernel is written.
+
+Instruments added: `read_build_diagnostics` — the compiler's opinion of the model's own source was
+previously unreachable, because the receipt carried a descriptor and no tool opened one — and
+`read_reference` over a 127-document vendored corpus that travels with its trust ledger.
+
+Evidence domains added, both without execution paths on purpose: `performance` decides when timings
+said anything, `knowledge` decides admission from resolved citations.
 
 ---
 
 ## 3. Do this next
 
-**Run the first real migration end to end.** Everything below it is deferred until that finishes.
+**Run the first real migration end to end.**
 
-1. Rebuild and redeploy only the server. Restart the server and both persistent worker/tunnel
-   processes from `.alloyport-local/host-connections.md` — that file, not recollection, is the
-   authority for SSH targets, tunnels, and installed paths.
-2. Retry the existing migration through `alloyport-cli`. Observe which Ascend device the durable
-   lease selects.
-3. Continue through Source → sequential Ascend Build → paired CUDA/Ascend Correctness, and capture
-   the immutable receipts.
+1. Rebuild and redeploy the server and workers. Restart the server and both persistent
+   worker/tunnel processes from `.alloyport-local/host-connections.md` — that file, not
+   recollection, is the authority for SSH targets, tunnels, and installed paths.
+2. Point the `candidate-episode` config at the vendored corpus. Two new optional fields,
+   `reference_corpus_root` and `reference_corpus_ledger`, are both set in
+   `docs/candidate-episode-config.example.json`; without them the tool is not offered at all.
+3. Retry the migration through `alloyport-cli`. Continue through Source → sequential Ascend Build →
+   paired CUDA/Ascend Correctness, and capture the immutable receipts.
 
-Three things are new and unproven on hardware. Watch them, and record what they say rather than
-adjusting anything by hand:
+Five things are new and unproven on hardware. **Record what they say; do not adjust them by hand.**
 
 - **`reorder_output_bits`.** The trusted CUDA harness now computes a pairwise-tree sum beside the
   authority. If that order disagrees with the reference by much more than its run-to-run spread, the
-  derived tolerance widens and calibration will start listing mutants in `undetected` instead of
-  silently passing. That report is the signal. Widening anything by hand would put the guess back.
-- **`battery_scope: ComparatorOnly`** on every calibration receipt. Nothing yet shows a broken
-  kernel would be caught before the comparator sees it.
-- **The advisory Source Gate.** A candidate can now reach the Build Gate carrying
-  `UnrecognizedKernelStructure`. If the compiler then rejects it, that is the gate working as
-  intended — the compiler is the structural judge. If a candidate that *should* have been stopped
-  gets through to a wrong Correctness verdict, that is a real finding and belongs in evidence.
+  derived tolerance widens and calibration starts listing mutants in `undetected` instead of
+  silently passing. That report is the signal; widening anything by hand puts the guess back.
+- **The advisory Source Gate.** A candidate can reach the Build Gate carrying
+  `UnrecognizedKernelStructure`. The compiler rejecting it afterwards is the gate working. A
+  candidate that *should* have been stopped reaching a wrong Correctness verdict is a real finding
+  and belongs in `docs/evidence/`.
+- **`read_build_diagnostics`** has never run against a real compiler. Watch whether 64 KiB of the
+  head is the useful part, and whether `truncated` fires.
+- **`read_reference`** has never been offered to a live model. Watch whether it reads the corpus at
+  all, and whether the `suspect` caution on the two perf documents changes what it does with them.
+- **The callable names now travel in the execution bundle.** The trusted runner reads them instead
+  of hard-coding this specimen; a mismatch shows up as a link error rather than a wrong answer.
 
 ---
 
@@ -89,96 +98,74 @@ adjusting anything by hand:
 Ordered by how much each would cost to leave. None is scheduled; all are observations with their
 evidence, not adopted decisions.
 
-1. **The specimen is welded into the types and the trusted harness — but not into the wire.**
-   Measured: `Reduction*` appears 351 times in `alloyport-core`, 101 in `alloyport-server`, 92 in
-   `alloyport-candidate-tools`, 75 in `alloyport-worker`, and **0 times in `alloyport-proto`**. The
-   executor kinds are role×backend (`CUDA_CORRECTNESS`, `ASCEND_CORRECTNESS`, `ASCEND_BUILD`), so a
-   second operator family reuses them unchanged.
+1. **Nothing observes that the candidate ran on the device.** Plain host C++ that sums the input
+   passes the Source Gate, compiles on the Ascend build worker because it is just C++, links, is
+   called through the same ABI, and matches the authority exactly. `implementation_invoked` and
+   `synchronized` are literals emitted by the trusted runner and cannot catch it.
 
-   *An earlier revision of this list claimed a second specimen would cost a protocol version. It
-   does not; the claim had never been checked against the proto. Corrected here rather than quietly
-   edited, because the same discipline applies to this document.*
+   Partly addressed: every verdict carries `unverified: [device_execution, runner_attestation]`, so
+   a `PASS` states this rather than implying the opposite, and the two mutants that flipped those
+   literals are retired. **The observation itself is still missing.** Cheapest candidate: a
+   link-time check that the built candidate depends on the ACL runtime — necessary rather than
+   sufficient, and not designable honestly without a device to try it against.
 
-   The expensive part is the trusted correctness harness, which is inside the trust boundary and
-   hard-codes the specimen: the callable ABI, the call sites, and both CMake target names. Note it
-   is `include_str!`'d into the worker binary and materialized at execution time, so changing it
-   costs a worker redeploy and **not** an image rebuild. `PRODUCT_EXECUTION_PLAN.md` phase P4
-   assumes onboarding costs a manifest; it currently costs a code change in four crates.
-2. **Nothing observes that the candidate ran on the device.** This is the real shape of what used
-   to be listed here as "the harness self-reports two oracle inputs". Plain host C++ that sums the
-   input passes the Source Gate (its kernel-structure check is advisory since 0040 — that change
-   widened this), compiles on the Ascend build worker because it is just C++, links, is called
-   through the same ABI, and matches the authority exactly. `implementation_invoked` and
-   `synchronized` are literals emitted by the trusted runner, so they cannot catch it.
+2. **Performance has rules but no execution path.** `alloyport_core::performance` refuses a summary
+   under five samples, calls an effect inside the combined noise `NoResult`, never lets a proxy
+   reach `Improved`, and refuses a cross-environment comparison. Nothing runs a timed workload.
 
-   Partly addressed: every verdict now carries `unverified: [device_execution, runner_attestation]`,
-   so a `PASS` states this rather than implying the opposite, and the two mutants that flipped those
-   literals are retired from the battery — a mutant no real candidate can produce was scoring a
-   guaranteed detection. **The observation itself is still missing.** The cheapest candidate is a
-   link-time check that the built candidate depends on the ACL runtime; it is necessary rather than
-   sufficient, and it cannot be designed honestly without a device to try it against.
-3. **Performance has rules but no execution path.** `alloyport_core::performance` now decides
-   whether a set of timings said anything: a summary needs at least five samples and keeps them, an
-   effect inside the combined noise is `NoResult` rather than a small win, a proxy such as a launch
-   count can never reach `Improved`, and a comparison across two environments is refused because
-   most of that difference is the two chips. Each rule is red without its check.
+   It needs two things that do not exist: a **workload shape** distinct from the correctness corpus,
+   which is chosen for coverage (zero elements, null pointers) rather than for timing; and a
+   **measured roof**, since the only honest ceiling for a memory-bound reduction is bandwidth probed
+   on this hardware. Importing the sibling project's figure would be the imported-number-as-fact
+   mistake the reference ledger exists to prevent.
 
-   **Nothing runs a timed workload yet, and that is deliberate** — the first real migration should
-   say what the execution path needs. Two things it will need that do not exist: a **workload shape**
-   distinct from the correctness corpus, which is chosen for coverage (zero elements, null pointers)
-   rather than for timing; and a **measured roof**, since the only honest ceiling for a
-   memory-bound reduction is bandwidth probed on this hardware. Importing the sibling project's
-   1.45 TB/s would be the imported-number-as-fact mistake the reference ledger exists to prevent.
-4. **Knowledge has an admission gate but no store.** `alloyport_core::knowledge` decides an
-   entry's status from resolved citations rather than from the entry: a claim citing nothing stays
-   proposed, a citation is opened and read rather than counted, evidence from another task supports
-   nothing, an entry without a scope is a claim about everything, a retraction needs evidence of
-   its own, and `audit` runs the gate backwards over what is already stored. Negative knowledge is
-   supported by the receipt that *failed*, because a gate that only accepts passing receipts leaves
-   the most valuable kind of entry with no honest way in. Each check is red without itself.
+3. **Knowledge has an admission gate but no store.** `alloyport_core::knowledge` admits on resolved
+   citations, treats negative knowledge as first class, and `audit` runs the gate backwards.
+   Deliberately unbuilt: the store, retrieval, and write-back, because no migration has completed
+   and there is not yet one entry. When they are built: retrieval filters hard scope *before*
+   similarity, and **write-back is event-driven** — in the sibling project two runs finished an
+   entire port and hit the turn limit with everything still in their heads, because "write back what
+   you learned" was step eight and step eight never arrives for a budget-limited agent.
 
-   **Deliberately not built: the store, retrieval, and write-back.** No migration has completed, so
-   there is not yet one entry; shelving for an empty room is this repository's characteristic
-   failure. Two things the sibling project learned that should shape them when they are built:
-   retrieval must filter on hard scope *before* similarity, and **write-back must be event-driven
-   rather than a final step** — there, two runs finished an entire port and hit the turn limit with
-   everything still in their heads, because "write back what you learned" was step eight and step
-   eight never arrives for a budget-limited agent.
-5. **The Agent has almost no instruments.** Submit, source gate, build, correctness, and — since
-   this session — `read_build_diagnostics`. That last one closed a hole rather than adding a
-   convenience: on real hardware a failed build handed the model a fixed classification string and
-   an artifact descriptor it had no tool to open, so the compiler's own diagnosis of the model's
-   source was unreachable. The correction loop that Design 0026's Episode test appears to prove was
-   resting on a fake port whose `detail` carried an invented message.
+4. **The specimen is welded into the types, though not into the wire.** `Reduction*` appears 351
+   times in `alloyport-core`, 101 in `alloyport-server`, 92 in `alloyport-candidate-tools`, 75 in
+   `alloyport-worker`, and **0 times in `alloyport-proto`** — the executor kinds are role×backend,
+   so a second operator family reuses them unchanged. The trusted runner no longer names this
+   specimen. `PRODUCT_EXECUTION_PLAN.md` phase P4 assumes onboarding costs a manifest; it currently
+   costs a code change in four crates.
 
-   `read_reference` now serves the vendored corpus (`vendor/`, 127 documents) with each document's
-   trust state attached. Nothing in it is `validated`, because AlloyPort has run no probe; 41 rows
-   carry reviews imported from the sibling project with that provenance recorded, and the two
-   documents an optimization task reaches for first are both `suspect` — one hollow, one carrying
-   numbers validated on the previous hardware generation. **Serving the corpus without its ledger
-   would have presented those as facts about `Ascend950PR`.**
+5. **The vendored corpus has no license text.** Upstream states CANN Open Software License 2.0 and
+   its README links a `LICENSE` the original snapshot did not capture, so nothing here establishes
+   that it may be redistributed inside an MIT distribution. Recorded in `vendor/README.md` with the
+   two obligations. **Until that closes it is an internal development corpus.**
 
-   Still missing: **a scratch compile**, so trying a ten-line construct does not cost a full
-   submit/gate/build cycle; and anything at all for measurement, which is (3).
-6. **Neither boundary script can run on the dev host** (`rg` is absent). They now exit 2 saying so
-   instead of printing a pass; CI still runs them. Nothing has verified the architecture boundaries
-   locally this session.
-7. **Slow shutdown drain.** The server can report `server tasks did not drain within 10s` after
-   Ctrl-C. `cc511dc` stopped it from overwriting the primary diagnostic; the drain itself is
-   undiagnosed.
+6. **The model still has no scratch compile.** Trying a ten-line construct costs a full
+   submit/gate/build cycle.
+
+7. **Neither boundary script can run on the dev host** (`rg` is absent). They exit 2 saying so
+   rather than printing a pass; CI still runs them. Nothing has verified the architecture
+   boundaries locally.
+
+8. **Slow shutdown drain.** The server can report `server tasks did not drain within 10s` after
+   Ctrl-C. `cc511dc` stopped it overwriting the primary diagnostic; the drain is undiagnosed.
 
 ---
 
-## 5. Two rules this session kept paying for
+## 5. Rules these sessions kept paying for
 
-Both are cheap to state and were each violated by working code here.
+Each was violated by working code here, which is why they are stated with their instance rather than
+as advice. The full list is in [`CLAUDE.md`](../CLAUDE.md).
 
-**Read the record, not the applicant.** A field the subject fills in is a claim. The tolerance was
-supplied by its caller; a calibration receipt's stored `passed` was believed on read; a rejection
-named a digest with no artifact behind it. All three are now derived or recomputed from what was
-actually recorded.
+**Read the record, not the applicant.** The tolerance was supplied by its caller; a calibration
+receipt's stored `passed` was believed on read; a rejection named a digest with no artifact behind
+it. All three are now derived or recomputed from what was recorded.
 
-**A gate must accept the evidence it demands, and must fail when it cannot run.** A gate tighter
-than the task's own noise rejects correct work. A battery of sledgehammers cannot locate an edge. A
-boundary check that swallows a missing tool prints a pass. Before tightening any gate here, walk the
-honest path through it yourself first.
+**A gate must accept the evidence it demands, must fail when it cannot run, and must state what it
+did not check.** A gate tighter than the task's own noise rejects correct work. A battery of
+sledgehammers cannot locate an edge. A boundary check that swallows a missing tool prints a pass. A
+verdict that cannot name its blind spots invites every reader to assume it has none.
+
+**Measure before refactoring, and correct the record in place.** Two claims written into this
+document during these sessions did not survive being checked — that a second specimen would cost a
+protocol version, and that `grep -ril knowledge` returned only `already_known`. Both were corrected
+where they stood, with the correction stated, because the discipline applies to this document too.

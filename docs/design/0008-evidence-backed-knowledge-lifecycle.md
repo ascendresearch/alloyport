@@ -1,6 +1,6 @@
 # 0008: Evidence-backed knowledge lifecycle
 
-- Status: Proposed
+- Status: Proposed. **Partially implemented by [0041](0041-instruments-and-evidence-domains.md)**, which adds the admission gate and the backwards audit and deliberately no store, retrieval, or write-back.
 - Date: 2026-08-09
 - Scope: facts, failed routes, reusable procedures, promotion, retrieval, staleness, and retraction
 

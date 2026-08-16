@@ -13,9 +13,9 @@ stable identifier.
 | 0003 | [Operator specification and workload corpus](0003-operator-spec-and-workload-corpus.md) | Proposed; revision required by 0009 |
 | 0004 | [Candidate routing and backend strategy](0004-candidate-routing-and-backend-strategy.md) | Proposed; revision required by 0009 |
 | 0005 | [Correctness oracle and calibration](0005-correctness-oracle-and-calibration.md) | Proposed |
-| 0006 | [Performance evidence and claims](0006-performance-evidence-and-claims.md) | Proposed |
+| 0006 | [Performance evidence and claims](0006-performance-evidence-and-claims.md) | Partially implemented by 0041 |
 | 0007 | [Worker isolation, receipts, and reproducibility](0007-worker-isolation-receipts-and-reproducibility.md) | Proposed |
-| 0008 | [Evidence-backed knowledge lifecycle](0008-evidence-backed-knowledge-lifecycle.md) | Proposed |
+| 0008 | [Evidence-backed knowledge lifecycle](0008-evidence-backed-knowledge-lifecycle.md) | Partially implemented by 0041 |
 | 0009 | [Product definition and staged CUDA scope](0009-product-definition-and-staged-cuda-scope.md) | Accepted |
 | 0010 | [Interactive terminal and event stream](0010-interactive-terminal-and-event-stream.md) | Accepted; first vertical slice implemented |
 | 0011 | [Outbound worker control plane](0011-outbound-worker-control-plane.md) | Accepted; first contract slice implemented |
@@ -48,6 +48,7 @@ stable identifier.
 | 0038 | [Standalone Ascend Build worker](0038-standalone-ascend-build-worker.md) | Implemented |
 | 0039 | [Stable process configuration discovery](0039-stable-process-configuration-discovery.md) | Implemented |
 | 0040 | [Measured tolerance, recoverable tool inputs, and an advisory Source Gate](0040-measured-tolerance-and-advisory-source-gate.md) | Implemented |
+| 0041 | [Instruments for the model, and evidence domains for speed and knowledge](0041-instruments-and-evidence-domains.md) | Implemented |
 
 ## Convention
 
