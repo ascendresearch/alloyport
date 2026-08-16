@@ -19,6 +19,7 @@ fn candidate_episode_catalog_is_closed_and_grants_authority_only_through_gates()
             REQUEST_SOURCE_GATE_TOOL,
             REQUEST_ASCEND_BUILD_TOOL,
             READ_BUILD_DIAGNOSTICS_TOOL,
+            READ_REFERENCE_TOOL,
             REQUEST_REDUCTION_CORRECTNESS_TOOL,
         ])
     );

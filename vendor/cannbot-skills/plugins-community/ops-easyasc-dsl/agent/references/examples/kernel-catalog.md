@@ -1,0 +1,769 @@
+# Kernel Catalog
+
+For initial filtering, prefer `agent/references/examples/kernel-index.md` (lean one-line table).
+Come here only to read the `study_for` and `do_not_copy_when` detail of the ≤3 candidates you already picked.
+Do not copy a kernel body directly just because the formula looks similar.
+
+## How to read this file
+
+This file is large (~700 lines) and entries are independent. Do NOT read it linearly.
+
+Workflow:
+1. Get one or more candidate paths (e.g. `agent/example/kernels/a2/flash_attn_full.py`) from `kernel-index.md` first.
+2. Use Grep to find the matching `###` heading line, e.g. pattern `^### .kernels/a2/flash_attn_full\.py.` against this file.
+3. Read with `offset=<line>` and `limit=25` to load only that one entry.
+4. If the entry includes `deep_note`, open it only when the short entry still is not enough.
+5. Repeat for each candidate. Stop after ≤3 entries.
+
+If you find yourself reading a `##` section header you did not intend to land in, you are scrolling — go back to step 2.
+
+For each entry the schema is:
+- `formula`: the main reference contract
+- `topology`: the staged pipeline shape
+- `study_for`: what this file is actually good for
+- `deep_note`: optional extra rationale for the few kernels that need more than one short entry
+- `do_not_copy_when`: when the resemblance is misleading
+
+## Sections (for orientation only — jump by Grep, not by scrolling)
+
+- Vec-only baselines
+- Cube-only baselines
+- Cube -> vec postprocess (a5)
+- Vec -> cube preprocess (a5)
+- Vec -> cube -> vec fusion (a5)
+- Vec -> cube -> vec -> cube -> vec state bridge (a5)
+- Cube -> vec -> cube -> vec lookahead pipeline (a5)
+- Pure vec and micro references
+- a2 kernels (cube-only, vec-only, single / double / triple GM bridge, causal and hif8 variants)
+
+## Index schema (for machine readers, not for kernel authors)
+
+This file also feeds `agent/index/kernels.json`. The builder reads each `###` entry heading as one kernel record, the surrounding `##` section as the category, and top-level / nested bullets as ordered fields. If you edit this catalog, keep `formula` / `topology` / `study_for` / `do_not_copy_when` stable.
+
+## Vec-only baselines
+
+### `agent/example/kernels/a2/to_hif8_torch.py`
+- formula: `y = to_hif8_torch(x)` with float32 output that emulates hif8 rounding and uses finite saturation sentinels for overflow
+- topology: `vec-only`
+- study_for:
+  - a2 pure-vec elementwise quantization without cube stages
+  - exponent-bit extraction through `reinterpret` + `vand`/`vnot`
+  - explicit `RoundMode.TRUNC` based implementation of `sign(x) * floor(abs(x) + 0.5)`
+  - preserving `NaN`/`Inf` inputs while replacing finite overflow with large finite saturation values
+- do_not_copy_when:
+  - you need true `DT.hif8` runtime output loading rather than float32 emulation
+  - your kernel is fundamentally cube-bound or mixed cube/vec rather than vec-only
+
+### `agent/example/kernels/a5/chunk_row_cumsum.py`
+- formula:
+  - split `x:[M,H]` into contiguous row chunks of size `chunk_size`
+  - for each chunk, `y[0,:] = x[0,:]`
+  - for each later row in the same chunk, `y[i,:] = x[i,:] + y[i-1,:]`
+- topology: `vec-only`
+- study_for:
+  - a5 vec-only row-recursive accumulation authored entirely inside `@vf()`
+  - keeping the carry on the previous output row instead of trying to reinterpret `cpadd` as a scan primitive
+  - flattening each row into 64-lane register slices so the same `@vf()` works for both wide rows and the padded `H < 64` path
+  - using `gm_to_ub_pad` / `ub_to_gm_pad` to preserve a logical `x:[chunk_size,H]` contract while storing narrow rows in `[chunk_size,64]` UB buffers
+  - handling a tail on the final chunk in the row dimension while keeping the first version column-aligned when `H >= 64`
+- do_not_copy_when:
+  - you need a true global cumsum across chunk boundaries instead of restarting at each `chunk_size` block
+  - your `H` is non-64-aligned and also `>= 64`, which still needs a wider-column tail path
+  - your recurrence needs cross-row state more complex than plain add
+
+## Cube-only baselines
+
+### `agent/example/kernels/a5/matmul_float_mmad.py`
+- formula: `z = x @ y.t()`
+- topology: `cube-only`
+- study_for:
+  - shortest end-to-end cube matmul baseline
+  - minimal simulator validation story
+  - first sanity check for pure cube lowering
+- do_not_copy_when:
+  - you need tiled DBuff structure
+  - you need mixed cube/vec ownership
+  - you need large-shape split selection
+
+### `agent/example/kernels/a5/matmul_e5m2_shortcut.py`
+- formula: `z = x.float() @ y.float().t()` with float8 inputs
+- topology: `cube-only`
+- study_for:
+  - float8 input staging into float accumulation
+  - minimal float8 guard pattern in the runnable section
+- do_not_copy_when:
+  - your problem is mainly about tiling, not dtype
+  - you need vec-side postprocess or quantized output
+
+### `agent/example/kernels/a5/matmul_kmkn_fp32_out.py`
+- formula: `z = x.float().t() @ y.float()` with `x:[K,M]`, `y:[K,N]`
+- topology: `cube-only`
+- study_for:
+  - transpose-at-matmul-call-site pattern
+  - `KM @ KN -> MN` layout reasoning
+  - explicit `%16` guards and `shape_bindings`
+- do_not_copy_when:
+  - your data is naturally `MKNK`
+  - your main issue is mixed pipeline staging
+
+### `agent/example/kernels/a5/matmul_mknk_2dgrid_splitn.py`
+- formula: `z = x.float() @ y.float().t()` with `x:[M,K]`, `y:[N,K]`
+- topology: `cube-only`
+- study_for:
+  - 2D core split for aligned `MKNK`
+  - outer tile/core split selection with `splitn`
+  - sharing one `l1_cnt` for one operand-pair lifetime
+- do_not_copy_when:
+  - K-side staging is the real capacity bottleneck
+  - you need vec postprocess after cube output
+
+### `agent/example/kernels/a5/matmul_mknk_2dgrid_splitk.py`
+- formula: `z = x.float() @ y.float().t()` with `splitk`
+- topology: `cube-only`
+- study_for:
+  - large-`K` aligned `MKNK` strategy
+  - keeping outer `TILE_K=256` while legalizing inner staging with `SPLIT_K=64`
+  - 2D split selection plus split-`k` accumulation ownership
+- do_not_copy_when:
+  - N-side width is the real issue and `splitn` is cleaner
+  - your kernel is mainly about postprocess logic rather than cube staging
+
+## Cube -> vec postprocess
+
+### `agent/example/kernels/a5/basic_cube_vec_mix.py`
+- formula: `z = abs(x @ y.t()) + 1.0`
+- topology: `cube -> vec`
+- study_for:
+  - smallest mixed pipeline baseline
+  - basic `CvMutex` ownership story
+  - standard half-row vec writeback
+- do_not_copy_when:
+  - your kernel needs advanced tile scheduling
+  - your vec stage has rowwise reductions or multiple outputs
+
+### `agent/example/kernels/a5/matmul_half_splitn_bias10p2_vf.py`
+- formula: `z = ((x.float() @ y.float()) + 10.2).half()`
+- topology: `cube -> vec`
+- study_for:
+  - float accumulation followed by vec-side downcast
+  - stable FIX->V handoff pattern
+  - half-output writeback after vec postprocess
+- do_not_copy_when:
+  - your output should stay float
+  - you need large-shape 2D split logic
+
+### `agent/example/kernels/a5/matmul_rowwise_norm.py`
+- formula: `z = (x @ y.t()) / row_sum(x @ y.t())`
+- topology: `cube -> vec`
+- study_for:
+  - rowwise vec reduction after cube output
+  - `cadd()` + `dup()` normalization pattern
+- do_not_copy_when:
+  - you need a two-pass large-`N` strategy
+  - you need quantized or fp8 output
+
+### `agent/example/kernels/a5/matmul_rowwise_norm_large_nk.py`
+- formula: same as `matmul_rowwise_norm.py`
+- topology: `cube -> vec`
+- study_for:
+  - two-pass normalization for larger `N/K`
+  - temporary output persistence plus later reload
+  - row-sum lifetime that spans multiple `N` tiles
+- do_not_copy_when:
+  - your normalized stage fits comfortably in one pass
+  - your main problem is cube-side capacity rather than vec-side persistence
+
+### `agent/example/kernels/a5/matmul_rowwise_l2_norm.py`
+- formula:
+  - `z = x.float() @ w.float().t()`
+  - `out = z / sqrt(sum(z^2, dim=1, keepdim=True))`
+- topology: `cube -> vec`
+- study_for:
+  - two-pass rowwise L2 normalization after matmul
+  - per-row squared-sum accumulation across `N` tiles
+  - explicit `SHAPE_BINDINGS` and aligned-shape guard in the Python wrapper
+- do_not_copy_when:
+  - your normalization is sum-based rather than L2-based
+  - your shape is not naturally aligned to the validated contract (`M%64`, `N%256`, `K%128`)
+
+### `agent/example/kernels/a5/matmul_chunk_absmax_norm128.py`
+- formula: normalize each 128-column chunk by per-row absmax
+- topology: `cube -> vec`
+- study_for:
+  - blockwise row statistics per fixed `CHUNK_N`
+  - `abs -> cmax -> dup -> divide` idiom
+- do_not_copy_when:
+  - your block size is not naturally tied to cube `N` tiles
+  - you need scale output rather than normalized values only
+
+### `agent/example/kernels/a5/matmul_kmkn_blockwise_quant128.py`
+- formula:
+  - `z_tmp = x.float().t() @ y.float()`
+  - `scale = absmax(z_tmp, block=128) / 224`
+  - `z = (z_tmp / scale).to(e5m2)`
+- topology: `cube -> vec`
+- study_for:
+  - blockwise scale generation
+  - fp8 quantized output after float accumulation
+  - optional `pack4()` fallback path
+- do_not_copy_when:
+  - you do not need quantized output
+  - your layout is `MKNK` rather than `KMKN`
+
+### `agent/example/kernels/a5/matmul_mknk_2dgrid_splitk_add1.py`
+- formula: `z = x.float() @ y.float().t() + 1.0`
+- topology: `cube -> vec`
+- study_for:
+  - large-`K` split-`k` cube stage with vec postprocess
+  - estimator-driven 2D split selection plus vec tie-break concerns
+  - separate counter for longer postprocess lifetime
+- do_not_copy_when:
+  - you only need a pure cube baseline
+  - your vec stage is more complex than in-place elementwise add
+
+### `agent/example/kernels/a5/cube_vec_atomic_add_two_outputs.py`
+- formula:
+  - `out_cube += x @ y.t()`
+  - `out_vec += abs(x @ y.t()) + 1`
+- topology: `cube -> vec` with dual outputs and atomics
+- study_for:
+  - atomics on both cube and vec writeback paths
+  - mixed dual-output ownership
+- do_not_copy_when:
+  - you do not need atomic accumulation
+  - you only have one output path
+
+## Vec -> cube preprocess
+
+### `agent/example/kernels/a5/vec_cube_abs_sqrt_matmul.py`
+- formula: `z = x.float().abs().sqrt().half().float() @ y.float().t()`
+- topology: `vec -> cube`
+- study_for:
+  - ND vec preprocess then cube consume
+  - subblock row publish into `L1`
+  - `VcMutex` ownership edge
+- do_not_copy_when:
+  - your preprocess should stay packed NZ end-to-end
+  - your host-side contract already gives cube-ready input
+
+### `agent/example/kernels/a5/vec_cube_abs_sqrt_matmul_nz.py`
+- formula: same as `vec_cube_abs_sqrt_matmul.py`
+- topology: `vec -> cube`
+- study_for:
+  - NZ publish path after vec preprocess
+  - deinterleave + `reg_to_ub` packing before `l1 <<= ub.nz()`
+- do_not_copy_when:
+  - ND publish is enough and simpler
+  - you do not actually need packed-NZ staging
+
+### `agent/example/kernels/a5/recompute_wu_cube_vec.py`
+- formula:
+  - `k_cumdecay = attn.float() @ (k_beta * decay_exp).float()`
+  - `kv = attn.float() @ v.float()`
+- topology: `vec -> cube`
+- study_for:
+  - strict `[*,1]` scalar-broadcast preprocess via `single()`
+  - dual cube outputs after one vec preprocessing stage
+  - flattened batch-axis scheduling with `BHN`
+- do_not_copy_when:
+  - your dimensions are not close to this specialized recurrent/WU structure
+  - you need a generic attention template rather than this specific dual-output path
+
+## Vec -> cube -> vec fusion
+
+### `agent/example/kernels/a5/vec_cube_vec_scale2_abs_add1_matmul.py`
+- formula: `z = abs((x * 2).half().float() @ y.float().t()) + 1.0`
+- topology: `vec -> cube -> vec`
+- study_for:
+  - one fused preprocess + cube + postprocess chain
+  - explicit use of both `VcMutex` and `CvMutex`
+  - stage separation with independent counters
+- do_not_copy_when:
+  - you have not yet validated the simpler vec->cube or cube->vec stage independently
+  - your fusion requires delayed reuse across iterations
+
+## Vec -> cube -> vec -> cube -> vec state bridge
+
+### `agent/example/kernels/a5/delta_h_state_bridge_v1_c8.py`
+- formula:
+  - snapshot current recurrent state into `h_out`
+  - `vprime = w @ state.T`
+  - `v_new = u - vprime`
+  - `v_scaled = v_new * exp(g_last - g_row)`
+  - `state = state * exp(g_last) + k.T @ v_scaled`
+- topology: `vec -> cube -> vec -> cube -> vec`
+- study_for:
+  - persistent UB state carried across chunk iterations
+  - a5 `VcMutex` / `CvMutex` ownership transfer around a delayed second cube stage
+  - aligned state-bridge scheduling with fixed `C=8`, `L=64`, `D=128`
+- do_not_copy_when:
+  - any of `C`, `L`, or `D` must be dynamic or tail-safe
+  - your second cube stage does not reuse the same delayed-state bridge pattern
+  - you still need the experimental wrappers in `tmp/` rather than the checked-in kernel body
+
+### `agent/example/kernels/a5/delta_h_psudo_state_bridge_c8.py`
+- formula: pseudo-reference comparison kernel for the same `delta_h` state bridge contract
+- topology: `vec -> cube -> vec -> cube -> vec`
+- study_for:
+  - keeping a pseudo-reference experiment on the same stable pipeline as the baseline kernel
+  - comparing cycle-equivalent kernels against a looser reference tolerance
+  - separating experiment wrappers in `tmp/` from the checked-in kernel body
+- do_not_copy_when:
+  - you need an exact pseudo residual/correction implementation rather than the stable v1-style schedule
+  - you want a general reusable state-bridge kernel instead of this fixed aligned experiment specialization
+
+## Cube -> vec -> cube -> vec lookahead pipeline
+
+### `agent/example/kernels/a5/test_mla_entire.py`
+- formula: streamed MLA-style score, softmax, delayed `p @ k_nope`, and final normalization
+- topology: `cube -> vec -> cube -> vec`
+- study_for:
+  - one-tile lookahead scheduling with warmup and drain
+  - delayed-consumer counters (`stage1_cnt` vs `stage2_cnt`)
+  - on-chip delayed reuse instead of forced GM round-trip
+  - streamed `row_max` / `row_sum` / numerator accumulation
+- do_not_copy_when:
+  - your kernel does not truly need delayed stage reuse
+  - you have not yet stabilized the simpler two-stage or three-stage version of the formula
+
+### `agent/example/kernels/a5/mha_ifa.py`
+- formula: streamed single-row attention `softmax(q @ k.t()) @ v`
+- topology: `cube -> vec -> cube -> vec`
+- study_for:
+  - row-specialized `L=1` decode-style attention on a5
+  - flattened `BH` scheduling with one query row kept resident while streaming `S`
+  - simpler standard-attention lookahead flow than `agent/example/kernels/a5/test_mla_entire.py`
+- do_not_copy_when:
+  - you need multi-row query tiles
+  - you need rope/nope fusion, fp8 staging, or MLA-specific math
+  - your delayed stage cannot stay on chip cleanly
+
+### `agent/example/kernels/a5/mha_ifa_256.py`
+- formula: streamed single-row attention `softmax(q @ k.t()) @ v` with `BASES=256`
+- topology: `cube -> vec -> cube -> vec`
+- study_for:
+  - keeping a `256`-wide on-chip score/value tile for half-input single-row attention on a5
+  - using `splitk=64` for the `q @ k.t()` stage and `splitn=64` for the `p @ v` stage without shrinking the outer `BASES`
+  - simpler ND baseline for `BASES=256` before trying NZ-published probability tiles
+- do_not_copy_when:
+  - your tile does not actually need a `256`-wide outer `S` chunk
+  - you need multi-row query tiles
+  - you have not first validated the simpler `BASES=128` path
+
+### `agent/example/kernels/a5/mha_ifa_fp8_scale_256.py`
+- formula: streamed single-row attention `softmax((q * scale_q) @ (k * scale_k).t() / sqrt(D)) @ (v * scale_v)` with fp8 `q/k/v`, `BASES=256`, and fp8-scaled `p` tiles
+- topology: `cube -> vec -> cube -> vec`
+- study_for:
+  - row-specialized decode-style attention with `e4m3` `q/k/v` plus external float scales on a5
+  - tail-safe `valid_cols` masking before `rowmax` when the last `S` tile is narrower than `BASES`
+  - publishing vec-produced `p` tiles to `L1` as `e4m3` after `P_SCALE`, then compensating with final `scale_v / P_SCALE`
+- do_not_copy_when:
+  - your inputs are half and the simpler `agent/example/kernels/a5/mha_ifa_256.py` already matches the contract
+  - you want the delayed `p` tile in NZ layout instead of the simpler ND bridge
+  - your query side is not truly row-specialized (`L != 1`)
+
+### `agent/example/kernels/a5/flash_attn_full_fp8_causal.py`
+- formula:
+  - `score_j = q.float() @ k_j.float().t() * scale`
+  - score tiles obey left-up causal masking `k_pos <= q_pos`
+  - tail columns behave like `-inf` before `rowmax`
+  - `curr_m = maximum(prev_m, rowmax(score_j))`
+  - `expdiff_j = exp(prev_m - curr_m)`
+  - `p_j = exp(score_j - curr_m).to(e5m2)`
+  - `row_sum = row_sum * expdiff_j + p_j.float().sum(-1)`
+  - `pv_j = p_j.float() @ v_j.float()`
+  - `out = out * expdiff_j + pv_j`
+  - `out = out / row_sum`
+  - returns final `out`, `rowmax`, and `rowsum`
+- topology: `cube -> vec -> cube -> vec` (a5 on-chip lookahead with ND `l1p` bridge and fp8 probability tiles)
+- study_for:
+  - full-sequence multi-row attention on a5 with `TILE_M=TILE_N=128` and fixed `D=128`, not the `L=1` decode-style `mha_ifa*` family
+  - tail-safe normalized online softmax when both `S1` and `S2` may be non-aligned, with score-domain tail invalidation and diagonal-tile causal masking
+  - keeping delayed `p @ v` fully on chip by publishing vec-produced `e5m2` `p` tiles into `L1`, while keeping separate score / `pv` local families for stability
+- deep_note: `agent/references/examples/deep/a5-flash-attn-full-fp8-causal.md`
+- do_not_copy_when:
+  - your query side is still row-specialized (`L=1`) and the simpler `mha_ifa*` family already matches the contract
+  - your delayed stage-2 consumer wants NZ-published probability tiles instead of the ND `l1p` path
+  - your contract uses externally scaled or differently formatted fp8 inputs rather than plain `e5m2` `q/k/v`
+  - your head dimension is not the validated fixed `D=128`
+
+### `agent/example/kernels/a5/mha_ifa_nz.py`
+- formula: streamed single-row attention `softmax(q @ k.t()) @ v` with NZ-published probability tiles
+- topology: `cube -> vec -> cube -> vec`
+- study_for:
+  - publishing vec-produced `p` tiles to `L1` in NZ layout for the delayed cube consumer
+  - row-specialized `L=1` decode-style attention when stage 2 wants packed-NZ input
+  - explicit `reg_to_ub(...).nz()` bridge inside a lookahead attention pipeline
+- do_not_copy_when:
+  - delayed stage 2 is fine with the simpler ND `l1p` path from `agent/example/kernels/a5/mha_ifa.py`
+  - you need multi-row query tiles
+  - your consumer does not actually benefit from packed-NZ staging
+
+### `agent/example/kernels/a5/mha_ifa_nz_256.py`
+- formula: streamed single-row attention `softmax(q @ k.t()) @ v` with `BASES=256` and NZ-published probability tiles
+- topology: `cube -> vec -> cube -> vec`
+- study_for:
+  - widening the NZ-published `p` tile to `256` on a5 while keeping the lookahead decode-style schedule
+  - splitting a `256`-wide half row into two `128`-lane micro registers before `ub_to_l1_nz`
+  - pairing `splitk=64` / `splitn=64` with an NZ `l1p` handoff instead of the simpler ND path
+- do_not_copy_when:
+  - delayed stage 2 is fine with the simpler ND `l1p` path from `agent/example/kernels/a5/mha_ifa_256.py`
+  - you need tail-safe `S` handling without a full `BASES`-wide GM slice
+  - your consumer does not actually benefit from packed-NZ staging
+
+## Pure vec and micro references
+
+### `agent/example/kernels/a5/recurrent_state_attn_vec.py`
+- formula: recurrent attention-state update specialized for `D=128`
+- topology: `vec-only`
+- study_for:
+  - pure vec stateful update pattern
+  - `RegList`-heavy row math
+  - flattening `(B,H,S,D)` into vec-friendly layouts
+- do_not_copy_when:
+  - your kernel needs cube compute
+  - your dimension pattern is not this specialized state update
+
+### `agent/example/kernels/a5/vec_unaligned_gm_to_ub_pad.py`
+- formula: vec compute on padded unaligned GM width (`exp + 2`)
+- topology: `vec-only`
+- study_for:
+  - unaligned-width `gm_to_ub_pad` behavior
+  - UB second-dim padding strategy
+  - quick padded-transfer sanity checks
+- do_not_copy_when:
+  - your real problem is cross-side staging rather than vec padding
+
+### `agent/example/kernels/a5/micro_cast_fp8_pack4_dual.py`
+- formula:
+  - `out_e5m2 = src.to(float8_e5m2)`
+  - `out_e4m3 = src.to(float8_e4m3fn)`
+- topology: `micro-only`
+- study_for:
+  - micro cast path
+  - `RegLayout.ZERO` plus required `pack4()` squeeze before UB writeback
+  - dual-fp8-output micro flow
+- do_not_copy_when:
+  - your kernel is mainly a cube or vec pipeline
+  - you only need a single conventional cast without micro-specific layout concerns
+
+## a2 kernels
+
+### `agent/example/kernels/a2/qk_matmul_batched.py`
+- formula: `qk = q.float() @ k.float().t()` with batched BH flattening
+- topology: `cube-only`
+- study_for:
+  - simplest a2 kernel baseline
+  - batched M-tile distribution with BH flattening
+  - L0C capacity verification for a2 (128 KB)
+- do_not_copy_when:
+  - you need vec postprocessing
+  - you target a5
+
+### `agent/example/kernels/a2/sort_rows.py`
+- formula: per-row ascending sort of a `[ROWS, COLS]` float32 matrix, emitting `sorted_value` and `sorted_idx` equivalent to `torch.sort(x, dim=-1)` (contract: `COLS=4096`, `ROWS=40`, inter-buffer `INTER_COLS = 2 * COLS`)
+- topology: `vec-only`
+- study_for:
+  - a2 pure-vec row-wise sort pipeline built from `sort32` + `mergesort4` stages + `mergesort_2seq` final merge
+  - sign-flip trick (`val * -1`) to reuse an ascending sort primitive for descending-then-flip ordering
+  - interleaved `(value, index)` packed layout manipulated via `reinterpret` to `uint32` / `int`
+  - `gather` de-interleave with a precomputed `gather_offset_ub` to split merged `(value, idx)` pairs into two contiguous output UBs
+  - per-core row slab split by `GetVecNum()` / `GetVecIdx()` with `CeilDiv`
+  - single `with auto_sync():` scope covering the full per-row MTE2 -> V -> MTE3 cycle
+- do_not_copy_when:
+  - your input width is not a power-of-two multiple of 32 (merge-stage radices 32/128/512/2048 are hard-coded)
+  - you need stable sort semantics beyond `torch.sort` reference matching
+  - the problem is cube-bound or mixes with matmul stages
+
+### `agent/example/kernels/a2/attn_backward_dense_stage1_tail_dbuf.py`
+- formula:
+  - `qk = q.float() @ k.float().t()`
+  - `dp = grad.float() @ v.float().t()`
+- topology: `cube-only`
+- study_for:
+  - tail-safe stage-1 dense backward on a2 while keeping the stage split at `qk/dp`
+  - using `DBuff` staging together with tail-time `set_constant_to_l1(...)` on the concrete slot buffer
+  - preserving correct NZ/ZZ behavior by letting `matmul(...)` infer layout instead of forcing explicit `m/n/k`
+  - using direct `<<=` L0C -> GM writeback on tail tiles after the layout path is stabilized
+- do_not_copy_when:
+  - you already need vec-side `p/dqk` reconstruction
+  - you want the final `gq/gk/gv` fused kernel rather than the stage-1 cube slice
+
+### `agent/example/kernels/a2/attn_backward_dense_stage12_tail.py`
+- formula:
+  - `qk = q.float() @ k.float().t()`
+  - `dp = grad.float() @ v.float().t()`
+  - `p = exp(qk * scale - qkmax) / qksum`
+  - `dqk = p * (dp - sum(o.float() * grad.float(), dim=-1)) * scale`
+- topology: `cube -> vec`
+- study_for:
+  - fusing the dense backward `qk/dp` cube stage directly into the `p/dqk` vec stage on a2 without yet adding the final gradient cube writeback
+  - using one `CvMutex`-guarded workspace bridge for both `qk` and `dp` because they share the same stage-1 lifetime
+  - keeping the a2 workspace bridge tail-safe by writing and reading full-width workspace tiles, then handling `valid_n` with vec masking and final GM boundaries
+  - computing `odo` once per half-row vec tile before the delayed `K/V` loop consumes the previous workspace slot
+  - shrinking the vec hot path to `QUAT_M = 32` row chunks so `qk/dp/p/dqk` can move onto `DBuff` lineage without increasing UB usage
+  - the follow-on rule for later vec-only extensions such as probability quantization: re-chunk the whole vec hot path so each chunk still owns one complete `MTE2 -> V -> MTE3` story instead of borrowing a live stage buffer as scratch
+  - using `bar_all()` around vec-side tail zero-fill that must complete before later `gm_to_ub_pad` loads
+- do_not_copy_when:
+  - you only need the stage-1 cube slice (`agent/example/kernels/a2/attn_backward_dense_stage1_tail_dbuf.py`)
+  - you already need the final `gq/gk/gv` fused kernel rather than the `p/dqk` intermediate
+  - you want a minimal aligned-only teaching example instead of the tail-safe a2 workspace bridge pattern
+
+### `agent/example/kernels/a2/attn_backward_dense_total_tail.py`
+- formula:
+  - `qk = q.float() @ k.float().t()`
+  - `dp = grad.float() @ v.float().t()`
+  - `p = exp(qk * scale - qkmax) / qksum`
+  - `dqk = p * (dp - sum(o.float() * grad.float(), dim=-1)) * scale`
+  - `gq = dqk_half.float() @ k.float()`
+  - `gk = dqk_half.float().transpose(-1, -2) @ q.float()`
+  - `gv = p_half.float().transpose(-1, -2) @ grad.float()`
+- topology: `cube -> vec -> cube`
+- study_for:
+  - tail-safe end-to-end dense attention-backward fusion on a2 with both `S1` and `S2` tails
+  - keeping the cube -> vec and vec -> cube GM workspace bridges on full-tile shapes while handling `valid_m` / `valid_n` only at GM boundaries and vec masks
+  - shrinking the stage-1 vec hot path into chunk-local loops so `qk/dp/p/dqk` can move onto `DBuff` lineage without inflating UB usage
+  - keeping helper scratch separate from live stage buffers instead of borrowing stage slot families
+  - reusing delayed `k_j` on chip for the final `gq += dqk_j @ k_j` matmul instead of reloading `k_j` from GM
+  - tile-level `atomic_add()` writeback for `gq/gk/gv` when the fused schedule is split by `Q` tiles first
+- deep_note: `agent/references/examples/deep/a2-attn-backward-dense-total-tail.md`
+- do_not_copy_when:
+  - you want the smallest aligned-only teaching example instead of the fully tail-safe fused version
+  - you do not want caller-side zero-initialization before the atomic accumulation phase
+
+### `agent/example/kernels/a2/attn_backward_dense_total_tail_causal.py`
+- formula:
+  - `qk = q.float() @ k.float().t()`
+  - `dp = grad.float() @ v.float().t()`
+  - `p = causal_mask(exp(qk * scale - qkmax) / qksum)`
+  - `dqk = p * (dp - sum(o.float() * grad.float(), dim=-1)) * scale`
+  - `gq = dqk_half.float() @ k.float()`
+  - `gk = dqk_half.float().transpose(-1, -2) @ q.float()`
+  - `gv = p_half.float().transpose(-1, -2) @ grad.float()`
+- topology: `cube -> vec -> cube`
+- study_for:
+  - tail-safe causal dense attention-backward fusion on a2 with both `S1` and `S2` tails
+  - skipping full-future `N` tiles early with `active_tiles_n = Min(tiles_n, CeilDiv(row_in_bh + valid_m, TILE_N))`
+  - applying diagonal causal masking in `p`-domain with one packed-`uint8` full-tile `select(...)` over `[HALF_M, TILE_N]`
+  - prebuilding one static `[HALF_M, TILE_N // 8]` diagonal mask per subblock for full `128x128` tiles
+  - rebuilding the packed diagonal mask only for tail `M` tiles because `half_rows = CeilDiv(valid_m, 2)` changes `row_begin`
+  - generating packed mask bytes from a reusable integer column-index tensor instead of per-element mask writes
+  - passing the full packed-mask tensor into helpers that internally `reinterpret(...)`, then slicing only at the later `select(...)` site; sliced helper inputs can violate simulator-v2 storage assumptions
+  - using non-quantized `16 x 128` stage-1 vec `DBuff` chunks for `qk/dp/p/dqk`, so the causal kernel keeps the newer chunk-local `MTE2 -> V -> MTE3` lineage while staying significantly lighter than the hif8 variant
+  - practical UB point for the non-quantized chunked version: about `121.375 KB / 192 KB`
+- do_not_copy_when:
+  - the caller cannot supply `qkmax` / `qksum` from the same causal forward contract
+  - you want score-domain `-inf` masking before rowmax/running-sum updates rather than `p`-domain zeroing
+  - your target kernel does not have a stable full-tile diagonal geometry that benefits from static packed-mask reuse
+
+### `agent/example/kernels/a2/attn_backward_dense_total_tail_causal_hif8.py`
+- formula:
+  - `qk = q.float() @ k.float().t()`
+  - `dp = grad.float() @ v.float().t()`
+  - `p = causal_mask(exp(qk * scale - qkmax) / qksum)`
+  - `p_hif8 = hif8_quantize_positive_finite(p)`
+  - `dqk = p * (dp - sum(o.float() * grad.float(), dim=-1)) * scale`
+  - `gq = dqk_half.float() @ k.float()`
+  - `gk = dqk_half.float().transpose(-1, -2) @ q.float()`
+  - `gv = p_hif8.half().float().transpose(-1, -2) @ grad.float()`
+- topology: `cube -> vec -> cube`
+- study_for:
+  - extending the causal dense backward tail kernel with inline hif8 probability quantization while preserving the original causal-mask and delayed stage-3 structure
+  - stage-1 vec-side causal `p` reconstruction plus hif8 quantization on chunk-local `16 x 128` `MTE2 -> V -> MTE3` loops, so `qk/dp/p/dqk` stay on stable `DBuff` lineage and `NOT balanced auto_sync events` stays clear
+  - implementing the positive-finite `p`-only hif8 path inline: keep `le15/le7/le3` plus `keep_mask`, but skip generic finite/overflow handling because causal probabilities are already finite and non-negative
+  - budgeting the extra hif8 scratch explicitly with dedicated `quant_meta/quant_scale/quant_factor/quant_keepflag/quant_flag`; this version runs at about `157.875 KB / 192 KB` UB
+- do_not_copy_when:
+  - you need a plain causal dense backward kernel without probability quantization
+  - your probability tensor can contain negative, non-finite, or overflow cases that require the full generic hif8 conversion contract
+
+### `agent/example/kernels/a2/flash_attn_score.py`
+- formula: per-block `exp(Q @ K^T / sqrt(D) - row_max)` cast to half
+- topology: `cube -> vec` (GM workspace bridge)
+- study_for:
+  - a2 cube → vec via GM workspace (no `l0c_to_ub`)
+  - `CvMutex(FIX → MTE2)` cross-side synchronization
+  - `split_workspace` with pingpong double-buffer `[CubeNum, 2, M, N]`
+  - sub-block split with `GetSubBlockIdx()` for independent UB
+  - `vmax → cmax → brcb → sub` row-max pattern on a2 vec
+  - continuous vs sliced vec operation distinction
+  - float → half output cast
+- do_not_copy_when:
+  - target is a5 (use `l0c_to_ub` + `@vf` instead)
+  - no vec postprocessing needed
+  - the reduction pattern differs from per-row max
+
+### `agent/example/kernels/a2/flash_attn_score_iter.py`
+- formula: per-block `exp(Q @ K^T / sqrt(D) - running_row_max)` with cross-tile max accumulation, cast to half
+- topology: `cube -> vec` (GM workspace bridge)
+- study_for:
+  - running state accumulation across inner-loop iterations on a2
+  - `dup(neg_large)` initialization for the running-max identity-element pattern (avoids conditional logic while staying hardware-safe)
+  - `vmax` on `[M, 1]` scalar format: why it covers all rows while `[M, 8]` does not
+  - `dup` placement inside `auto_sync` outer loop (safe, generates extra V→MTE3 event)
+  - incremental extension of an existing kernel (diff from `flash_attn_score.py` is 3 lines)
+- do_not_copy_when:
+  - you need full softmax (this is the unnormalized intermediate — no sum/divide pass)
+  - you need per-tile independent max (use `flash_attn_score.py` instead)
+  - target is a5 (use register-level running state instead)
+
+### `agent/example/kernels/a2/flash_attn_score_pv.py`
+- formula:
+  - `score_j = q.float() @ k_j.float().t() * scale`
+  - `m = maximum(m, rowmax(score_j))`
+  - `p_j = exp(score_j - m).half()`
+  - `pv_j = p_j.float() @ v_j.float()`
+- topology: `cube -> vec -> cube` (double GM workspace bridge, one-tile lookahead)
+- study_for:
+  - a2 delayed-consumer pipeline with `n_loops + 1` warmup/drain schedule
+  - reuse of one `L0C` family across two cube stages with one shared `l0c_cnt`
+  - a2 `vec -> cube` bridge via `UB -> GM workspace -> L1` when `ub_to_l1_*` is unavailable
+  - two-`workspace` design: float score bridge plus half probability bridge
+  - preserving per-block running-max semantics while feeding the delayed `p @ v` cube stage
+  - flattened output layout `[ (bh * n_tiles + tile_n) * S1 + row, D ]`
+- do_not_copy_when:
+  - you need normalized online softmax with running sum/divide
+  - your target is a5 and direct `UB -> L1` publish is available
+  - the second stage does not truly consume the vec result one iteration later
+  - your `D` is not fixed/aligned to the validated `128`
+
+### `agent/example/kernels/a2/flash_attn_unnorm.py`
+- formula:
+  - `score_j = q.float() @ k_j.float().t() * scale`
+  - `curr_m = maximum(prev_m, rowmax(score_j))`
+  - `expdiff_j = exp(prev_m - curr_m)`
+  - `p_j = exp(score_j - curr_m).half()`
+  - `pv_j = p_j.float() @ v_j.float()`
+  - `out = out * expdiff_j + pv_j`
+- topology: `cube -> vec -> cube -> vec` (triple GM bridge, one-tile lookahead)
+- study_for:
+  - a2 streamed unnormalized attention numerator with delayed final vec accumulation
+  - reusing one physical `L0C` family across the two cube stages on a2
+  - triple ownership edge: `CvMutex -> VcMutex -> CvMutex`
+  - keeping running max, delayed `expdiff`, and final `accum` resident in vec UB
+  - using one extra GM workspace for delayed `pv_j` because a2 cannot keep the stage-2 output on chip for vec reuse
+  - safe copy pattern for `[M,1]` scalar state on a2 (`add(..., zero)` instead of `ub_to_ub`)
+- do_not_copy_when:
+  - you need normalized online softmax with running sum/final divide
+  - your target is a5 and direct on-chip handoff is available
+  - your second-stage output does not need to return to vec for delayed accumulation
+  - your `D` is not fixed/aligned to the validated `128`
+
+### `agent/example/kernels/a2/flash_attn_full.py`
+- formula:
+  - `score_j = q.float() @ k_j.float().t() * scale`
+  - `curr_m = maximum(prev_m, rowmax(score_j))`
+  - `expdiff_j = exp(prev_m - curr_m)`
+  - `p_j = exp(score_j - curr_m)`
+  - `row_sum = row_sum * expdiff_j + p_j.sum(-1)`
+  - `pv_j = p_j.half().float() @ v_j.float()`
+  - `out = out * expdiff_j + pv_j`
+  - `out = out / row_sum`
+- topology: `cube -> vec -> cube -> vec` (triple GM bridge, one-tile lookahead, final vec divide)
+- study_for:
+  - a2 normalized online flash attention with running `row_max` and running `row_sum`
+  - preserving the exact `p_j.half().float()` value-path contract while keeping `row_sum` in float
+  - reducing `sum_j` from the float probability tile before the cast
+  - final sliced `div` of `[M,128]` accumulators by a narrow `[M,8]` row-sum broadcast
+  - reusing the `flash_attn_unnorm.py` delayed numerator pipeline and extending it with full normalization
+- do_not_copy_when:
+  - you only need the unnormalized numerator (use `flash_attn_unnorm.py`)
+  - your target is a5 and direct on-chip handoff is available
+  - your contract does not require the exact `p.half().float()` value path
+  - your `D` is not fixed/aligned to the validated `128`
+
+### `agent/example/kernels/a2/flash_attn_full_pj_hif8.py`
+- formula:
+  - `score_j = q.float() @ k_j.float().t() * scale`
+  - `curr_m = maximum(prev_m, rowmax(score_j))`
+  - `expdiff_j = exp(prev_m - curr_m)`
+  - `p_j = exp(score_j - curr_m)`
+  - `row_sum = row_sum * expdiff_j + p_j.sum(-1)`
+  - `p_q = to_hif8_torch(p_j * 128.0) / 128.0`
+  - `pv_j = p_q.half().float() @ v_j.float()`
+  - `out = out * expdiff_j + pv_j`
+  - `out = out / row_sum`
+  - returns final `out`, `rowmax`, and `rowsum`
+- topology: `cube -> vec -> cube -> vec` (same triple bridge, scaled hif8 simulation in the stage-1 vec path)
+- study_for:
+  - the contract-first baseline for this scaled hif8 probability path, with separate vec scratch for stage-1 score and stage-2 `pv`
+  - preserving float `row_sum` while swapping the value path from `p.half().float()` to `to_hif8_torch(p * 128) / 128`
+  - exporting final `rowmax` / `rowsum` through extra GM outputs without changing the delayed `p @ v` pipeline
+  - extending the same kernel family to non-aligned `S2` and `S1` without giving up the triple-bridge contract
+- deep_note: `agent/references/examples/deep/a2-flash-attn-full-pj-hif8.md`
+- do_not_copy_when:
+  - your contract still wants the unscaled `p.half().float()` path (use `flash_attn_full.py`)
+  - you need a generic float-domain hif8 kernel instead of the non-negative probability specialization
+  - your `D` is not fixed/aligned to the validated `128`
+
+### `agent/example/kernels/a2/flash_attn_full_pj_hif8_causal.py`
+- formula:
+  - same math and outputs as `flash_attn_full_pj_hif8.py`
+  - score tiles additionally obey left-up causal masking `k_pos <= q_pos`
+  - returns final `out`, `rowmax`, and `rowsum`
+- topology: `cube -> vec -> cube -> vec` (same triple bridge and hif8 probability path, plus shared vec-side slot buffer, diagonal-tile rowwise causal masking, and future-tile skip)
+- study_for:
+  - the causal extension of the scaled-hif8 online-softmax kernel after moving vec scratch onto the shared `DBuff` lineage used to improve the `MTE2 -> V` `ubin` queueing story
+  - treating causal as a score-domain fix before `cmax` / `rowmax`, not as a later `p`-domain repair
+  - recognizing that only the diagonal `nt == lmt` tile needs mixed causal invalidation, while future fully-invalid tiles can be skipped with `active_tiles_n = Min(tiles_n, lmt + 1)`
+  - prebuilding reusable left/right packed-bit causal masks once per subblock, then reusing them on every diagonal-tile visit
+  - generating those packed mask bytes with `compare_scalar(...)` over a reusable `[0..63]` integer column-index row instead of filling mask bytes one by one
+  - reducing control overhead by populating the column-index tensor through an `int64` reinterpret so each write covers two `int32` entries
+  - using a Python-unrolled row loop only for the row-dependent causal threshold, while the final score invalidation itself is done by packed `select(...)`
+  - combining diagonal causal masking with ordinary final-tile `valid_n` tail masking by applying causal first and tail second
+  - reusing one shared `ub_score_pv + score_pv_cnt` family for stage-1 score tiles and delayed stage-2 `pv` tiles while still keeping `stage1_cnt` and `stage2_cnt` separate
+  - validating the same kernel family across `S1 == S2`, `S1 < S2`, `S1 > S2`, and multi-head shapes
+- do_not_copy_when:
+  - your contract is non-causal (use `flash_attn_full_pj_hif8.py`)
+  - you want the same shared vec scratch lineage without causal masking noise (use `flash_attn_full_pj_hif8_commonub.py`)
+  - your causal layout is not the left-up `k_pos <= q_pos` contract validated here
+
+### `agent/example/kernels/a2/flash_attn_full_pj_half_block32_causal.py`
+- formula:
+  - `score_j = q.float() @ k_j.float().t() * scale`
+  - `curr_m = maximum(prev_m, rowmax(score_j))`
+  - `expdiff_j = exp(prev_m - curr_m)`
+  - `p_j = exp(score_j - curr_m)`
+  - `row_sum = row_sum * expdiff_j + p_j.sum(-1)`
+  - `pv_j = p_j.half().float() @ v_j.float()`
+  - score tiles additionally obey blockwise causal masking `floor(k_pos / 32) <= floor(q_pos / 32)`
+  - `out = out * expdiff_j + pv_j`
+  - `out = out / row_sum`
+  - returns final `out`, `rowmax`, and `rowsum`
+- topology: `cube -> vec -> cube -> vec` (same triple bridge, half probability value path, plus shared vec-side slot buffer, block-32 diagonal-tile causal masking, and future-tile skip)
+- study_for:
+  - the contract-first half-probability causal variant that keeps `row_sum` in float while rounding only the delayed `p @ v` value path
+  - treating blockwise causal as a score-domain fix before `cmax` / `rowmax`, not as a later `p`-domain repair
+  - recognizing that future `128x128` score tiles remain fully invalid under the `32x32` block-causal rule, so `active_tiles_n = Min(tiles_n, lmt + 1)` still applies
+  - prebuilding reusable left/right packed-bit masks for the diagonal tile once per subblock, with row-dependent `32` / `64` valid-column thresholds inside each `64`-column half
+  - reusing one shared `ub_score_pv + score_pv_cnt` family for stage-1 score tiles and delayed stage-2 `pv` tiles so the vec `ubin` edge follows the same slot-buffer lineage as `flash_attn_full_pj_hif8_commonub.py`
+  - validating block-boundary behavior around `31/32/33`, `127/128/129`, and non-square `S1/S2` shapes without reintroducing hif8 quantization helpers
+- do_not_copy_when:
+  - your contract is non-causal (use `flash_attn_full.py` or another non-causal variant)
+  - your probability path must simulate scaled hif8 values (use `flash_attn_full_pj_hif8.py` or `flash_attn_full_pj_hif8_causal.py`)
+  - your causal layout is not the blockwise `floor(k_pos / 32) <= floor(q_pos / 32)` contract validated here
+
+### `agent/example/kernels/a2/flash_attn_full_pj_hif8_commonub.py`
+- formula:
+  - same math and outputs as `flash_attn_full_pj_hif8.py`
+  - returns final `out`, `rowmax`, and `rowsum`
+- topology: `cube -> vec -> cube -> vec` (same triple bridge and delayed `p @ v` contract, but with a shared vec-side slot buffer for stage-1 score tiles and stage-2 `pv` tiles)
+- study_for:
+  - comparing against `flash_attn_full_pj_hif8.py` to see what changes when vec scratch moves from two plain `Tensor` views to one shared `DBuff`
+  - introducing a dedicated scratch-family counter for shared local storage while still keeping `stage1_cnt` and `stage2_cnt` separate
+  - improving same-side vec preload / compute overlap without changing the cross-side mutex ownership model
+  - studying the queueing win from `ub_score_pv + score_pv_cnt`, not a different math contract
+- deep_note: `agent/references/examples/deep/a2-flash-attn-full-pj-hif8-commonub.md`
+- do_not_copy_when:
+  - you are still deriving the math contract and want the simplest readable version first (start from `flash_attn_full_pj_hif8.py`)
+  - you are debugging row-max / row-sum correctness and do not want shared vec scratch lineage in the picture yet
+  - your goal is only UB-capacity reduction; this version keeps the same total UB footprint and mainly improves queueing structure
+- simplest cube -> vec baseline -> `agent/example/kernels/a5/basic_cube_vec_mix.py`
+- float -> half vec postprocess -> `agent/example/kernels/a5/matmul_half_splitn_bias10p2_vf.py`
+- rowwise normalize -> `agent/example/kernels/a5/matmul_rowwise_norm.py`
+- rowwise L2 normalize -> `agent/example/kernels/a5/matmul_rowwise_l2_norm.py`
+- blockwise quantization -> `agent/example/kernels/a5/matmul_kmkn_blockwise_quant128.py`
+- vec preprocess before cube -> `agent/example/kernels/a5/vec_cube_abs_sqrt_matmul.py`
+- recurrent WU dual-output preprocess -> `agent/example/kernels/a5/recompute_wu_cube_vec.py`
+- fused vec -> cube -> vec -> `agent/example/kernels/a5/vec_cube_vec_scale2_abs_add1_matmul.py`
+- delayed lookahead mixed pipeline -> `agent/example/kernels/a5/test_mla_entire.py`
+- a5 multi-row causal full attention with fp8 `p_j` bridge -> `agent/example/kernels/a5/flash_attn_full_fp8_causal.py`

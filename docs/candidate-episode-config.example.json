@@ -3,6 +3,8 @@
   "model_catalog": "runtime-model-catalog.example.json",
   "migration_spec": "../fixtures/migrations/cuda-reduction-v1/migration-spec-v1.json",
   "reference_root": "../fixtures/migrations/cuda-reduction-v1",
+  "reference_corpus_root": "../vendor/cannbot-skills",
+  "reference_corpus_ledger": "../vendor/cannbot-skills-audit.jsonl",
   "workspace_root": "../var/candidate-workspace",
   "episode_database": "../var/candidate-episode.sqlite3",
   "generation_strategy": "direct_ascend_c",

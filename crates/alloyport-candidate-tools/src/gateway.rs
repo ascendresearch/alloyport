@@ -6,6 +6,7 @@ use crate::correctness_tool::{
     CandidateCorrectnessTool, CandidateCorrectnessToolConfig, REQUEST_REDUCTION_CORRECTNESS_TOOL,
 };
 use crate::materialization::{CandidateMaterialization, CandidateMaterializationError};
+use crate::reference::{READ_REFERENCE_TOOL, ReferenceCorpus};
 use alloyport_artifacts::{ArtifactStore, ArtifactStoreError, IngestRequest};
 use alloyport_core::{
     AgentToolGateway, ArtifactDescriptor, BundlePath, CandidateId, CandidateSourceFile,
@@ -96,6 +97,7 @@ pub struct CandidateToolGateway {
     workspace_root: PathBuf,
     build: Option<CandidateBuildTool>,
     correctness: Option<CandidateCorrectnessTool>,
+    reference: Option<ReferenceCorpus>,
 }
 
 impl Debug for CandidateToolGateway {
@@ -142,7 +144,15 @@ impl CandidateToolGateway {
             workspace_root,
             build: None,
             correctness: None,
+            reference: None,
         })
+    }
+
+    /// Serves the vendored reference corpus, each document carrying its trust state.
+    #[must_use]
+    pub fn with_reference(mut self, corpus: ReferenceCorpus) -> Self {
+        self.reference = Some(corpus);
+        self
     }
 
     /// Enables the remote Ascend build tool without changing source-tool behavior.
@@ -315,6 +325,13 @@ impl CandidateToolGateway {
         match request.call.name.as_str() {
             SUBMIT_CANDIDATE_BUNDLE_TOOL => self.submit(request),
             REQUEST_SOURCE_GATE_TOOL => self.source_gate(request),
+            READ_REFERENCE_TOOL => crate::reference::read_reference(
+                self.reference
+                    .as_ref()
+                    .ok_or(ToolGatewayError::UnexpectedRequest)?,
+                self.artifacts.as_ref(),
+                request,
+            ),
             READ_BUILD_DIAGNOSTICS_TOOL => crate::build_tool::read_build_diagnostics(
                 &self.config,
                 self.artifacts.as_ref(),
@@ -336,6 +353,7 @@ fn check_arguments(name: &str, raw: &[u8]) -> Result<(), (String, &'static str)>
         READ_BUILD_DIAGNOSTICS_TOOL => {
             crate::build_tool::check_read_build_diagnostics_arguments(raw)
         }
+        READ_REFERENCE_TOOL => crate::reference::check_read_reference_arguments(raw),
         REQUEST_REDUCTION_CORRECTNESS_TOOL => {
             crate::correctness_tool::check_reduction_correctness_arguments(raw)
         }
@@ -350,6 +368,7 @@ fn argument_contract(name: &str) -> &'static str {
         REQUEST_SOURCE_GATE_TOOL => SOURCE_GATE_ARGUMENT_CONTRACT,
         REQUEST_ASCEND_BUILD_TOOL => crate::build_tool::REQUEST_ASCEND_BUILD_ARGUMENT_CONTRACT,
         READ_BUILD_DIAGNOSTICS_TOOL => crate::build_tool::READ_BUILD_DIAGNOSTICS_ARGUMENT_CONTRACT,
+        READ_REFERENCE_TOOL => crate::reference::READ_REFERENCE_ARGUMENT_CONTRACT,
         REQUEST_REDUCTION_CORRECTNESS_TOOL => {
             crate::correctness_tool::REQUEST_REDUCTION_CORRECTNESS_ARGUMENT_CONTRACT
         }
@@ -420,6 +439,9 @@ impl AgentToolGateway for CandidateToolGateway {
             }),
             // An instrument, not a gate: it returns information the pipeline already produced and
             // grants no authority, so its result is `Observed` and cannot satisfy a subtask.
+            READ_REFERENCE_TOOL if self.reference.is_some() => {
+                Some(crate::reference::descriptor(name))
+            }
             READ_BUILD_DIAGNOSTICS_TOOL if self.build.is_some() => Some(RuntimeToolDescriptor {
                 name: name.to_owned(),
                 version: "1".to_owned(),

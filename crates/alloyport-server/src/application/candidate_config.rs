@@ -47,6 +47,10 @@ struct CandidateEpisodeFileConfig {
     model_catalog: PathBuf,
     migration_spec: PathBuf,
     reference_root: PathBuf,
+    /// Vendored Ascend reference corpus and its trust ledger. Both or neither; when absent the
+    /// model is not offered the tool rather than being offered one that fails.
+    reference_corpus_root: Option<PathBuf>,
+    reference_corpus_ledger: Option<PathBuf>,
     workspace_root: PathBuf,
     episode_database: PathBuf,
     generation_strategy: GenerationStrategy,
@@ -139,6 +143,7 @@ struct LoadedInputs {
     catalog: RuntimeModelCatalog,
     migration_spec: MigrationSpec,
     reference_root: PathBuf,
+    reference_corpus: Option<alloyport_candidate_tools::ReferenceCorpus>,
     workspace_root: PathBuf,
     database: PathBuf,
     codec_limits: CodecLimits,
@@ -243,6 +248,7 @@ impl CandidateEpisodeConfig {
                 migration_spec: inputs.migration_spec,
                 generation_strategy: file.generation_strategy,
                 workspace_root: inputs.workspace_root,
+                reference: inputs.reference_corpus,
                 build_worker_id: workers.build_worker_id,
                 build_policy: workers.build_policy,
                 correctness_policy: workers.correctness_policy,
@@ -289,6 +295,21 @@ fn load_inputs(
     let migration_path = resolve(base, &file.migration_spec);
     let migration_spec: MigrationSpec = read_json_file(&migration_path, "MigrationSpec")?;
     let reference_root = real_directory(&resolve(base, &file.reference_root), "reference root")?;
+    let reference_corpus = match (&file.reference_corpus_root, &file.reference_corpus_ledger) {
+        (Some(root), Some(ledger)) => Some(
+            alloyport_candidate_tools::ReferenceCorpus::load(
+                real_directory(&resolve(base, root), "reference corpus root")?,
+                resolve(base, ledger),
+            )
+            .map_err(|error| -> Box<dyn Error> { error.into() })?,
+        ),
+        (None, None) => None,
+        _ => {
+            return Err(
+                "reference_corpus_root and reference_corpus_ledger must both be set".into(),
+            );
+        }
+    };
     let workspace_root = real_directory(&resolve(base, &file.workspace_root), "workspace root")?;
     let database = resolve(base, &file.episode_database);
     require_safe_output_file(&database, "episode database")?;
@@ -353,6 +374,7 @@ fn load_inputs(
         catalog,
         migration_spec,
         reference_root,
+        reference_corpus,
         workspace_root,
         database,
         codec_limits,

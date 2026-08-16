@@ -8,8 +8,9 @@ use crate::{
 use alloyport_artifacts::ArtifactStore;
 use alloyport_candidate_tools::{
     CandidateBuildToolConfig, CandidateCorrectnessToolConfig, CandidateToolConfig,
-    CandidateToolGateway, READ_BUILD_DIAGNOSTICS_TOOL, REQUEST_ASCEND_BUILD_TOOL,
-    REQUEST_REDUCTION_CORRECTNESS_TOOL, REQUEST_SOURCE_GATE_TOOL, SUBMIT_CANDIDATE_BUNDLE_TOOL,
+    CandidateToolGateway, READ_BUILD_DIAGNOSTICS_TOOL, READ_REFERENCE_TOOL,
+    REQUEST_ASCEND_BUILD_TOOL, REQUEST_REDUCTION_CORRECTNESS_TOOL, REQUEST_SOURCE_GATE_TOOL,
+    SUBMIT_CANDIDATE_BUNDLE_TOOL,
 };
 use alloyport_core::{CodecLimits, CodecToolDefinition, GenerationStrategy, MigrationSpec};
 use alloyport_llm_provider::ReqwestModelTransport;
@@ -23,6 +24,9 @@ pub struct CandidateEpisodeToolSpec {
     pub migration_spec: MigrationSpec,
     pub generation_strategy: GenerationStrategy,
     pub workspace_root: PathBuf,
+    /// Vendored reference corpus. Optional so a deployment can withhold it deliberately; when it is
+    /// absent the tool is not offered at all, rather than offered and failing.
+    pub reference: Option<alloyport_candidate_tools::ReferenceCorpus>,
     pub build_worker_id: String,
     pub build_policy: CandidateBuildToolConfig,
     pub correctness_policy: CandidateCorrectnessToolConfig,
@@ -64,10 +68,13 @@ pub fn open_candidate_episode_https(
         artifacts.clone(),
     )
     .map_err(controller_error)?;
-    let gateway = CandidateToolGateway::new(context, artifacts.clone(), tools.workspace_root)
+    let mut gateway = CandidateToolGateway::new(context, artifacts.clone(), tools.workspace_root)
         .map_err(controller_error)?
         .with_ascend_build(tools.build_policy, Box::new(build))
         .with_reduction_correctness(tools.correctness_policy, Box::new(correctness));
+    if let Some(reference) = tools.reference {
+        gateway = gateway.with_reference(reference);
+    }
     ControllerEpisodeApplication::open_https(
         episode,
         catalog,
@@ -140,6 +147,21 @@ pub fn candidate_episode_tool_definitions() -> Vec<CodecToolDefinition> {
             }),
             &["manifest_digest", "source_gate_receipt_digest"],
         ),
+        CodecToolDefinition {
+            name: READ_REFERENCE_TOOL.to_owned(),
+            description: "List the vendored Ascend reference corpus, or read one document. Every \
+                          document arrives with its trust state; nothing in it has been verified on \
+                          this hardware, so follow a document's supported path and treat its \
+                          numbers as hypotheses."
+                .to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"document": {"type": "string", "minLength": 1}},
+                "required": []
+            }),
+            strict: true,
+        },
         tool(
             READ_BUILD_DIAGNOSTICS_TOOL,
             "Read the compiler output the Build Gate published for one of this migration's build \

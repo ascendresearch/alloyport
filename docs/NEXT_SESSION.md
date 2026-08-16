@@ -131,11 +131,15 @@ evidence, not adopted decisions.
    source was unreachable. The correction loop that Design 0026's Episode test appears to prove was
    resting on a fake port whose `detail` carried an invented message.
 
-   Still missing, in the order they would pay: **Ascend C reference material** — the model writes
-   against the API from its weights alone, and the sibling project's evidence is that vendor
-   documentation was what turned a failing kernel port into a passing one; **a scratch compile**, so
-   trying a ten-line construct does not cost a full submit/gate/build cycle; and anything at all for
-   measurement, which is (3).
+   `read_reference` now serves the vendored corpus (`vendor/`, 127 documents) with each document's
+   trust state attached. Nothing in it is `validated`, because AlloyPort has run no probe; 41 rows
+   carry reviews imported from the sibling project with that provenance recorded, and the two
+   documents an optimization task reaches for first are both `suspect` — one hollow, one carrying
+   numbers validated on the previous hardware generation. **Serving the corpus without its ledger
+   would have presented those as facts about `Ascend950PR`.**
+
+   Still missing: **a scratch compile**, so trying a ten-line construct does not cost a full
+   submit/gate/build cycle; and anything at all for measurement, which is (3).
 6. **Neither boundary script can run on the dev host** (`rg` is absent). They now exit 2 saying so
    instead of printing a pass; CI still runs them. Nothing has verified the architecture boundaries
    locally this session.

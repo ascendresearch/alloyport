@@ -4,6 +4,7 @@ mod build_tool;
 mod correctness_tool;
 mod gateway;
 mod materialization;
+mod reference;
 
 pub use build_tool::{
     CandidateBuildToolConfig, CandidateBuildToolConfigError, READ_BUILD_DIAGNOSTICS_TOOL,
@@ -15,6 +16,7 @@ pub use gateway::{
     SUBMIT_CANDIDATE_BUNDLE_TOOL,
 };
 pub use materialization::{CandidateMaterialization, CandidateMaterializationError};
+pub use reference::{READ_REFERENCE_TOOL, ReferenceCorpus, ReferenceStatus};
 
 #[cfg(test)]
 mod tests;
