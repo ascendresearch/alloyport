@@ -1241,16 +1241,30 @@ fn diagnostics_cannot_be_read_for_a_receipt_from_another_migration() -> Result<(
             Arc::new(Mutex::new(Vec::new())),
         )),
     );
-    let refused = complete_immediate(other.execute(&invocation(
-        READ_BUILD_DIAGNOSTICS_TOOL,
-        &json!({ "build_gate_receipt_digest": build_receipt }),
-        "foreign-read",
-    )));
-    assert!(matches!(
-        refused,
-        Err(ToolGatewayError::Adapter(message))
-            if message.contains("does not belong to this migration context")
-    ));
+    let (status, refusal) = execute(
+        &mut other,
+        &invocation(
+            READ_BUILD_DIAGNOSTICS_TOOL,
+            &json!({ "build_gate_receipt_digest": build_receipt }),
+            "foreign-read",
+        ),
+    );
+    // Two properties, and the second must not have cost the first. The refusal is recoverable,
+    // because an instrument granting no authority must not end a migration; and it still discloses
+    // nothing, because recoverable is not the same as permitted.
+    assert_eq!(status, ToolOperationStatus::CandidateFailed);
+    let explanation = read_json(artifacts.as_ref(), refusal);
+    assert_eq!(explanation["recoverable"], json!(true));
+    assert!(
+        explanation["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("does not belong to this migration context"))
+    );
+    let disclosed = serde_json::to_string(&explanation)?;
+    assert!(
+        !disclosed.contains("something") && !disclosed.contains("stderr"),
+        "a refusal must not carry the other migration's diagnostics: {disclosed}"
+    );
     Ok(())
 }
 
@@ -1269,4 +1283,62 @@ fn complete_immediate<F: std::future::Future>(future: F) -> F::Output {
         Poll::Ready(output) => output,
         Poll::Pending => panic!("scripted model must complete immediately"),
     }
+}
+
+#[test]
+fn an_instrument_naming_something_that_does_not_exist_cannot_end_the_migration()
+-> Result<(), Box<dyn Error>> {
+    // `task-436fe144a291b285ec9547db` died here. The model asked for
+    // `ops/ascendc-register-invoke-template`; the corpus holds `ascendc-registry-invoke-template`.
+    // One letter, and a read-only instrument that grants no authority ended a paid migration.
+    let artifacts: Arc<dyn ArtifactStore> = Arc::new(InMemoryArtifactStore::new(16 * 1024 * 1024));
+    let workspace = tempfile::tempdir()?;
+    let corpus = crate::reference::ReferenceCorpus::load(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/cannbot-skills"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendor/cannbot-skills-audit.jsonl"
+        ),
+    )?;
+    let gateway = CandidateToolGateway::new(
+        CandidateToolConfig::new(
+            TaskId::try_from("task-candidate-tools")?,
+            &migration_spec(),
+            alloyport_core::GenerationStrategy::DirectAscendC,
+        ),
+        artifacts.clone(),
+        workspace.path(),
+    )?
+    .with_reference(corpus);
+
+    let call = GatewayToolCall {
+        native_call_id: "call-typo".to_owned(),
+        name: READ_REFERENCE_TOOL.to_owned(),
+        raw_arguments: serde_json::to_vec(
+            &json!({"document": "ops/ascendc-register-invoke-template"}),
+        )?,
+    };
+    // Caught before authorization, so the reducer records terminal `RejectedAsInvalid` and the
+    // Episode continues. The explanation must name what the model may actually ask for.
+    let rejection = gateway
+        .validate_call(&call)
+        .expect_err("a document that does not exist must be returned to the model");
+    let explanation = read_json(artifacts.as_ref(), rejection.result_digest);
+    assert_eq!(explanation["recoverable"], json!(true));
+    let reason = explanation["reason"].as_str().expect("reason");
+    assert!(
+        reason.contains("ops/ascendc-registry-invoke-template"),
+        "the rejection must name the documents that do exist, or the model can only guess again"
+    );
+
+    // A real document still passes, so the check rejects the wrong name rather than the tool.
+    let good = GatewayToolCall {
+        native_call_id: "call-good".to_owned(),
+        name: READ_REFERENCE_TOOL.to_owned(),
+        raw_arguments: serde_json::to_vec(
+            &json!({"document": "ops/ascendc-registry-invoke-template"}),
+        )?,
+    };
+    assert!(gateway.validate_call(&good).is_ok());
+    Ok(())
 }

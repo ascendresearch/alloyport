@@ -332,20 +332,93 @@ impl CandidateToolGateway {
         match request.call.name.as_str() {
             SUBMIT_CANDIDATE_BUNDLE_TOOL => self.submit(request),
             REQUEST_SOURCE_GATE_TOOL => self.source_gate(request),
-            READ_REFERENCE_TOOL => crate::reference::read_reference(
-                self.reference
-                    .as_ref()
-                    .ok_or(ToolGatewayError::UnexpectedRequest)?,
-                self.artifacts.as_ref(),
+            READ_REFERENCE_TOOL => self.as_instrument(
                 request,
+                crate::reference::read_reference(
+                    self.reference
+                        .as_ref()
+                        .ok_or(ToolGatewayError::UnexpectedRequest)?,
+                    self.artifacts.as_ref(),
+                    request,
+                ),
             ),
-            READ_BUILD_DIAGNOSTICS_TOOL => crate::build_tool::read_build_diagnostics(
-                &self.config,
-                self.artifacts.as_ref(),
+            READ_BUILD_DIAGNOSTICS_TOOL => self.as_instrument(
                 request,
+                crate::build_tool::read_build_diagnostics(
+                    &self.config,
+                    self.artifacts.as_ref(),
+                    request,
+                ),
             ),
             _ => Err(ToolGatewayError::UnexpectedRequest),
         }
+    }
+
+    /// Checks that what a decodable call names actually exists, without touching anything.
+    ///
+    /// `check_arguments` only proves the JSON decodes. A live migration then died on
+    /// `read_reference` naming a document one letter off from a real one, because a referent that
+    /// does not resolve became an adapter error. That is a defect the model can see and correct, so
+    /// it belongs here, where the reducer records it as terminal `RejectedAsInvalid` and the
+    /// Episode continues.
+    fn check_referents(&self, call: &GatewayToolCall) -> Result<(), (String, &'static str)> {
+        let (Some(corpus), READ_REFERENCE_TOOL) = (self.reference.as_ref(), call.name.as_str())
+        else {
+            return Ok(());
+        };
+        let Ok(arguments) =
+            serde_json::from_slice::<crate::reference::ReadReferenceArguments>(&call.raw_arguments)
+        else {
+            return Ok(());
+        };
+        let Some(document) = arguments.document else {
+            return Ok(());
+        };
+        if corpus.contains(&document) {
+            return Ok(());
+        }
+        Err((
+            format!(
+                "no reference document named {document}; the corpus holds {}",
+                corpus.document_ids().join(", ")
+            ),
+            crate::reference::READ_REFERENCE_ARGUMENT_CONTRACT,
+        ))
+    }
+
+    /// Keeps an instrument from ever ending a migration.
+    ///
+    /// An instrument is `ReadOnly` and cannot satisfy a subtask — it grants no authority — so it
+    /// must not hold the power to terminate the run either. Design 0040 made model-authored input
+    /// defects recoverable and Design 0042 extended that to citations; both fixed the sites they
+    /// were looking at. This is the same rule enforced where it cannot be missed again: every
+    /// adapter failure reaching a model through an instrument comes back as a readable result.
+    fn as_instrument(
+        &self,
+        request: &ToolInvocation,
+        outcome: Result<ToolGatewayOutcome, ToolGatewayError>,
+    ) -> Result<ToolGatewayOutcome, ToolGatewayError> {
+        let Err(ToolGatewayError::Adapter(message)) = outcome else {
+            return outcome;
+        };
+        let explanation = serde_json::json!({
+            "rejected": true,
+            "tool": request.call.name,
+            "reason": message,
+            "recoverable": true,
+            "guidance": "this tool only reports; nothing was built, run, or changed. Correct the \
+                         arguments and reissue, or continue without it.",
+        });
+        let bytes = serde_json::to_vec(&explanation).map_err(|error| {
+            adapter_error(format!("cannot encode instrument rejection: {error}"))
+        })?;
+        let artifact = ingest_bytes(self.artifacts.as_ref(), &bytes)?;
+        Ok(ToolGatewayOutcome::Completed {
+            status: ToolOperationStatus::CandidateFailed,
+            result_digest: artifact.digest,
+            receipt_digests: Vec::new(),
+            satisfies_subtask: false,
+        })
     }
 }
 
@@ -399,7 +472,9 @@ impl AgentToolGateway for CandidateToolGateway {
                 "",
             )
         } else {
-            match check_arguments(&call.name, &call.raw_arguments) {
+            match check_arguments(&call.name, &call.raw_arguments)
+                .and_then(|()| self.check_referents(call))
+            {
                 Ok(()) => return Ok(()),
                 Err(rejection) => rejection,
             }

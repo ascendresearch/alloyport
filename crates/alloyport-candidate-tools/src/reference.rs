@@ -30,9 +30,9 @@ pub(crate) fn check_read_reference_arguments(raw: &[u8]) -> Result<(), serde_jso
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ReadReferenceArguments {
+pub(crate) struct ReadReferenceArguments {
     #[serde(default)]
-    document: Option<String>,
+    pub(crate) document: Option<String>,
 }
 
 /// How far a document has been checked. Only a probe on our own hardware reaches `Validated`.
@@ -157,6 +157,23 @@ impl ReferenceCorpus {
     #[must_use]
     pub fn len(&self) -> usize {
         self.documents.len()
+    }
+
+    /// Whether the corpus holds this document, for a side-effect-free argument check.
+    ///
+    /// Naming a document that does not exist is a defect the model can see and correct — it
+    /// misremembers an id, or infers one from a card that cites it — so it belongs in
+    /// `validate_call`, not in an adapter error that ends the migration. A live run died on
+    /// `ops/ascendc-register-invoke-template` when the corpus holds `ascendc-registry-invoke-template`.
+    #[must_use]
+    pub fn contains(&self, document: &str) -> bool {
+        self.documents.contains_key(document)
+    }
+
+    /// Every document id, so a rejection can name what the model may actually ask for.
+    #[must_use]
+    pub fn document_ids(&self) -> Vec<&str> {
+        self.documents.keys().map(String::as_str).collect()
     }
 
     #[must_use]

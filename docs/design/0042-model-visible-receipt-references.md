@@ -116,6 +116,23 @@ This is defence in depth, not the fix. With decision 1 the model can cite correc
 means that if it cites a real-but-wrong digest anyway, it gets a correction turn instead of a dead
 migration.
 
+### 3a. An instrument cannot end a migration at all
+
+The second live run died four turns in, on `read_reference` naming
+`ops/ascendc-register-invoke-template` when the corpus holds `ascendc-registry-invoke-template`.
+One letter, and a `ReadOnly` instrument that grants no authority and cannot satisfy a subtask ended
+a paid migration.
+
+That was decision 3 applied to the sites being looked at instead of to the class — the same
+enumeration failure 0040 made, repeated one revision later by the author of this document. So the
+rule is now enforced where it cannot be missed: `validate_call` checks that a named reference
+document exists and returns the corpus listing when it does not, and every instrument's adapter
+failure is republished as a readable result at a single chokepoint in `invoke`. A future instrument
+inherits both without anyone remembering to.
+
+Refusing still refuses. A receipt from another migration is rejected recoverably and discloses
+nothing; recoverable is not the same as permitted, and the test asserts both halves.
+
 ### 4. The invariant, and the test that enforces it
 
 > **The model may only be required to name a value that some earlier tool result showed it.**
