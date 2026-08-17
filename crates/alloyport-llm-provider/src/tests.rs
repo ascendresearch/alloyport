@@ -315,10 +315,13 @@ async fn a_dispatch_failure_publishes_the_diagnostic_it_names() {
     let ModelGatewayOutcome::ConfirmedNotSent {
         diagnostic,
         diagnostic_digest,
+        retry,
     } = outcome
     else {
         panic!("a transport refusing before send must be confirmed-not-sent");
     };
+    // The transport's guidance reaches the loop instead of being computed and dropped.
+    assert_eq!(retry, alloyport_core::ModelTransportRetryHint::NewAttempt);
     let digest = diagnostic_digest.expect("the diagnostic must be published, not merely hashed");
     assert_eq!(digest, Sha256Digest::digest_bytes(diagnostic.as_bytes()));
     assert!(

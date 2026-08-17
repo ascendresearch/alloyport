@@ -79,6 +79,12 @@ impl DurableEpisodeState {
         self.turns.len()
     }
 
+    /// Model attempts made so far, including those that produced no usable turn.
+    #[must_use]
+    pub fn attempt_count(&self) -> usize {
+        self.attempts.len()
+    }
+
     #[must_use]
     pub fn tool_operation_count(&self) -> usize {
         self.tool_operations.len()

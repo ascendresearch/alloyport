@@ -303,6 +303,12 @@ async fn drive_candidate_inner(
                 tokio::time::sleep(runtime.poll_interval).await;
             }
             AgentLoopAdvance::Progressed(_) => tokio::task::yield_now().await,
+            // A failed dispatch asked to be left alone. Answering immediately is how one rate
+            // limit becomes an exhausted attempt budget.
+            AgentLoopAdvance::ProgressedAfter { delay_millis, .. } => {
+                println!("provider dispatch failed; waiting {delay_millis}ms before retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(delay_millis)).await;
+            }
         }
     }
 }

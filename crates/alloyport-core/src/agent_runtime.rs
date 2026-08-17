@@ -1,5 +1,6 @@
 //! Durable, provider-neutral Agent Episode reducer and deterministic fake adapters.
 
+use crate::ModelTransportRetryHint;
 use crate::agent_runtime_helpers::{
     AgentLoopRuntimeError, crash_if, derive_model_continuation_input_digest,
     derived_model_attempt_id, derived_tool_operation_id, derived_turn_id, digest_label,
@@ -419,8 +420,11 @@ impl AgentLoopRunner {
                 Ok(AgentLoopAdvance::Progressed(EpisodeStatus::TurnRecorded))
             }
             ModelGatewayOutcome::ConfirmedNotSent {
-                diagnostic_digest, ..
+                diagnostic_digest,
+                retry,
+                ..
             } => {
+                let repeated = repeats_the_last_failure(&versioned.state, diagnostic_digest);
                 let attempt = versioned.state.attempts.last_mut().expect("checked above");
                 // The digest arrives already published. Hashing the string here named an artifact
                 // nobody had stored, so a run that died on 21 identical dispatch failures threw
@@ -429,30 +433,19 @@ impl AgentLoopRunner {
                     ModelAttemptStatus::ConfirmedNotSent,
                     diagnostic_digest,
                 )?;
-                versioned
-                    .state
-                    .episode
-                    .transition(EpisodeStatus::ReadyForModel)?;
-                repository.save(versioned.revision, versioned.state)?;
-                Ok(AgentLoopAdvance::Progressed(EpisodeStatus::ReadyForModel))
+                Self::after_failed_dispatch(repository, versioned, retry, repeated)
             }
             ModelGatewayOutcome::Rejected {
                 response_digest,
                 diagnostic_digest,
-                retryable,
+                retry,
                 ..
             } => {
+                let repeated = repeats_the_last_failure(&versioned.state, diagnostic_digest);
                 let attempt = versioned.state.attempts.last_mut().expect("checked above");
                 attempt.record_response(response_digest, None, None)?;
                 attempt.mark_response_failed(diagnostic_digest)?;
-                let next = if retryable {
-                    EpisodeStatus::ReadyForModel
-                } else {
-                    EpisodeStatus::Failed
-                };
-                versioned.state.episode.transition(next)?;
-                repository.save(versioned.revision, versioned.state)?;
-                Ok(progress(next))
+                Self::after_failed_dispatch(repository, versioned, retry, repeated)
             }
             ModelGatewayOutcome::DecodeFailed {
                 response_digest,
@@ -758,6 +751,43 @@ impl AgentLoopRunner {
         }
     }
 
+    /// Decides what follows a dispatch that produced no usable turn.
+    ///
+    /// Three things the loop used to get wrong, all of them observed on real runs.
+    ///
+    /// A transport that says `Never` is describing its own request or configuration, so retrying
+    /// re-sends the same doomed bytes. A transport that asks for a delay was answered immediately,
+    /// which is the worst possible reply to a rate limit. And a failure that keeps returning
+    /// byte-identical is not a flake: `task-ccd149dfc0f421d97ed7feb4` burned 21 attempts on one
+    /// deterministic cause, learning nothing after the first.
+    fn after_failed_dispatch<R: EpisodeRepository>(
+        repository: &mut R,
+        mut versioned: VersionedEpisodeState,
+        retry: ModelTransportRetryHint,
+        repeated: bool,
+    ) -> Result<AgentLoopAdvance, AgentLoopRuntimeError> {
+        if retry == ModelTransportRetryHint::Never || repeated {
+            versioned.state.episode.transition(EpisodeStatus::Failed)?;
+            repository.save(versioned.revision, versioned.state)?;
+            return Ok(AgentLoopAdvance::Terminal(EpisodeStatus::Failed));
+        }
+        let delay_millis = match retry {
+            ModelTransportRetryHint::AfterMillis(millis) => millis,
+            // No stated delay still deserves one. The exponent counts this episode's failures so
+            // far, so a run that is failing repeatedly slows down instead of hammering.
+            _ => backoff_millis(failed_attempts(&versioned.state)),
+        };
+        versioned
+            .state
+            .episode
+            .transition(EpisodeStatus::ReadyForModel)?;
+        repository.save(versioned.revision, versioned.state)?;
+        Ok(AgentLoopAdvance::ProgressedAfter {
+            status: EpisodeStatus::ReadyForModel,
+            delay_millis,
+        })
+    }
+
     fn review_stop<R: EpisodeRepository>(
         repository: &mut R,
         mut versioned: VersionedEpisodeState,
@@ -780,3 +810,45 @@ impl AgentLoopRunner {
 #[cfg(test)]
 #[path = "agent_runtime_tests.rs"]
 mod agent_runtime_tests;
+
+/// Whether this failure is the same one the previous attempt already recorded.
+///
+/// Compared by published digest rather than by text, so it is an identity check on bytes that
+/// exist rather than a guess. `None` never repeats: a failure nobody could store is not evidence
+/// that the next one will match.
+fn repeats_the_last_failure(state: &DurableEpisodeState, diagnostic: Option<Sha256Digest>) -> bool {
+    let Some(diagnostic) = diagnostic else {
+        return false;
+    };
+    state
+        .attempts
+        .iter()
+        .rev()
+        .find_map(crate::model::ModelAttemptRecord::diagnostic_digest)
+        .is_some_and(|previous| previous == diagnostic)
+}
+
+/// Attempts in this episode that produced no usable turn.
+fn failed_attempts(state: &DurableEpisodeState) -> u32 {
+    u32::try_from(
+        state
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.diagnostic_digest().is_some())
+            .count(),
+    )
+    .unwrap_or(u32::MAX)
+}
+
+/// Bounded exponential backoff: 250ms doubling to a 30s ceiling.
+const fn backoff_millis(failures: u32) -> u64 {
+    const BASE_MILLIS: u64 = 250;
+    const CEILING_MILLIS: u64 = 30_000;
+    let shift = if failures > 7 { 7 } else { failures };
+    let delay = BASE_MILLIS << shift;
+    if delay > CEILING_MILLIS {
+        CEILING_MILLIS
+    } else {
+        delay
+    }
+}

@@ -360,6 +360,15 @@ impl AgentRuntimeFaultInjector for OneShotAgentRuntimeFault {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AgentLoopAdvance {
     Progressed(EpisodeStatus),
+    /// Progressed, and nothing may be dispatched before the delay elapses.
+    ///
+    /// A separate variant rather than a field on `Progressed`: the driver used to answer every
+    /// failed dispatch with `yield_now()`, so a provider asking for a pause got 21 immediate
+    /// retries instead. A caller that ignores this now fails to compile.
+    ProgressedAfter {
+        status: EpisodeStatus,
+        delay_millis: u64,
+    },
     Terminal(EpisodeStatus),
     Suspended,
 }

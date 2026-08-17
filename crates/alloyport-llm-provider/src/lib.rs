@@ -47,11 +47,12 @@ pub enum ProviderSdkOutcome {
     Turn(Box<ProviderTurnExchange>),
     ConfirmedNotSent {
         diagnostic: String,
+        retry: ModelTransportRetryHint,
     },
     Rejected {
         response_digest: Sha256Digest,
         diagnostic: String,
-        retryable: bool,
+        retry: ModelTransportRetryHint,
     },
     DecodeFailed {
         response_digest: Sha256Digest,
@@ -59,6 +60,7 @@ pub enum ProviderSdkOutcome {
     },
     Ambiguous {
         diagnostic: String,
+        retry: ModelTransportRetryHint,
     },
 }
 
@@ -142,17 +144,19 @@ where
             ModelTransportOutcome::ConfirmedNotSent(failure) => {
                 ProviderSdkOutcome::ConfirmedNotSent {
                     diagnostic: failure.diagnostic,
+                    retry: failure.retry_hint,
                 }
             }
             ModelTransportOutcome::ProviderRejected { response, failure } => {
                 ProviderSdkOutcome::Rejected {
                     response_digest: Sha256Digest::digest_bytes(&response.body),
                     diagnostic: failure.diagnostic,
-                    retryable: failure.retry_hint != ModelTransportRetryHint::Never,
+                    retry: failure.retry_hint,
                 }
             }
             ModelTransportOutcome::Ambiguous { failure, .. } => ProviderSdkOutcome::Ambiguous {
                 diagnostic: failure.diagnostic,
+                retry: failure.retry_hint,
             },
         }
     }
@@ -246,7 +250,12 @@ fn decode(
 }
 
 fn confirmed_not_sent(diagnostic: String) -> ProviderSdkOutcome {
-    ProviderSdkOutcome::ConfirmedNotSent { diagnostic }
+    ProviderSdkOutcome::ConfirmedNotSent {
+        diagnostic,
+        // Codec and continuation failures describe the request this loop just built. Re-sending
+        // identical bytes cannot change the answer.
+        retry: ModelTransportRetryHint::Never,
+    }
 }
 
 /// Supplies exact turn inputs and durably commits successful native exchanges for the agent loop.
@@ -337,6 +346,9 @@ where
                     return Ok(ModelGatewayOutcome::ConfirmedNotSent {
                         diagnostic,
                         diagnostic_digest,
+                        // A continuation that cannot be assembled is a state inconsistency, not a
+                        // flake. This is what run 5 retried 21 times.
+                        retry: ModelTransportRetryHint::Never,
                     });
                 }
             };
@@ -352,24 +364,25 @@ where
                 // `ok()` rather than `?`: a store that cannot take the diagnostic is not a reason
                 // to lose the outcome, and `None` states honestly that nothing was stored instead
                 // of naming an artifact that is not there.
-                ProviderSdkOutcome::ConfirmedNotSent { diagnostic } => {
+                ProviderSdkOutcome::ConfirmedNotSent { diagnostic, retry } => {
                     let diagnostic_digest = self.contexts.publish_diagnostic(&diagnostic).ok();
                     ModelGatewayOutcome::ConfirmedNotSent {
                         diagnostic,
                         diagnostic_digest,
+                        retry,
                     }
                 }
                 ProviderSdkOutcome::Rejected {
                     response_digest,
                     diagnostic,
-                    retryable,
+                    retry,
                 } => {
                     let diagnostic_digest = self.contexts.publish_diagnostic(&diagnostic).ok();
                     ModelGatewayOutcome::Rejected {
                         response_digest,
                         diagnostic,
                         diagnostic_digest,
-                        retryable,
+                        retry,
                     }
                 }
                 ProviderSdkOutcome::DecodeFailed {
@@ -383,11 +396,12 @@ where
                         diagnostic_digest,
                     }
                 }
-                ProviderSdkOutcome::Ambiguous { diagnostic } => {
+                ProviderSdkOutcome::Ambiguous { diagnostic, retry } => {
                     let diagnostic_digest = self.contexts.publish_diagnostic(&diagnostic).ok();
                     ModelGatewayOutcome::Ambiguous {
                         diagnostic,
                         diagnostic_digest,
+                        retry,
                     }
                 }
             })

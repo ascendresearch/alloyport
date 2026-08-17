@@ -78,6 +78,18 @@ immediate_async_test!(
     spending_the_operation_budget_ends_the_episode_cleanly,
     spending_the_operation_budget_ends_the_episode_cleanly_case
 );
+immediate_async_test!(
+    a_dispatch_that_cannot_succeed_on_retry_is_not_retried,
+    a_dispatch_that_cannot_succeed_on_retry_is_not_retried_case
+);
+immediate_async_test!(
+    a_retryable_dispatch_failure_asks_the_driver_to_wait,
+    a_retryable_dispatch_failure_asks_the_driver_to_wait_case
+);
+immediate_async_test!(
+    the_same_failure_twice_stops_instead_of_burning_the_attempt_budget,
+    the_same_failure_twice_stops_instead_of_burning_the_attempt_budget_case
+);
 
 fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::digest_bytes(label.as_bytes())
@@ -891,6 +903,137 @@ async fn spending_the_operation_budget_ends_the_episode_cleanly_case() -> Result
     assert_eq!(
         repository.load(&episode_id)?.state.episode().status(),
         EpisodeStatus::BudgetExhausted
+    );
+    Ok(())
+}
+
+fn not_sent(diagnostic: &str, retry: crate::ModelTransportRetryHint) -> ModelGatewayOutcome {
+    ModelGatewayOutcome::ConfirmedNotSent {
+        diagnostic: diagnostic.to_owned(),
+        diagnostic_digest: Some(digest(diagnostic)),
+        retry,
+    }
+}
+
+/// A transport saying `Never` is describing the request, so re-sending it cannot help.
+async fn a_dispatch_that_cannot_succeed_on_retry_is_not_retried_case() -> Result<(), Box<dyn Error>>
+{
+    let episode_id = EpisodeId::try_from("episode-runtime-1")?;
+    let mut repository = InMemoryEpisodeRepository::default();
+    repository.create(state_with_policy(policy())?)?;
+    let mut models = ScriptedFakeModelGateway::new([ScriptedGatewayStep {
+        expected_turn_index: 1,
+        expected_input_digest: digest("initial-input"),
+        outcome: not_sent(
+            "prepared payload protocol does not match deployment",
+            crate::ModelTransportRetryHint::Never,
+        ),
+    }]);
+    let mut tools = ScriptedFakeToolGateway::new(descriptors(), []);
+    let runner = AgentLoopRunner::new(episode_id.clone());
+    let mut outcome = AgentLoopAdvance::Suspended;
+    for _ in 0..4 {
+        outcome = runner
+            .advance(
+                &mut repository,
+                &mut models,
+                &mut tools,
+                &mut NoAgentRuntimeFault,
+            )
+            .await?;
+        if matches!(outcome, AgentLoopAdvance::Terminal(_)) {
+            break;
+        }
+    }
+    assert_eq!(outcome, AgentLoopAdvance::Terminal(EpisodeStatus::Failed));
+    Ok(())
+}
+
+/// A retryable failure must hand the driver a delay, not an immediate go-ahead.
+async fn a_retryable_dispatch_failure_asks_the_driver_to_wait_case() -> Result<(), Box<dyn Error>> {
+    let episode_id = EpisodeId::try_from("episode-runtime-1")?;
+    let mut repository = InMemoryEpisodeRepository::default();
+    repository.create(state_with_policy(policy())?)?;
+    let mut models = ScriptedFakeModelGateway::new([ScriptedGatewayStep {
+        expected_turn_index: 1,
+        expected_input_digest: digest("initial-input"),
+        outcome: not_sent(
+            "429 rate limited",
+            crate::ModelTransportRetryHint::AfterMillis(4_200),
+        ),
+    }]);
+    let mut tools = ScriptedFakeToolGateway::new(descriptors(), []);
+    let runner = AgentLoopRunner::new(episode_id.clone());
+    let mut seen = None;
+    for _ in 0..4 {
+        let outcome = runner
+            .advance(
+                &mut repository,
+                &mut models,
+                &mut tools,
+                &mut NoAgentRuntimeFault,
+            )
+            .await?;
+        if let AgentLoopAdvance::ProgressedAfter { delay_millis, .. } = outcome {
+            seen = Some(delay_millis);
+            break;
+        }
+    }
+    assert_eq!(
+        seen,
+        Some(4_200),
+        "the delay the provider asked for must reach the driver"
+    );
+    Ok(())
+}
+
+/// Twenty-one identical failures taught nothing after the first.
+async fn the_same_failure_twice_stops_instead_of_burning_the_attempt_budget_case()
+-> Result<(), Box<dyn Error>> {
+    let episode_id = EpisodeId::try_from("episode-runtime-1")?;
+    let mut repository = InMemoryEpisodeRepository::default();
+    repository.create(state_with_policy(policy())?)?;
+    let repeated = not_sent(
+        "provider continuation has incomplete or mismatched tool results",
+        crate::ModelTransportRetryHint::NewAttempt,
+    );
+    let mut models = ScriptedFakeModelGateway::new([
+        ScriptedGatewayStep {
+            expected_turn_index: 1,
+            expected_input_digest: digest("initial-input"),
+            outcome: repeated.clone(),
+        },
+        ScriptedGatewayStep {
+            expected_turn_index: 1,
+            expected_input_digest: digest("initial-input"),
+            outcome: repeated,
+        },
+    ]);
+    let mut tools = ScriptedFakeToolGateway::new(descriptors(), []);
+    let runner = AgentLoopRunner::new(episode_id.clone());
+    let mut outcome = AgentLoopAdvance::Suspended;
+    for _ in 0..6 {
+        outcome = runner
+            .advance(
+                &mut repository,
+                &mut models,
+                &mut tools,
+                &mut NoAgentRuntimeFault,
+            )
+            .await?;
+        if matches!(outcome, AgentLoopAdvance::Terminal(_)) {
+            break;
+        }
+    }
+    assert_eq!(
+        outcome,
+        AgentLoopAdvance::Terminal(EpisodeStatus::Failed),
+        "a byte-identical failure is deterministic, not a flake"
+    );
+    let state = repository.load(&episode_id)?.state;
+    assert!(
+        state.attempt_count() <= 3,
+        "stopping must happen early, not after the attempt budget is gone"
     );
     Ok(())
 }

@@ -1,7 +1,7 @@
 //! Provider-neutral model gateway port and its deterministic fake.
 
 use crate::model::ModelUsage;
-use crate::{EpisodeId, ModelAttemptId, Sha256Digest};
+use crate::{EpisodeId, ModelAttemptId, ModelTransportRetryHint, Sha256Digest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 use std::error::Error;
@@ -175,12 +175,15 @@ pub enum ModelGatewayOutcome {
     ConfirmedNotSent {
         diagnostic: String,
         diagnostic_digest: Option<Sha256Digest>,
+        /// What the transport said about trying again. It was computed and discarded until now,
+        /// so a rate limit that asked for a delay was answered by an immediate retry.
+        retry: ModelTransportRetryHint,
     },
     Rejected {
         response_digest: Sha256Digest,
         diagnostic: String,
         diagnostic_digest: Option<Sha256Digest>,
-        retryable: bool,
+        retry: ModelTransportRetryHint,
     },
     DecodeFailed {
         response_digest: Sha256Digest,
@@ -190,6 +193,7 @@ pub enum ModelGatewayOutcome {
     Ambiguous {
         diagnostic: String,
         diagnostic_digest: Option<Sha256Digest>,
+        retry: ModelTransportRetryHint,
     },
 }
 

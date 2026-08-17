@@ -750,6 +750,12 @@ impl ModelAttemptRecord {
         Ok(())
     }
 
+    /// The published explanation for a failed attempt, when one was stored.
+    #[must_use]
+    pub const fn diagnostic_digest(&self) -> Option<Sha256Digest> {
+        self.diagnostic_digest
+    }
+
     #[must_use]
     pub const fn status(&self) -> ModelAttemptStatus {
         self.status
