@@ -95,8 +95,8 @@ pub use execution::{
 };
 pub use generation::{
     AUTHORING_REQUEST_SCHEMA_V1, CandidateAuthoringError, CandidateAuthoringRequest,
-    CandidateProposal, GeneratedSourceBundle, GeneratedSourceError, GeneratedSourceFile,
-    GeneratedSourceKind, ModelInvocation, SourceDocument,
+    CandidateProposal, GeneratedSourceBundle, GeneratedSourceChange, GeneratedSourceError,
+    GeneratedSourceFile, GeneratedSourceKind, ModelInvocation, SourceDocument,
 };
 pub use identity::{
     AssignmentId, AssignmentIdError, AttemptId, AttemptIdError, CandidateId, CandidateIdError,

@@ -259,6 +259,16 @@ impl<'de> Deserialize<'de> for GeneratedSourceBundle {
     }
 }
 
+impl<'de> Deserialize<'de> for GeneratedSourceChange {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let document = GeneratedSourceBundleDocument::deserialize(deserializer)?;
+        Self::new(document.files, document.author_notes).map_err(serde::de::Error::custom)
+    }
+}
+
 impl GeneratedSourceBundle {
     /// Validates completeness without assigning any Gate or release authority.
     ///
@@ -310,7 +320,91 @@ impl GeneratedSourceBundle {
     /// Computes an order-independent identity of the complete untrusted proposal.
     #[must_use]
     pub fn digest(&self) -> Sha256Digest {
-        let mut files: Vec<_> = self.files.iter().collect();
+        generated_source_digest(&self.files, &self.author_notes)
+    }
+}
+
+/// One authored change applied onto a parent candidate rather than a whole deliverable.
+///
+/// [`GeneratedSourceBundle`] means a complete four-part deliverable and must keep meaning that, so
+/// a partial submission is a different type rather than a weakened one. Completeness is still
+/// required — of the assembled candidate, by `CandidateSourceManifest`, which is where it belongs.
+///
+/// This exists because a complete bundle costs 90-100% of one model response: on the first
+/// migration to reach a compiler, correcting a single `CMake` line meant re-emitting all four files
+/// and the JSON truncated mid-string at exactly the output ceiling.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedSourceChange {
+    files: Vec<GeneratedSourceFile>,
+    author_notes: Vec<String>,
+}
+
+impl GeneratedSourceChange {
+    /// Validates everything a whole bundle validates except that it is whole.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for no files, a duplicate path, an excessive file count, or an empty note.
+    pub fn new(
+        files: Vec<GeneratedSourceFile>,
+        author_notes: Vec<String>,
+    ) -> Result<Self, GeneratedSourceError> {
+        if files.len() > MAX_GENERATED_FILES {
+            return Err(GeneratedSourceError::TooManyFiles(files.len()));
+        }
+        let mut paths = BTreeSet::new();
+        for file in &files {
+            if !paths.insert(file.path.clone()) {
+                return Err(GeneratedSourceError::DuplicatePath(
+                    file.path.as_str().to_owned(),
+                ));
+            }
+        }
+        if author_notes.iter().any(|note| note.trim().is_empty()) {
+            return Err(GeneratedSourceError::EmptyAuthorNote);
+        }
+        Ok(Self {
+            files,
+            author_notes,
+        })
+    }
+
+    #[must_use]
+    pub fn files(&self) -> &[GeneratedSourceFile] {
+        &self.files
+    }
+
+    #[must_use]
+    pub fn author_notes(&self) -> &[String] {
+        &self.author_notes
+    }
+
+    /// Identical to [`GeneratedSourceBundle::digest`], so a change that happens to be complete and
+    /// the same bundle name the same thing.
+    #[must_use]
+    pub fn digest(&self) -> Sha256Digest {
+        generated_source_digest(&self.files, &self.author_notes)
+    }
+
+    /// Confirms this change is a whole deliverable, for a submission with nothing to inherit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the missing deliverable category.
+    pub fn require_complete(&self) -> Result<(), GeneratedSourceError> {
+        let kinds: BTreeSet<_> = self.files.iter().map(|file| file.kind).collect();
+        for required in GeneratedSourceKind::ALL {
+            if !kinds.contains(&required) {
+                return Err(GeneratedSourceError::MissingKind(required));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn generated_source_digest(files: &[GeneratedSourceFile], author_notes: &[String]) -> Sha256Digest {
+    {
+        let mut files: Vec<_> = files.iter().collect();
         files.sort_by(|left, right| left.path.cmp(&right.path));
         let mut input = b"alloyport-generated-source-bundle-v1\0".to_vec();
         for file in files {
@@ -325,7 +419,7 @@ impl GeneratedSourceBundle {
             input.extend_from_slice(&(file.contents.len() as u64).to_be_bytes());
             input.extend_from_slice(file.contents.as_bytes());
         }
-        let mut notes: Vec<_> = self.author_notes.iter().collect();
+        let mut notes: Vec<_> = author_notes.iter().collect();
         notes.sort();
         for note in notes {
             input.extend_from_slice(&(note.len() as u64).to_be_bytes());

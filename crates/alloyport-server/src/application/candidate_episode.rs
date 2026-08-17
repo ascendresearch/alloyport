@@ -87,24 +87,31 @@ pub fn open_candidate_episode_https(
 
 /// Exact model-visible tool catalog for the reduction Candidate Episode.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn candidate_episode_tool_definitions() -> Vec<CodecToolDefinition> {
     let digest = digest_schema();
     vec![
         CodecToolDefinition {
             name: SUBMIT_CANDIDATE_BUNDLE_TOOL.to_owned(),
-            description: "Submit a complete generated Ascend C candidate bundle.".to_owned(),
+            description: "Submit a generated Ascend C candidate. Send every file to create one \
+                          from nothing, or set inherit_from_manifest_digest to the manifest digest \
+                          an earlier submission returned and send only the files that change; the \
+                          candidate is still complete and immutable, assembled from that manifest \
+                          plus what you send."
+                .to_owned(),
             input_schema: json!({
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
                     "parent_candidate_id": {"type": "string", "minLength": 1},
+                    "inherit_from_manifest_digest": digest.clone(),
                     "bundle": {
                         "type": "object",
                         "additionalProperties": false,
                         "properties": {
                             "files": {
                                 "type": "array",
-                                "minItems": 4,
+                                "minItems": 1,
                                 "maxItems": 64,
                                 "items": {
                                     "type": "object",

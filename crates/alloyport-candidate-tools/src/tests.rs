@@ -1382,3 +1382,89 @@ fn a_broken_store_stays_fatal_while_a_bad_citation_does_not() -> Result<(), Box<
     );
     Ok(())
 }
+
+/// Correcting one file must not require retyping the candidate.
+///
+/// A complete bundle costs 90-100% of one model response. On the first migration to reach a real
+/// compiler, fixing a single `CMake` line meant re-emitting all four files, and the JSON truncated
+/// mid-string at exactly the 16384-token ceiling: `EOF while parsing a string at line 1 column
+/// 7687`. Inheriting keeps the candidate complete and immutable while the model retypes only what
+/// changed.
+#[test]
+fn a_child_candidate_inherits_the_files_it_did_not_resend() -> Result<(), Box<dyn Error>> {
+    let artifacts: Arc<dyn ArtifactStore> = Arc::new(InMemoryArtifactStore::new(16 * 1024 * 1024));
+    let workspace = tempfile::tempdir()?;
+    let mut gateway = CandidateToolGateway::new(
+        CandidateToolConfig::new(
+            TaskId::try_from("task-candidate-tools")?,
+            &migration_spec(),
+            alloyport_core::GenerationStrategy::DirectAscendC,
+        ),
+        artifacts.clone(),
+        workspace.path(),
+    )?;
+
+    let (_, first) = execute(
+        &mut gateway,
+        &invocation(
+            SUBMIT_CANDIDATE_BUNDLE_TOOL,
+            &bundle(true, None),
+            "inherit-first",
+        ),
+    );
+    let parent = read_json(artifacts.as_ref(), first);
+    let parent_manifest: Sha256Digest =
+        serde_json::from_value(parent["manifest"]["digest"].clone())?;
+    let parent_files = parent["files"].as_array().expect("file list").len();
+    assert_eq!(parent_files, 4, "the parent states what it contains");
+
+    // One file, not four. Without inheritance this cannot form a candidate at all.
+    let one_file = json!({
+        "inherit_from_manifest_digest": parent_manifest,
+        "bundle": {"files": [{
+            "path": "generated/CMakeLists.txt",
+            "kind": "build_integration",
+            "contents": "add_library(alloyport_reduction_candidate reduce_sum.cpp reduce_sum_host.cpp)\ntarget_include_directories(alloyport_reduction_candidate PRIVATE $ENV{ASCEND_HOME_PATH}/x86_64-linux/include)"
+        }]}
+    });
+    let (status, second) = execute(
+        &mut gateway,
+        &invocation(SUBMIT_CANDIDATE_BUNDLE_TOOL, &one_file, "inherit-second"),
+    );
+    assert_eq!(status, ToolOperationStatus::Succeeded);
+    let child = read_json(artifacts.as_ref(), second);
+    assert_eq!(
+        child["files"].as_array().expect("file list").len(),
+        4,
+        "the child is a complete candidate, not a fragment"
+    );
+    assert_ne!(child["candidate_id"], parent["candidate_id"]);
+
+    // The assembled child passes the Source Gate, so inheritance produced a real candidate.
+    let child_manifest: Sha256Digest = serde_json::from_value(child["manifest"]["digest"].clone())?;
+    let (gate_status, gate) = execute(
+        &mut gateway,
+        &invocation(
+            REQUEST_SOURCE_GATE_TOOL,
+            &json!({"manifest_digest": child_manifest}),
+            "inherit-gate",
+        ),
+    );
+    assert_eq!(gate_status, ToolOperationStatus::Succeeded);
+    assert_eq!(
+        gate_payload(artifacts.as_ref(), gate)["passed"],
+        json!(true)
+    );
+
+    // A manifest from another migration is refused, recoverably.
+    let foreign = json!({
+        "inherit_from_manifest_digest": digest("not-a-manifest"),
+        "bundle": {"files": [{"path":"generated/CMakeLists.txt","kind":"build_integration","contents":"x"}]}
+    });
+    let (foreign_status, _) = execute(
+        &mut gateway,
+        &invocation(SUBMIT_CANDIDATE_BUNDLE_TOOL, &foreign, "inherit-foreign"),
+    );
+    assert_eq!(foreign_status, ToolOperationStatus::CandidateFailed);
+    Ok(())
+}

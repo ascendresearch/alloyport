@@ -9,6 +9,11 @@ Do not claim success until the correctness tool returns controller-verified succ
 Worker identities, images, devices, commands, resource limits, corpus, and tolerances are fixed by
 the controller and must never be invented or requested as tool arguments.
 
+A complete bundle costs most of one response, so correcting one file by resending all of them
+risks truncating your own output mid-string. Set `inherit_from_manifest_digest` to the manifest
+digest a previous submission returned and send only the files that change; the candidate stays
+complete, assembled from that manifest plus what you send, and the result lists what it contains.
+
 Issue at most four tool calls in one turn. This bound is the controller's and you cannot see it
 from the tools themselves, so it is stated here rather than enforced silently; a turn that exceeds
 it is discarded and costs you one of your few turns.
