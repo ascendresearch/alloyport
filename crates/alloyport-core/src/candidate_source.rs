@@ -529,17 +529,29 @@ fn inspect_build(
         .map(|(_, contents)| *contents)
         .collect::<Vec<_>>()
         .join("\n");
-    let missing = manifest.files.iter().any(|file| {
-        matches!(
-            file.kind,
-            GeneratedSourceKind::AscendCDevice | GeneratedSourceKind::AscendHost
-        ) && !build.contains(file.path.as_str().rsplit('/').next().unwrap_or_default())
-    });
-    if missing {
+    // Naming the paths rather than the rule. The check already knows exactly which files are
+    // unreferenced; withholding them made the model guess at a format it could not find, and cost
+    // two to four turns on every run that reached this gate.
+    let missing: Vec<&str> = manifest
+        .files
+        .iter()
+        .filter(|file| {
+            matches!(
+                file.kind,
+                GeneratedSourceKind::AscendCDevice | GeneratedSourceKind::AscendHost
+            ) && !build.contains(file.path.as_str().rsplit('/').next().unwrap_or_default())
+        })
+        .map(|file| file.path.as_str())
+        .collect();
+    if !missing.is_empty() {
         failures.push(blocking(
             SourceGateFailureKind::MissingBuildReference,
             None,
-            "build integration does not reference every generated device and host source",
+            format!(
+                "build integration does not reference these generated sources: {}. The gate looks \
+                 for each file name in the build files it was given.",
+                missing.join(", ")
+            ),
         ));
     }
     let target = manifest.build_target();
@@ -563,20 +575,30 @@ fn inspect_mapping(
         .map(|(_, contents)| *contents)
         .collect::<Vec<_>>()
         .join("\n");
-    let maps_inputs = manifest
+    let mut uncovered: Vec<&str> = manifest
         .input_source_paths
         .iter()
-        .all(|path| mapping.contains(path.as_str()));
-    let maps_outputs = manifest
-        .files
-        .iter()
-        .filter(|file| file.kind != GeneratedSourceKind::ComponentMapping)
-        .all(|file| mapping.contains(file.path.as_str()));
-    if !maps_inputs || !maps_outputs {
+        .map(BundlePath::as_str)
+        .filter(|path| !mapping.contains(path))
+        .collect();
+    uncovered.extend(
+        manifest
+            .files
+            .iter()
+            .filter(|file| file.kind != GeneratedSourceKind::ComponentMapping)
+            .map(|file| file.path.as_str())
+            .filter(|path| !mapping.contains(path)),
+    );
+    if !uncovered.is_empty() {
         failures.push(blocking(
             SourceGateFailureKind::IncompleteComponentMapping,
             None,
-            "component mapping does not cover every input and generated implementation source",
+            format!(
+                "component mapping does not mention these paths: {}. Each input and generated \
+                 implementation source must appear somewhere in the mapping document; the gate \
+                 looks for the path text and does not require any particular format.",
+                uncovered.join(", ")
+            ),
         ));
     }
 }

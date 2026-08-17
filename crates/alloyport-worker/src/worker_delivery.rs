@@ -81,8 +81,16 @@ impl OutboundWorker {
         Ok(())
     }
 
-    pub(super) async fn available_slots(&self) -> Result<u32, WorkerError> {
-        let mut occupied = self
+    /// Capacity is the lesser of what may run at once and what there is to run it on.
+    ///
+    /// A retained lease used to occupy a slot directly, which was right in spirit — a quarantined
+    /// card cannot carry work — and wrong in arithmetic, because it charged the whole worker for
+    /// one card. On a seven-NPU host a single quarantined device took the worker to zero slots
+    /// while six cards sat idle. `capabilities.device_count` cannot answer this: it is a hardcoded
+    /// 1 in every backend configuration and describes devices per attempt, not devices present, so
+    /// the count comes from the probe that sees the real inventory.
+    pub(super) async fn available_slots(&self, usable_devices: u32) -> Result<u32, WorkerError> {
+        let occupied = self
             .state
             .attempts_async()
             .await?
@@ -90,16 +98,12 @@ impl OutboundWorker {
             .filter(|attempt| attempt.phase != crate::journal::LocalAttemptPhase::Finished)
             .map(|attempt| attempt.assignment.attempt_id.to_string())
             .collect::<BTreeSet<_>>();
-        occupied.extend(
-            self.state
-                .active_device_leases_async()
-                .await?
-                .into_iter()
-                .map(|lease| lease.attempt_id.to_string()),
-        );
         let active = u32::try_from(occupied.len()).unwrap_or(u32::MAX);
         Ok(self.hello.capabilities.as_ref().map_or(0, |capabilities| {
-            capabilities.max_concurrency.saturating_sub(active)
+            capabilities
+                .max_concurrency
+                .min(usable_devices)
+                .saturating_sub(active)
         }))
     }
 }

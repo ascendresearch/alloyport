@@ -168,11 +168,34 @@ impl OutboundWorker {
                     .devices
                     .iter()
                     .any(|device| device.health == DeviceHealth::Ready));
-        let device_available = device_healthy
-            && device_snapshot
-                .devices
-                .iter()
-                .any(|device| device.health == DeviceHealth::Ready && device.process_count == 0);
+        // A leased card is not available, but the worker still is as long as another card is. This
+        // is the half that keeps a fully quarantined worker honest now that a retained lease no
+        // longer consumes a slot.
+        let leased_devices: std::collections::BTreeSet<String> = self
+            .state
+            .active_device_leases_async()
+            .await?
+            .into_iter()
+            .map(|lease| lease.device_id)
+            .collect();
+        let usable_devices = if self.device_status.is_none() {
+            // No probe means no device constraint to apply.
+            u32::MAX
+        } else {
+            u32::try_from(
+                device_snapshot
+                    .devices
+                    .iter()
+                    .filter(|device| {
+                        device.health == DeviceHealth::Ready
+                            && device.process_count == 0
+                            && !leased_devices.contains(&device.device_id)
+                    })
+                    .count(),
+            )
+            .unwrap_or(u32::MAX)
+        };
+        let device_available = device_healthy && usable_devices > 0;
         let health = if device_healthy {
             WorkerHealth::Ready
         } else {
@@ -208,7 +231,7 @@ impl OutboundWorker {
         Ok(Heartbeat {
             active_attempts,
             available_slots: if device_available {
-                self.available_slots().await?
+                self.available_slots(usable_devices).await?
             } else {
                 0
             },

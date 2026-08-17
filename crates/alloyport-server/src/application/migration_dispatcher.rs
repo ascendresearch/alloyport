@@ -109,7 +109,13 @@ impl MigrationDispatcher {
         {
             eprintln!("cannot finish migration task {}: {error}", task.task_id);
         }
-        if let Err(error) = self.publish(&task.task_id, dedup_key, event) {
+        // Keyed by content, not by outcome name. A fixed "migration-failed" was safe only while a
+        // task could fail once; resumption made that false, and the second failure of a resumed
+        // task was dropped with "interaction dedup key migration-failed has conflicting content" --
+        // losing the very explanation the operator needed. Identical republication after a crash
+        // still deduplicates, because identical content keys the same.
+        let dedup_key = format!("{dedup_key}:{}", event_content_key(&event));
+        if let Err(error) = self.publish(&task.task_id, &dedup_key, event) {
             eprintln!(
                 "cannot publish terminal event for {}: {error}",
                 task.task_id
@@ -271,4 +277,18 @@ fn write_once(path: &Path, contents: &[u8]) -> Result<(), String> {
         }
         Err(error) => Err(format!("create {}: {error}", path.display())),
     }
+}
+
+/// Distinguishes two terminal events that mean different things.
+fn event_content_key(event: &Event) -> String {
+    let text = match event {
+        Event::RunFailed { error } => error.as_str(),
+        Event::RunCompleted { result } => result.as_str(),
+        _ => "",
+    };
+    alloyport_artifacts::Sha256Digest::digest_bytes(text.as_bytes())
+        .hexadecimal()
+        .chars()
+        .take(16)
+        .collect()
 }

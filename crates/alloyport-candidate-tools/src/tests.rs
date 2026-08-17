@@ -1468,3 +1468,64 @@ fn a_child_candidate_inherits_the_files_it_did_not_resend() -> Result<(), Box<dy
     assert_eq!(foreign_status, ToolOperationStatus::CandidateFailed);
     Ok(())
 }
+
+/// A rejection must say what to do, not only what the parser saw.
+///
+/// Two live runs hit `EOF while parsing a string` after their submission ran out of output tokens,
+/// and one hit `unknown field 'content'` for a missing letter. Both messages are accurate and tell
+/// a model nothing about the move that fixes them.
+#[test]
+fn a_rejection_names_the_move_that_fixes_it() -> Result<(), Box<dyn Error>> {
+    let artifacts: Arc<dyn ArtifactStore> = Arc::new(InMemoryArtifactStore::new(1024 * 1024));
+    let workspace = tempfile::tempdir()?;
+    let gateway = CandidateToolGateway::new(
+        CandidateToolConfig::new(
+            TaskId::try_from("task-candidate-tools")?,
+            &migration_spec(),
+            alloyport_core::GenerationStrategy::DirectAscendC,
+        ),
+        artifacts.clone(),
+        workspace.path(),
+    )?;
+
+    // Arguments that stop mid-string, exactly as a response that ran out of room produces.
+    let truncated = GatewayToolCall {
+        native_call_id: "call-truncated".to_owned(),
+        name: SUBMIT_CANDIDATE_BUNDLE_TOOL.to_owned(),
+        raw_arguments: br#"{"bundle":{"files":[{"path":"generated/reduce_sum.cpp","contents":"#
+            .to_vec(),
+    };
+    let rejection = gateway
+        .validate_call(&truncated)
+        .expect_err("a truncated call cannot be dispatched");
+    let explanation = read_json(artifacts.as_ref(), rejection.result_digest);
+    let guidance = explanation["guidance"].as_str().expect("guidance");
+    assert!(
+        guidance.contains("inherit_from_manifest_digest"),
+        "a truncated submission must be pointed at the move that makes it fit: {guidance}"
+    );
+
+    // A field name that is one letter off.
+    let misspelled = GatewayToolCall {
+        native_call_id: "call-misspelled".to_owned(),
+        name: SUBMIT_CANDIDATE_BUNDLE_TOOL.to_owned(),
+        raw_arguments: br#"{"bundle":{"files":[{"path":"generated/x.cpp","kind":"ascend_c_device","content":"x"}]}}"#.to_vec(),
+    };
+    let rejection = gateway
+        .validate_call(&misspelled)
+        .expect_err("an unknown field cannot be dispatched");
+    let explanation = read_json(artifacts.as_ref(), rejection.result_digest);
+    assert!(
+        explanation["guidance"]
+            .as_str()
+            .is_some_and(|guidance| guidance.contains("expected_arguments")),
+        "a misspelled field must be pointed at the accepted names"
+    );
+    assert!(
+        explanation["expected_arguments"]
+            .as_str()
+            .is_some_and(|contract| contract.contains("contents")),
+        "and those names must actually be listed"
+    );
+    Ok(())
+}

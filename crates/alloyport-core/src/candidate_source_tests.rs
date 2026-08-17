@@ -141,3 +141,90 @@ fn dropping_the_public_symbol_blocks_the_candidate() {
     let kinds: BTreeSet<_> = receipt.blocking().map(|failure| failure.kind).collect();
     assert!(kinds.contains(&SourceGateFailureKind::MissingHostEntryPoint));
 }
+
+/// A blocking failure must name what is wrong, not only that something is.
+///
+/// Both migrations that reached this gate lost turns here. The message said the component mapping
+/// "does not cover every input and generated implementation source" and stopped, so the model went
+/// looking through the reference corpus for a mapping *format* — which is not documented anywhere,
+/// because the gate only looks for the path text. The check already knows exactly which paths are
+/// absent; withholding them was the whole cost.
+#[test]
+fn a_blocking_failure_names_the_paths_it_is_missing() {
+    let (_, sources) = source_set(
+        "#include <kernel_operator.h>\nextern \"C\" __global__ __aicore__ void reduce_sum(GM_ADDR x) {}",
+    );
+    // A mapping that mentions nothing, and build files that reference nothing.
+    let blank = "nothing useful here";
+    let files = vec![
+        file(
+            "generated/reduce.cpp",
+            GeneratedSourceKind::AscendCDevice,
+            "#include <kernel_operator.h>\nextern \"C\" __global__ __aicore__ void reduce_sum(GM_ADDR x) {}",
+        ),
+        file(
+            "generated/host.cpp",
+            GeneratedSourceKind::AscendHost,
+            "extern \"C\" int alloyport_reduce_sum_f32(const float *input, size_t elements, float *output) { ACLRT_LAUNCH_KERNEL(reduce_sum); }",
+        ),
+        file(
+            "generated/CMakeLists.txt",
+            GeneratedSourceKind::BuildIntegration,
+            "add_library(alloyport_reduction_candidate)",
+        ),
+        file(
+            "generated/component-map.txt",
+            GeneratedSourceKind::ComponentMapping,
+            blank,
+        ),
+    ];
+    let manifest = CandidateSourceManifest::new(CandidateSourceManifestSpec {
+        candidate_id: CandidateId::try_from("candidate-source-2").expect("candidate ID"),
+        task_id: TaskId::try_from("task-source-1").expect("task ID"),
+        parent_candidate_id: None,
+        migration_spec_digest: Sha256Digest::digest_bytes(b"spec"),
+        generation_strategy: GenerationStrategy::DirectAscendC,
+        public_symbol: "alloyport_reduce_sum_f32".to_owned(),
+        build_target: "alloyport_reduction_candidate".to_owned(),
+        input_source_paths: ["input/kernel.cu", "input/host.cu"]
+            .into_iter()
+            .map(|path| BundlePath::try_from(path).expect("input path"))
+            .collect(),
+        source_bundle_digest: Sha256Digest::digest_bytes(b"bundle"),
+        files,
+    })
+    .expect("manifest");
+    let sources = sources
+        .into_iter()
+        .map(|(path, bytes)| {
+            if path.as_str().ends_with("component-map.txt") {
+                (path, blank.as_bytes().to_vec())
+            } else if path.as_str().ends_with("CMakeLists.txt") {
+                (path, b"add_library(alloyport_reduction_candidate)".to_vec())
+            } else {
+                (path, bytes)
+            }
+        })
+        .collect();
+
+    let receipt =
+        evaluate_source_gate(&manifest, Sha256Digest::digest_bytes(b"manifest"), &sources);
+    assert!(!receipt.passed());
+    let details: String = receipt
+        .failures()
+        .iter()
+        .map(|failure| failure.detail.clone())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    for path in [
+        "input/kernel.cu",
+        "input/host.cu",
+        "generated/reduce.cpp",
+        "generated/host.cpp",
+    ] {
+        assert!(
+            details.contains(path),
+            "a failure must name {path}; the model cannot fix what it is not told: {details}"
+        );
+    }
+}

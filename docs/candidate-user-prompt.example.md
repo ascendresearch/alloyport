@@ -8,3 +8,20 @@ component-mapping document. Do not use a framework reduction operator as a hidde
 The controller appends the exact validated MigrationSpec and every declared immutable CUDA source
 file to this task text. It derives the context-projection and input-root digests from those bytes;
 do not copy source files or supply those identities manually.
+
+## Build environment
+
+The Build Gate compiles your bundle inside one pinned image with CMake and no network. Replace the
+facts below with ones probed from the exact image your deployment pins; they are environment facts,
+not a prescribed method, and a wrong one costs a whole build round trip. The first migration to
+reach this compiler spent two builds discovering that `acl/acl.h` and `kernel_operator.h` were not
+on the default include path.
+
+- CANN root: `$ASCEND_HOME_PATH` (exported in the image)
+- ACL runtime headers: `$ASCEND_HOME_PATH/<arch>-linux/include`
+- Ascend C kernel headers: `$ASCEND_HOME_PATH/<arch>-linux/tikcpp/tikcfw`
+- Ascend C compiler: `$ASCEND_HOME_PATH/<arch>-linux/ccec_compiler/bin/ccec`
+- Host compiler: the image's system C++ compiler; CMake uses it unless your build files say otherwise
+
+Device sources are Ascend C and are not compiled by the host compiler. Your build integration is
+responsible for pointing at these locations; nothing is added to the include path for you.

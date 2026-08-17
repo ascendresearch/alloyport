@@ -525,6 +525,37 @@ impl CandidateToolGateway {
     }
 }
 
+/// Says what to do about a rejection, not only that there was one.
+///
+/// A serde message is accurate and useless on its own. "EOF while parsing a string at line 1
+/// column 7687" is what a model sees when it ran out of output tokens mid-bundle, and it spent a
+/// turn re-sending the same oversized call. The two cases worth naming are the two that happened:
+/// output that stopped mid-string, and a field name that is nearly right.
+fn guidance_for(tool: &str, reason: &str) -> String {
+    let truncated = reason.contains("EOF while parsing");
+    if truncated && tool == SUBMIT_CANDIDATE_BUNDLE_TOOL {
+        return "your arguments stop part-way through a string, which is what a response that ran \
+                out of room looks like. Nothing was affected. Send less in one call: set \
+                inherit_from_manifest_digest to a manifest an earlier submission returned and \
+                include only the files that change."
+            .to_owned();
+    }
+    if truncated {
+        return "your arguments stop part-way through a string, which is what a response that ran \
+                out of room looks like. Nothing was affected. Reissue this call with a shorter \
+                argument."
+            .to_owned();
+    }
+    if reason.contains("unknown field") {
+        return "a field name is not one this tool accepts; the accepted names are listed in \
+                expected_arguments. Nothing was affected. Reissue with the exact names."
+            .to_owned();
+    }
+    "the arguments were not decodable; no candidate, build, or run was affected. Reissue this call \
+     with corrected arguments."
+        .to_owned()
+}
+
 /// Decodes the arguments of one call without touching the workspace or any worker.
 fn check_arguments(name: &str, raw: &[u8]) -> Result<(), (String, &'static str)> {
     let decoded = match name {
@@ -591,8 +622,7 @@ impl AgentToolGateway for CandidateToolGateway {
             "reason": reason,
             "expected_arguments": contract,
             "recoverable": true,
-            "guidance": "the arguments were not decodable; no candidate, build, or run was affected. \
-                         Reissue this call with corrected arguments.",
+            "guidance": guidance_for(&call.name, &reason),
         });
         // A rejection the model cannot read is worse than no rejection: the controller opens this
         // digest to build the next model input. If publication fails the store itself is broken,

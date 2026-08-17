@@ -16,6 +16,9 @@ BUNDLE_ROOT = pathlib.Path("/alloyport/bundle")
 WORK_ROOT = pathlib.Path("/alloyport/work")
 BUNDLE_PATH = BUNDLE_ROOT / "execution-bundle.json"
 CONFIG_PATH = BUNDLE_ROOT / "runner-config.json"
+# The worker points TMPDIR inside this tmpfs, which starts empty; creating it keeps the toolchain
+# from printing a fallback warning into the diagnostics a reader has to trust.
+TEMPORARY_PATH = WORK_ROOT / "tmp"
 HARNESS_PATH = WORK_ROOT / "reduction_harness.cpp"
 BUILD_PATH = WORK_ROOT / "build"
 
@@ -220,6 +223,7 @@ def main() -> None:
     ):
         fail("trusted reduction execution bundle carries no valid callable names")
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
+    TEMPORARY_PATH.mkdir(parents=True, exist_ok=True)
     HARNESS_PATH.write_text(harness_source(bundle, config), encoding="utf-8")
     source_root = "input" if bundle["role"] == "cuda_reference" else "generated"
     callable_names = bundle["callable"]

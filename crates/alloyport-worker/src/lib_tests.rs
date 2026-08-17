@@ -269,6 +269,14 @@ async fn heartbeat_reports_dynamic_health_occupancy_and_durable_device_lease()
 }
 
 #[tokio::test]
+/// A quarantined card reduces capacity, and only by one card.
+///
+/// The original form of this asserted the same zero by adding retained leases straight to the
+/// occupied set, which charged the whole worker for one bad device: on a seven-NPU host a single
+/// quarantine took the worker to zero slots while six cards were free. Capacity is now the lesser
+/// of what may run at once and what is left to run it on, so this case still reaches zero — two
+/// cards, one quarantined, one attempt already running — while a quarantine among many cards does
+/// not.
 async fn capacity_counts_distinct_running_attempts_and_terminal_quarantine_leases()
 -> Result<(), Box<dyn Error>> {
     let mut hello = worker_hello("worker-1");
@@ -302,7 +310,11 @@ async fn capacity_counts_distinct_running_attempts_and_terminal_quarantine_lease
     second.candidate_id = "candidate-2".into();
     worker.state.admit(&second)?;
 
-    assert_eq!(worker.available_slots().await?, 0);
+    // Two cards, one of them quarantined, leaves one usable.
+    assert_eq!(worker.available_slots(1).await?, 0);
+
+    // The same worker with six usable cards is not blocked by one quarantine.
+    assert_eq!(worker.available_slots(6).await?, 1);
     Ok(())
 }
 
