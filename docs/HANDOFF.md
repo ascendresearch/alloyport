@@ -1350,3 +1350,27 @@ itself is not yet diagnosed.
 Moved to [`NEXT_SESSION.md`](NEXT_SESSION.md), so that what to do next is stated in exactly one
 place. In short: run the first real migration end to end, and record what the three new and
 hardware-unproven mechanisms say rather than adjusting them by hand.
+
+## 2026-08-17 closeout: the first compile, and the harness that had to be fixed to reach it
+
+Model-authored Ascend C reached a real compiler for the first time. Seven migrations ran against the
+live deployment; one passed the Source Gate, dispatched to the NPU worker, and received
+`fatal error: acl/acl.h: No such file or directory` in 270 ms. The model read that through
+`read_build_diagnostics`, corrected the include path, and the next build failed one layer deeper on
+`kernel_operator.h`. The correction loop closed.
+
+No candidate has compiled successfully, so the Correctness Gate has still never judged a generated
+kernel, and everything downstream of Build remains unproven on hardware.
+
+Not one of the seven runs failed because the model wrote a bad kernel. Every failure was in the
+harness, and the nine defects, the runs that found them, and what each cost are recorded in
+[`evidence/fatal-harness-defects-20260816.md`](evidence/fatal-harness-defects-20260816.md), with the
+loop compared against mature agent loops in
+[`evidence/agent-loop-review-20260816.md`](evidence/agent-loop-review-20260816.md). The decisions
+they produced are [0042](design/0042-model-visible-receipt-references.md),
+[0043](design/0043-allowance-outside-episode-identity.md), and the proposed
+[0044](design/0044-git-as-the-candidate-record.md).
+
+What to do next is in [`NEXT_SESSION.md`](NEXT_SESSION.md), so it is stated in exactly one place. In
+short: rebuild and redeploy all three binaries, because the worker changed, then run the migration
+and watch whether the model points its build files at the CANN include paths the prompt now states.

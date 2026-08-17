@@ -1,9 +1,10 @@
-# Five migrations, four fatal harness defects, one class
+# Seven migrations, one class of harness defect, and the first compile
 
-- Date: 2026-08-16
+- Date: 2026-08-16 to 2026-08-17
 - Runs: `task-c36ab7b63cbf64234498b88b`, `task-436fe144a291b285ec9547db`,
   `task-1cadf422a8fed170618c775a`, `task-16322b4520fe363c08e9117c`,
-  `task-ccd149dfc0f421d97ed7feb4`
+  `task-ccd149dfc0f421d97ed7feb4`, `task-ea9792931f2c781324ce536b`,
+  `task-0874a0d2d131f6d1af13dc4b`
 - Detail of the first run: [`first-real-migration-20260816.md`](first-real-migration-20260816.md)
 - Decision that came out of it: [0042](../design/0042-model-visible-receipt-references.md)
 
