@@ -270,7 +270,7 @@ impl CandidateToolGateway {
             MAX_MANIFEST_BYTES,
         )?;
         let manifest: CandidateSourceManifest = serde_json::from_slice(&manifest_bytes)
-            .map_err(|error| adapter_error(format!("invalid candidate manifest: {error}")))?;
+            .map_err(|error| citation_error(format!("invalid candidate manifest: {error}")))?;
         if !manifest.matches_context(
             &self.config.task_id,
             self.config.migration_spec_digest,
@@ -279,7 +279,7 @@ impl CandidateToolGateway {
             &self.config.build_target,
             &self.config.input_source_paths,
         ) {
-            return Err(adapter_error(
+            return Err(citation_error(
                 "candidate manifest does not belong to this migration context",
             ));
         }
@@ -329,7 +329,7 @@ impl CandidateToolGateway {
     }
 
     fn invoke(&self, request: &ToolInvocation) -> Result<ToolGatewayOutcome, ToolGatewayError> {
-        match request.call.name.as_str() {
+        let outcome = match request.call.name.as_str() {
             SUBMIT_CANDIDATE_BUNDLE_TOOL => self.submit(request),
             REQUEST_SOURCE_GATE_TOOL => self.source_gate(request),
             READ_REFERENCE_TOOL => self.as_instrument(
@@ -351,7 +351,8 @@ impl CandidateToolGateway {
                 ),
             ),
             _ => Err(ToolGatewayError::UnexpectedRequest),
-        }
+        };
+        self.recover_citations(request, outcome)
     }
 
     /// Checks that what a decodable call names actually exists, without touching anything.
@@ -386,6 +387,30 @@ impl CandidateToolGateway {
         ))
     }
 
+    /// Turns "you named the wrong thing" into a correction turn, for every tool.
+    ///
+    /// This is the general form of the per-site nets that preceded it. A `Citation` error means the
+    /// model pointed at something this migration cannot resolve, which it can fix by pointing
+    /// somewhere else; `Adapter` keeps its durable semantics because a broken store is not the
+    /// model's to correct. Separating the two is the whole difference between a correction turn and
+    /// a dead migration, and they were one variant while three paid runs died on the wrong side of
+    /// it.
+    fn recover_citations(
+        &self,
+        request: &ToolInvocation,
+        outcome: Result<ToolGatewayOutcome, ToolGatewayError>,
+    ) -> Result<ToolGatewayOutcome, ToolGatewayError> {
+        let Err(ToolGatewayError::Citation(message)) = outcome else {
+            return outcome;
+        };
+        self.publish_recoverable(
+            &request.call.name,
+            &message,
+            "nothing was built, run, or changed. Reissue this call naming a value an earlier tool \
+             result gave you.",
+        )
+    }
+
     /// Keeps an instrument from ever ending a migration.
     ///
     /// An instrument is `ReadOnly` and cannot satisfy a subtask — it grants no authority — so it
@@ -401,17 +426,30 @@ impl CandidateToolGateway {
         let Err(ToolGatewayError::Adapter(message)) = outcome else {
             return outcome;
         };
+        self.publish_recoverable(
+            &request.call.name,
+            &message,
+            "this tool only reports; nothing was built, run, or changed. Correct the arguments \
+             and reissue, or continue without it.",
+        )
+    }
+
+    /// Publishes a readable refusal and returns it as a terminal-but-recoverable tool result.
+    fn publish_recoverable(
+        &self,
+        tool: &str,
+        reason: &str,
+        guidance: &str,
+    ) -> Result<ToolGatewayOutcome, ToolGatewayError> {
         let explanation = serde_json::json!({
             "rejected": true,
-            "tool": request.call.name,
-            "reason": message,
+            "tool": tool,
+            "reason": reason,
             "recoverable": true,
-            "guidance": "this tool only reports; nothing was built, run, or changed. Correct the \
-                         arguments and reissue, or continue without it.",
+            "guidance": guidance,
         });
-        let bytes = serde_json::to_vec(&explanation).map_err(|error| {
-            adapter_error(format!("cannot encode instrument rejection: {error}"))
-        })?;
+        let bytes = serde_json::to_vec(&explanation)
+            .map_err(|error| adapter_error(format!("cannot encode rejection: {error}")))?;
         let artifact = ingest_bytes(self.artifacts.as_ref(), &bytes)?;
         Ok(ToolGatewayOutcome::Completed {
             status: ToolOperationStatus::CandidateFailed,
@@ -725,6 +763,11 @@ pub(crate) fn read_bounded(
         return Err(adapter_error("Artifact reader returned an unexpected size"));
     }
     Ok(bytes)
+}
+
+/// The model named something this migration cannot resolve. It can name another; the run goes on.
+pub(crate) fn citation_error(message: impl Into<String>) -> ToolGatewayError {
+    ToolGatewayError::Citation(message.into())
 }
 
 pub(crate) fn adapter_error(message: impl Into<String>) -> ToolGatewayError {

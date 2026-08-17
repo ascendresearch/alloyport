@@ -317,11 +317,22 @@ fn candidate_submission_is_create_only_idempotent_and_source_gate_is_independent
         &json!({"manifest_digest":manifest_digest}),
         "gate-bad",
     );
-    assert!(matches!(
-        complete_immediate(foreign_gateway.execute(&gate)),
-        Err(ToolGatewayError::Adapter(message))
-            if message.contains("does not belong to this migration context")
-    ));
+    // Citing another migration's manifest is refused, and the refusal is a correction turn rather
+    // than the end of the run. Both halves matter: recoverable is not the same as permitted, and
+    // the explanation must not carry anything belonging to the other migration.
+    let (status, refusal) = execute(&mut foreign_gateway, &gate);
+    assert_eq!(status, ToolOperationStatus::CandidateFailed);
+    let explanation = read_json(artifacts.as_ref(), refusal);
+    assert_eq!(explanation["recoverable"], json!(true));
+    assert!(
+        explanation["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("does not belong to this migration context"))
+    );
+    assert!(
+        !serde_json::to_string(&explanation)?.contains("reduce_sum"),
+        "a refusal must not leak the other migration's contents"
+    );
     let (status, result_digest) = execute(&mut gateway, &gate);
     assert_eq!(status, ToolOperationStatus::CandidateFailed);
     let receipt = gate_payload(artifacts.as_ref(), result_digest);
@@ -1340,5 +1351,34 @@ fn an_instrument_naming_something_that_does_not_exist_cannot_end_the_migration()
         )?,
     };
     assert!(gateway.validate_call(&good).is_ok());
+    Ok(())
+}
+
+/// The split must cut both ways, or it is not a split.
+///
+/// Citation failures became recoverable so a wrong digest costs a turn instead of the run. That is
+/// only correct if infrastructure failures stayed fatal: a store that cannot hold the candidate is
+/// not something the model can fix by naming something else, and quietly handing it back as a
+/// correctable rejection would invite it to retry forever against a broken machine.
+#[test]
+fn a_broken_store_stays_fatal_while_a_bad_citation_does_not() -> Result<(), Box<dyn Error>> {
+    let workspace = tempfile::tempdir()?;
+    let config = CandidateToolConfig::new(
+        TaskId::try_from("task-candidate-tools")?,
+        &migration_spec(),
+        alloyport_core::GenerationStrategy::DirectAscendC,
+    );
+    // Far too small to hold the submitted bundle.
+    let starved: Arc<dyn ArtifactStore> = Arc::new(InMemoryArtifactStore::new(8));
+    let mut gateway = CandidateToolGateway::new(config, starved, workspace.path())?;
+    let outcome = complete_immediate(gateway.execute(&invocation(
+        SUBMIT_CANDIDATE_BUNDLE_TOOL,
+        &bundle(true, None),
+        "starved-submit",
+    )));
+    assert!(
+        matches!(outcome, Err(ToolGatewayError::Adapter(_))),
+        "an unusable artifact store is infrastructure, not a citation the model can correct"
+    );
     Ok(())
 }

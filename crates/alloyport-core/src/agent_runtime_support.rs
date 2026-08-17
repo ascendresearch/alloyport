@@ -296,6 +296,14 @@ impl AgentToolGateway for ScriptedFakeToolGateway {
 pub enum ToolGatewayError {
     ScriptExhausted,
     UnexpectedRequest,
+    /// The model named something that does not resolve to what this tool needs.
+    ///
+    /// Separated from `Adapter` because the two demand opposite responses and were one variant for
+    /// this project's whole history: a model citing the wrong digest is a defect it can read and
+    /// correct, while a store that cannot answer is an infrastructure failure that must keep its
+    /// durable semantics. Telling them apart by reading the message is how three paid migrations
+    /// ended on defects the model could have fixed in one turn.
+    Citation(String),
     Adapter(String),
 }
 
@@ -304,6 +312,7 @@ impl Display for ToolGatewayError {
         match self {
             Self::ScriptExhausted => write!(formatter, "scripted tool gateway is exhausted"),
             Self::UnexpectedRequest => write!(formatter, "scripted tool request did not match"),
+            Self::Citation(message) => write!(formatter, "tool citation: {message}"),
             Self::Adapter(message) => write!(formatter, "tool gateway adapter: {message}"),
         }
     }

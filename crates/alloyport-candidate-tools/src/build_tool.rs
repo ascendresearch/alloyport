@@ -1,7 +1,8 @@
 //! Controller-owned Ascend build tool over a pluggable durable attempt port.
 
 use crate::gateway::{
-    CandidateToolConfig, adapter_error, ingest_bytes, materialization_error, read_bounded,
+    CandidateToolConfig, adapter_error, citation_error, ingest_bytes, materialization_error,
+    read_bounded,
 };
 use crate::materialization::CandidateMaterialization;
 use alloyport_artifacts::ArtifactStore;
@@ -159,7 +160,7 @@ impl CandidateBuildTool {
         let manifest_bytes =
             read_bounded(artifacts, arguments.manifest_digest, MAX_MANIFEST_BYTES)?;
         let manifest: CandidateSourceManifest = serde_json::from_slice(&manifest_bytes)
-            .map_err(|error| adapter_error(format!("invalid candidate manifest: {error}")))?;
+            .map_err(|error| citation_error(format!("invalid candidate manifest: {error}")))?;
         if !context.matches_manifest(&manifest) {
             return Err(adapter_error(
                 "candidate manifest does not belong to this migration context",
@@ -436,9 +437,9 @@ pub(crate) fn read_build_diagnostics(
     };
     let manifest_bytes = read_bounded(artifacts, receipt.manifest_digest(), MAX_MANIFEST_BYTES)?;
     let manifest: CandidateSourceManifest = serde_json::from_slice(&manifest_bytes)
-        .map_err(|error| adapter_error(format!("invalid candidate manifest: {error}")))?;
+        .map_err(|error| citation_error(format!("invalid candidate manifest: {error}")))?;
     if !context.matches_manifest(&manifest) {
-        return Err(adapter_error(
+        return Err(citation_error(
             "Build Gate receipt does not belong to this migration context",
         ));
     }

@@ -1,7 +1,8 @@
 //! Controller-owned reduction Correctness Gate over independently produced run Artifacts.
 
 use crate::gateway::{
-    CandidateToolConfig, adapter_error, ingest_bytes, materialization_error, read_bounded,
+    CandidateToolConfig, adapter_error, citation_error, ingest_bytes, materialization_error,
+    read_bounded,
 };
 use crate::materialization::CandidateMaterialization;
 use alloyport_artifacts::ArtifactStore;
@@ -139,28 +140,28 @@ impl CandidateCorrectnessTool {
             MAX_BUILD_RECEIPT_BYTES,
         )?;
         if Sha256Digest::digest_bytes(&bytes) != arguments.build_gate_receipt_digest {
-            return Err(adapter_error("Build Gate receipt identity changed"));
+            return Err(citation_error("Build Gate receipt identity changed"));
         }
         let receipt: AscendBuildReceipt = serde_json::from_slice(&bytes)
-            .map_err(|error| adapter_error(format!("invalid Build Gate receipt: {error}")))?;
+            .map_err(|error| citation_error(format!("invalid Build Gate receipt: {error}")))?;
         if !receipt.passed()
             || receipt.task_id() != context.task_id()
             || receipt.candidate_id() != &arguments.candidate_id
             || receipt.manifest_digest() != arguments.manifest_digest
             || receipt.source_gate_receipt_digest() != arguments.source_gate_receipt_digest
         {
-            return Err(adapter_error(
+            return Err(citation_error(
                 "correctness requires the exact passing Build Gate receipt for this candidate",
             ));
         }
         let manifest_bytes =
             read_bounded(artifacts, arguments.manifest_digest, MAX_MANIFEST_BYTES)?;
         let manifest: CandidateSourceManifest = serde_json::from_slice(&manifest_bytes)
-            .map_err(|error| adapter_error(format!("invalid candidate manifest: {error}")))?;
+            .map_err(|error| citation_error(format!("invalid candidate manifest: {error}")))?;
         if !context.matches_manifest(&manifest)
             || manifest.candidate_id() != &arguments.candidate_id
         {
-            return Err(adapter_error(
+            return Err(citation_error(
                 "candidate manifest does not belong to this correctness request",
             ));
         }
