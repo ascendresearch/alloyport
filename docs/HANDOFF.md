@@ -1375,7 +1375,20 @@ What to do next is in [`NEXT_SESSION.md`](NEXT_SESSION.md), so it is stated in e
 short: rebuild and redeploy all three binaries, because the worker changed, then run the migration
 and watch whether the model points its build files at the CANN include paths the prompt now states.
 
-## 2026-08-17 closeout: the candidate record, and a red baseline nobody had seen
+## 2026-08-17 closeout: the rebuild loop closed, and a red baseline nobody had seen
+
+The redeployed stack ran `task-002ee08d6d5540c05e5f7361` and **closed the read → correct → rebuild
+loop three times** — seven candidates, six Source Gate runs, four builds, each build after the first
+on a candidate corrected from the previous build's diagnostics. That hop had never completed once.
+The blocker moved with it: build 1 failed in CMake configuration, past every earlier run, and builds
+2–4 failed identically inside CANN's own `kernel_operator.h`, which includes a `kernel_tpipe.h` that
+lives in a different top-level tree. No candidate can fix that from its `CMakeLists.txt`, and the
+model — after guessing twice and then writing a `GLOB_RECURSE` to discover the path instead — could
+only search the subtree it had been told about. **The Ascend build image, not the harness, is now the
+blocking defect**
+([`evidence/rebuild-loop-closed-20260817.md`](evidence/rebuild-loop-closed-20260817.md)).
+
+## 2026-08-17: the candidate record
 
 [Design 0044](design/0044-git-as-the-candidate-record.md) is accepted and implemented.
 `alloyport-server candidate-record TASK_ID --into DIRECTORY` projects one task's candidate lineage

@@ -1,15 +1,17 @@
 # Start here
 
 - Session closeout: 2026-08-17 (second session that day; the first ends at `6302541`)
-- Branch: `main`, working tree clean, **nothing pushed**
-- See `git log --oneline 80769dd..HEAD`
+- Branch: `main`, working tree clean, **pushed** — `origin/main` is current
 - 374 passing tests, 2 ignored because they require Docker and a real device
-- **The whole verification baseline is green, including both boundary gates.** They had been red
-  since 2026-08-14 and nothing had run them, because `rg` is not on this host's `PATH` and nothing
-  has been pushed to CI. Run them with `/home/dawei/.cache/opencode/bin/rg` on `PATH`; all nine
-  violations are repaired ([`boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)).
-- Still nothing pushed, so CI has never run those two gates. That is now the only gap between
-  "green here" and "green where it is enforced".
+- **The whole verification baseline is green, including both boundary gates**, which had been red
+  since 2026-08-13 and unrun by anyone. All nine violations are repaired
+  ([`boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)). Locally they need
+  `/home/dawei/.cache/opencode/bin/rg` on `PATH`; CI now installs ripgrep itself.
+- CI's `rust` job passes, including both gates — the first time either has evaluated anything in CI.
+  **`msrv` fails**: SIGSEGV in the `alloyport-server` test binary under Rust 1.88.0. Pre-existing,
+  also failing on 2026-08-13, unexamined.
+- **The deployment is current at `9e4a9c4`** — server, x86-64 Ascend worker, GB10-native aarch64
+  worker. Both workers connected READY. Server, tunnels and workers were left running.
 
 This is the lean entry point. [`CLAUDE.md`](../CLAUDE.md) is how this project decides what counts as
 evidence. [`HANDOFF.md`](HANDOFF.md) is the accumulated architecture record — read it for what a
@@ -19,29 +21,36 @@ subsystem does, not for what to do next.
 
 ## 1. The one fact that should shape the next session
 
-**Model-authored Ascend C reached a real compiler, twice, and no corrected candidate has ever been
-rebuilt.** Seven migrations ran on the live deployment. Two passed the Source Gate, dispatched to the
-NPU worker, and got real compiler answers — `acl/acl.h: No such file or directory` in one run,
-`kernel_operator.h: No such file or directory` in another. In both, the model read the message through
-`read_build_diagnostics` and submitted a correction; in one the correction passed the Source Gate.
+**The rebuild loop closed, and the blocker is now the build image rather than the harness.**
+`task-002ee08d6d5540c05e5f7361` ran on the redeployed stack and produced seven candidates, six Source
+Gate runs and **four builds** — each build after the first on a candidate the model had corrected
+after reading the previous build's diagnostics. Read → correct → rebuild had never completed once
+before; it completed three times
+([`rebuild-loop-closed-20260817.md`](evidence/rebuild-loop-closed-20260817.md)).
 
-**Read → correct → submit closed. Read → correct → rebuild has never completed.** One run's budget
-ended one operation after the corrected submission; the other's rebuild was still `running` when the
-session stopped.
+**The failure moved out of the model's reach.** Build 1 failed in CMake configuration — past every
+previous run, which died on a missing include in the first translation unit. Builds 2–4 all failed
+identically inside the vendor's own header:
 
-The earlier version of this section said the two compiler errors were one loop going a layer deeper.
-They are two separate migrations on differently structured candidates. That claim was assembled from
-watching runs live and was never checked against the record; the candidate record built this session
-checks it in one command
-([`candidate-record-20260817.md`](evidence/candidate-record-20260817.md) §1).
+```
+/usr/local/Ascend/.../tikcpp/tikcfw/kernel_operator.h:22:10:
+fatal error: 'kernel_tpipe.h' file not found
+```
 
-Nothing is correct yet. No candidate has compiled successfully, so no Correctness Gate has ever
-judged a generated kernel, and every mechanism downstream of Build remains unproven on hardware.
+`kernel_tpipe.h` is real, and it is in `asc/include/interface/`, a different top-level tree from the
+one `kernel_operator.h` sits in. Compiling with `-I .../tikcpp/tikcfw` cannot resolve it and no
+correction to that line can. The model guessed twice, then wrote a `GLOB_RECURSE` to discover the
+path instead of guessing — the right move — and searched the only subtree anything had told it about.
+It cannot list the image. **The harness handed it a compiler whose requirements it has no way to
+see.**
 
-**Not one of the seven runs failed because the model wrote a bad kernel.** Every failure was in the
-harness. That is the second fact, and it is why most of this session is fixes rather than features:
-[`fatal-harness-defects-20260816.md`](evidence/fatal-harness-defects-20260816.md) lists them with
-the run that found each.
+Nothing is correct yet. All four builds failed before the compiler formed any opinion about the
+model's Ascend C, so no candidate has been shown to be wrong either.
+
+**Across eight live runs, not one has failed because the model wrote a bad kernel.** Seven died in
+the harness ([`fatal-harness-defects-20260816.md`](evidence/fatal-harness-defects-20260816.md)); the
+eighth ran out of turns against a build image that cannot compile Ascend C. No compiler has yet
+formed an opinion about a generated kernel.
 
 ---
 
@@ -113,27 +122,37 @@ is measured rather than asserted
 
 ## 3. Do this next
 
-**Rebuild and redeploy all three binaries, then run the migration.** The deployed server and both
-workers predate this session's changes, and the worker changed — capacity accounting and both
-container runner scripts are compiled into it, so a server-only deploy will not do.
+**Make the Ascend build image able to compile Ascend C.** Everything else is now downstream of this;
+four builds have failed without the compiler ever reaching the model's kernel. In order of how much
+each assumes:
 
-1. Rebuild: `cargo build --release -p alloyport-server -p alloyport-cli`, and the workers per
-   [`portable-linux-builds.md`](portable-linux-builds.md) for x86-64 plus a native build on the GB10
-   for aarch64.
-2. Restart the server, both reverse tunnels, and both workers from
-   `.alloyport-local/host-connections.md` — that file, not recollection, is the authority.
-3. `alloyport-cli migrate fixtures/migrations/cuda-reduction-v1 --retry`, then `attach`.
+1. **Invoke the vendor's supported driver.** CANN ships `ascendc`/`bisheng` wrappers that set their
+   own include paths. The trusted build runner building a raw `ccec` command line with one `-I` is
+   this repository's choice, and it is the choice that fails. This assumes least: it stops the
+   harness from having an opinion about CANN's internal layout.
+2. **Or give the runner the full include set**, so `kernel_operator.h` resolves. That is a fact about
+   the image and belongs in the image's contract, not in a candidate's `CMakeLists.txt`.
+3. **Either way, tell the model what the toolchain layout is.** Its `GLOB_RECURSE` move shows it will
+   use such a thing correctly; today it can only search the one subtree it was told about.
 
-The migration will resume the loop where it stalled: the model must point its build files at the
-CANN include paths, which the deployment prompt now states. Watch whether it does, and whether the
-next compiler error moves again. **The thing to watch for specifically is a rebuild of a corrected
-candidate** — that has never completed, and both previous attempts ran out of room before it.
+Walk the honest path first: build `fixtures/ascend-add-v1` — a kernel a person wrote — inside that
+image by hand. If it does not compile either, no candidate could have.
 
-Afterwards, build its record and read it: `alloyport-server --config <server.json> candidate-record
-<task-id> --into <dir>`, then `git -C <dir> log --all --graph --oneline`.
+**Then fix `alloyport-cli attach`**, which prints `run event sequence is invalid: run.started must be
+the first event` and stops. Every observation in
+[`rebuild-loop-closed-20260817.md`](evidence/rebuild-loop-closed-20260817.md) had to come from
+reading SQLite and the CAS by hand. Watching a run is how you decide whether to keep paying for it.
 
-**And push.** The two boundary gates are green here and have never run in CI, because nothing has
-been pushed since 2026-08-14. A gate whose fallback runner has not run is not a fallback.
+**Then re-run the migration**, with the record as the way to read it:
+
+```
+alloyport-cli --config <client.json> migrate fixtures/migrations/cuda-reduction-v1 --retry
+alloyport-server --config <server.json> candidate-record <task-id> --into <dir>
+git -C <dir> log --all --graph --oneline
+```
+
+Deployment state is in `.alloyport-local/host-connections.md` — that file, not recollection. The
+stack is already running at `9e4a9c4`; a rebuild is only needed if the worker changes.
 
 ---
 
@@ -145,32 +164,35 @@ been pushed since 2026-08-14. A gate whose fallback runner has not run is not a 
    serving sub-files is a ledger decision, not a reader change.
 2. **Nothing observes that a candidate ran on the device.** Unchanged from the last session. Every
    verdict still carries `unverified: [device_execution, runner_attestation]`.
-3. **No context compaction, and corpus reading is what fills the context.** One run climbed
-   4 130 → 98 815 input tokens against a 128 000 ceiling at roughly 10 k per corpus read. The record
-   now names the volume: **18 and 20 `read_reference` calls before the first line of Ascend C**, 24 of
-   32 operations in one run. Nothing summarises and no behaviour is defined for reaching the ceiling.
-4. **No corrected candidate has ever been rebuilt.** Both runs that reached a compiler read the
-   diagnostics, corrected, and then ran out of room: one exhausted its budget one operation after the
-   corrected submission, the other left its rebuild `running`. This is the next thing a live run has
-   to demonstrate, and it is one hop, not a new mechanism.
-5. **Explaining a failed run still means reading SQLite by hand for anything but candidates.**
+3. **The Ascend build image cannot compile Ascend C.** `kernel_operator.h` includes
+   `kernel_tpipe.h`, which lives in a different top-level CANN tree; the runner's raw `ccec`
+   invocation with one `-I` cannot resolve it, and no candidate can fix that from its
+   `CMakeLists.txt`. Four builds, three of them identical. This is now the blocking defect
+   ([`rebuild-loop-closed-20260817.md`](evidence/rebuild-loop-closed-20260817.md)).
+4. **`alloyport-cli attach` is broken.** `run event sequence is invalid: run.started must be the
+   first event`, two lines in, on a run the server executed correctly. The operator has no live view.
+5. **No context compaction, and corpus reading is what fills the context.** Improving: 9 reads before
+   the first candidate and 14 total on the latest run, against 18–20 and 24 the day before, with the
+   largest single input 72 916 rather than 98 815. Still nothing summarises, and no behaviour is
+   defined for reaching the 128 000 ceiling. On the latest run **model turns**, not context, were the
+   binding constraint — three of them spent on an error nothing could fix.
+6. **Explaining a failed run still means reading SQLite by hand for anything but candidates.**
    `candidate-record` now covers candidate lineage and gate outcomes. Turn-level history, model
    attempts, and rejections are still hand-read JSON out of `episode.sqlite3`.
-6. **A first submission has no headroom.** Inheritance fixes corrections, not the first candidate,
+7. **A first submission has no headroom.** Inheritance fixes corrections, not the first candidate,
    which must be complete and measured 89.9% and 100.0% of the output ceiling on two runs. The model
    worked around it by writing tersely; a draft mechanism is the real answer and is unbuilt. A patch
    interface is **not** the answer and is now refuted with measurements, not argument
    ([`candidate-record-20260817.md`](evidence/candidate-record-20260817.md) §3).
-7. **Performance has rules but no execution path**, and **knowledge has an admission gate but no
+8. **Performance has rules but no execution path**, and **knowledge has an admission gate but no
    store**. Both unchanged.
-8. **The specimen is welded into the types**, and **the vendored corpus has no license text**. Both
+9. **The specimen is welded into the types**, and **the vendored corpus has no license text**. Both
    unchanged.
-9. **Two states, `Created` and `CancellationPending`, do not permit `Failed`.** No runtime path was
+10. **Two states, `Created` and `CancellationPending`, do not permit `Failed`.** No runtime path was
    found that attempts it; that is an unverified absence, not a cleared one.
-10. **The boundary gates pass but have never run in CI.** They were red and unrun for three days
-    because `rg` is off this host's `PATH` and nothing has been pushed. All nine violations are fixed
-    ([`boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)), and the local run
-    needs `/home/dawei/.cache/opencode/bin/rg` on `PATH`. Nothing has been pushed yet.
+11. **CI's `msrv` job fails with a SIGSEGV** in the `alloyport-server` test binary under Rust
+    1.88.0, the declared minimum. Pre-existing — it also failed on 2026-08-13 — and nobody has looked
+    at it. The workspace's MSRV claim is therefore unverified.
 
 ---
 
