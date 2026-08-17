@@ -208,18 +208,23 @@ impl AgentEpisodeRecord {
     /// an operator decision taken from outside it, and keeping it off the transition table means
     /// the reducer still cannot resurrect an Episode by itself.
     ///
-    /// `BudgetExhausted` is refused. The budget an Episode ran under is bound into its identity
-    /// through `loop_policy_digest`, so continuing past a spent budget means running under a
-    /// different one — a fork of this Episode rather than this Episode, and a decision this method
-    /// has no business making silently.
+    /// `BudgetExhausted` was refused here at first, on the reasoning that the budget is bound into
+    /// Episode identity so continuing past it is a fork. That reasoning defended a defect. A
+    /// spending cap is not a rule about what the work is, and binding it into identity produced an
+    /// inversion: `Failed`, a defect, could be reopened, while a cap doing exactly its job could
+    /// not. The allowance now lives outside identity and is granted again explicitly, so every
+    /// continuable Episode is reopenable and each grant is recorded.
+    ///
+    /// `Succeeded` and `Cancelled` stay closed. One has nothing to continue and the other was
+    /// stopped on purpose; reopening either is a new decision, not a resumption.
     ///
     /// # Errors
     ///
-    /// Returns an error unless the Episode finished in a state that still has budget to spend.
+    /// Returns an error unless the Episode finished in a state that can be continued.
     pub fn resume(&mut self) -> Result<(), AgentRecordError> {
         if !matches!(
             self.status,
-            EpisodeStatus::Failed | EpisodeStatus::Incomplete
+            EpisodeStatus::Failed | EpisodeStatus::Incomplete | EpisodeStatus::BudgetExhausted
         ) {
             return Err(invalid_transition(
                 "episode",
@@ -229,6 +234,12 @@ impl AgentEpisodeRecord {
         }
         self.status = EpisodeStatus::ReadyForModel;
         Ok(())
+    }
+
+    /// Identity of the rules the recorded turns were produced under.
+    #[must_use]
+    pub const fn loop_policy_digest(&self) -> Sha256Digest {
+        self.loop_policy_digest
     }
 
     #[must_use]
@@ -266,7 +277,9 @@ impl AgentEpisodeRecord {
             && self.tool_catalog_digest == expected.tool_catalog_digest
             && self.loop_policy_digest == expected.loop_policy_digest
             && self.data_boundary_policy_digest == expected.data_boundary_policy_digest
-            && self.budget_snapshot_digest == expected.budget_snapshot_digest
+        // `budget_snapshot_digest` is deliberately absent: it records the allowance this
+        // Episode was created under, which a later grant is expected to exceed. Comparing it
+        // would re-impose the very coupling this split removed.
     }
 }
 

@@ -95,6 +95,61 @@ immediate_async_test!(
     resuming_a_failed_episode_keeps_the_work_it_already_did_case
 );
 
+/// A spending cap must not be part of what the recorded turns mean.
+///
+/// Asserted on the digest computation itself, not on a stored copy of it. The first version of this
+/// compared `loop_policy_digest` before and after a resumption — a value written once at creation
+/// and never recomputed, so it was equal no matter what `digest()` covered. That is the same
+/// true-by-construction check this project has been burned by before.
+#[test]
+fn episode_identity_covers_the_rules_and_not_the_allowance() -> Result<(), Box<dyn Error>> {
+    let base = policy();
+    let richer = base.with_allowance(crate::EpisodeAllowance {
+        max_model_turns: base.max_model_turns + 10,
+        max_model_attempts: base.max_model_attempts + 10,
+        max_total_tool_operations: base.max_total_tool_operations + 10,
+    });
+    assert_ne!(richer.allowance(), base.allowance());
+    assert_eq!(
+        richer.digest()?,
+        base.digest()?,
+        "raising what an Episode may spend changes nothing about what its turns mean"
+    );
+
+    let mut reshaped = base;
+    reshaped.max_tool_calls_per_turn += 1;
+    assert_ne!(
+        reshaped.digest()?,
+        base.digest()?,
+        "a turn that was illegal and is now legal is a different rule, and must move identity"
+    );
+    Ok(())
+}
+
+/// Recovery must accept a re-budgeted Episode and still refuse a re-ruled one.
+#[test]
+fn recovery_accepts_a_new_allowance_and_refuses_changed_rules() -> Result<(), Box<dyn Error>> {
+    let state = state_with_policy(policy())?;
+    let mut spec = runtime_spec_for(policy())?;
+    spec.policy = policy().with_allowance(crate::EpisodeAllowance {
+        max_model_turns: policy().max_model_turns + 5,
+        max_model_attempts: policy().max_model_attempts + 5,
+        max_total_tool_operations: policy().max_total_tool_operations + 5,
+    });
+    assert!(
+        state.matches_runtime_spec(&spec),
+        "a larger allowance is a grant, not a different Episode"
+    );
+
+    let mut reruled = runtime_spec_for(policy())?;
+    reruled.policy.max_stop_feedback_turns += 1;
+    assert!(
+        !state.matches_runtime_spec(&reruled),
+        "changed rules are a different Episode and must still be refused"
+    );
+    Ok(())
+}
+
 fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::digest_bytes(label.as_bytes())
 }
@@ -111,6 +166,10 @@ fn policy() -> AgentLoopPolicy {
 }
 
 fn state_with_policy(policy: AgentLoopPolicy) -> Result<DurableEpisodeState, Box<dyn Error>> {
+    Ok(DurableEpisodeState::new(runtime_spec_for(policy)?)?)
+}
+
+fn runtime_spec_for(policy: AgentLoopPolicy) -> Result<AgentLoopRuntimeSpec, Box<dyn Error>> {
     let episode = AgentEpisodeRecord::new(EpisodeSpec {
         id: EpisodeId::try_from("episode-runtime-1")?,
         task_id: TaskId::try_from("task-1")?,
@@ -127,7 +186,7 @@ fn state_with_policy(policy: AgentLoopPolicy) -> Result<DurableEpisodeState, Box
         data_boundary_policy_digest: digest("data-boundary"),
         budget_snapshot_digest: digest("budget"),
     })?;
-    Ok(DurableEpisodeState::new(AgentLoopRuntimeSpec {
+    Ok(AgentLoopRuntimeSpec {
         episode,
         policy,
         initial_input_digest: digest("initial-input"),
@@ -135,7 +194,7 @@ fn state_with_policy(policy: AgentLoopPolicy) -> Result<DurableEpisodeState, Box
         deployment_digest: digest("deployment"),
         model_profile_digest: digest("profile"),
         request_budget_digest: digest("request-budget"),
-    })?)
+    })
 }
 
 fn tool_turn(call_id: &str, name: &str, candidate: &str) -> GatewayTurn {
@@ -1080,21 +1139,21 @@ async fn resuming_a_failed_episode_keeps_the_work_it_already_did_case() -> Resul
     let attempts_before = failed.attempt_count();
     assert!(attempts_before > 0);
 
-    let resumed_from = runner.resume(&mut repository)?;
+    let resumed_from = runner.resume(&mut repository, policy().allowance())?;
     assert_eq!(resumed_from, EpisodeStatus::Failed);
     let state = repository.load(&episode_id)?.state;
     assert_eq!(state.episode().status(), EpisodeStatus::ReadyForModel);
-    assert_eq!(state.resumptions(), 1);
+    assert_eq!(state.grants().len(), 1);
     assert_eq!(
         state.attempt_count(),
         attempts_before,
         "resuming must continue the Episode, not restart it"
     );
 
-    // A spent budget is a different decision: continuing past it means running under a policy the
-    // Episode's own identity does not describe, so it is refused rather than quietly allowed.
-    // Reached through the real path rather than by forcing the status, so the refusal is proved
-    // against a state the loop can actually produce.
+    // A spent budget is the case this whole split exists for. It is not a defect -- it is the
+    // operator's own cap doing its job -- and it used to be the one terminal state that could not
+    // be reopened, while Failed, an actual defect, could. Reached through the real path rather
+    // than by forcing the status, so the behaviour is proved against a state the loop produces.
     let mut exhausted = InMemoryEpisodeRepository::default();
     let mut tiny = policy();
     tiny.max_tool_calls_per_turn = 4;
@@ -1124,9 +1183,26 @@ async fn resuming_a_failed_episode_keeps_the_work_it_already_did_case() -> Resul
         exhausted.load(&episode_id)?.state.episode().status(),
         EpisodeStatus::BudgetExhausted
     );
-    assert!(
-        runner.resume(&mut exhausted).is_err(),
-        "resuming a spent budget is a fork, not a resumption"
+    let spent_state = exhausted.load(&episode_id)?.state;
+    let spent_allowance = spent_state.policy().allowance();
+    let larger = crate::EpisodeAllowance {
+        max_total_tool_operations: spent_allowance.max_total_tool_operations + 8,
+        ..spent_allowance
+    };
+    assert_eq!(
+        runner.resume(&mut exhausted, larger)?,
+        EpisodeStatus::BudgetExhausted
     );
+    let reopened = exhausted.load(&episode_id)?.state;
+    assert_eq!(reopened.episode().status(), EpisodeStatus::ReadyForModel);
+    assert_eq!(
+        reopened.policy().allowance(),
+        larger,
+        "the granted allowance must actually take effect"
+    );
+    let grant = reopened.grants().last().expect("a recorded grant");
+    assert_eq!(grant.resumed_from, EpisodeStatus::BudgetExhausted);
+    assert_eq!(grant.previous, spent_allowance);
+    assert_eq!(grant.granted, larger);
     Ok(())
 }

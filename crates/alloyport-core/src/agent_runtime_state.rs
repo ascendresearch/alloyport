@@ -26,14 +26,20 @@ impl DurableEpisodeState {
             stop_feedback_turns: 0,
             subtask_satisfied: false,
             cancellation_requested: false,
-            resumptions: 0,
+            grants: Vec::new(),
         })
     }
 
-    /// Times an operator reopened this Episode after it finished.
+    /// The policy in force now, including any allowance a resumption granted.
     #[must_use]
-    pub const fn resumptions(&self) -> u32 {
-        self.resumptions
+    pub const fn policy(&self) -> crate::AgentLoopPolicy {
+        self.policy
+    }
+
+    /// Every operator decision to keep paying, in order.
+    #[must_use]
+    pub fn grants(&self) -> &[crate::AllowanceGrant] {
+        &self.grants
     }
 
     #[must_use]
@@ -68,7 +74,9 @@ impl DurableEpisodeState {
     #[must_use]
     pub fn matches_runtime_spec(&self, spec: &AgentLoopRuntimeSpec) -> bool {
         self.episode.matches_immutable(&spec.episode)
-            && self.policy == spec.policy
+            // Not the whole policy: the allowance is expected to differ across a
+            // resumption, and comparing it here is what made a spent budget unresumable.
+            && self.policy.rules() == spec.policy.rules()
             && self.initial_input_digest == spec.initial_input_digest
             && self.resolved_model_digest == spec.resolved_model_digest
             && self.deployment_digest == spec.deployment_digest

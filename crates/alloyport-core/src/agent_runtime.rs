@@ -6,6 +6,7 @@ use crate::agent_runtime_helpers::{
     derived_model_attempt_id, derived_tool_operation_id, derived_turn_id, digest_label,
     digest_semantic_turn, progress, usize_from_u32,
 };
+use crate::agent_runtime_policy::{AllowanceGrant, EpisodeAllowance};
 use crate::agent_runtime_support::{
     AgentLoopAdvance, AgentRuntimeFaultInjector, AgentRuntimeFaultPoint, AgentToolGateway,
     EpisodeRepository, RuntimeToolDescriptor, ToolGatewayOutcome, ToolInvocation,
@@ -67,12 +68,12 @@ pub struct DurableEpisodeState {
     stop_feedback_turns: u32,
     subtask_satisfied: bool,
     cancellation_requested: bool,
-    /// How many times an operator reopened this Episode after it finished.
+    /// Every operator decision to keep paying, in order.
     ///
-    /// Defaulted so states written before resumption existed still load, and recorded rather than
-    /// inferred: a run whose turns span two operator decisions should say so.
+    /// Defaulted so states written before resumption existed still load. A run whose turns span
+    /// two grants should say so, and say what each grant was.
     #[serde(default)]
-    resumptions: u32,
+    grants: Vec<AllowanceGrant>,
 }
 
 #[path = "agent_runtime_state.rs"]
@@ -160,6 +161,7 @@ impl AgentLoopRunner {
     pub fn resume<R: EpisodeRepository>(
         &self,
         repository: &mut R,
+        granted: EpisodeAllowance,
     ) -> Result<EpisodeStatus, AgentLoopRuntimeError> {
         let mut versioned = repository.load(&self.episode_id)?;
         versioned.state.validate_recovered()?;
@@ -168,7 +170,14 @@ impl AgentLoopRunner {
             return Ok(resumed_from);
         }
         versioned.state.episode.resume()?;
-        versioned.state.resumptions = versioned.state.resumptions.saturating_add(1);
+        let previous = versioned.state.policy.allowance();
+        versioned.state.policy = versioned.state.policy.with_allowance(granted);
+        versioned.state.policy.validate()?;
+        versioned.state.grants.push(AllowanceGrant {
+            resumed_from,
+            previous,
+            granted,
+        });
         // A cancellation request belongs to the run that ended; carrying it forward would cancel
         // the resumption before it took a turn.
         versioned.state.cancellation_requested = false;

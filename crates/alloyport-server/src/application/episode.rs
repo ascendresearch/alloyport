@@ -165,9 +165,12 @@ where
     /// # Errors
     ///
     /// Returns an error when the Episode finished in a state that cannot be continued.
-    pub fn resume(&mut self) -> Result<alloyport_core::EpisodeStatus, ControllerEpisodeError> {
+    pub fn resume(
+        &mut self,
+        granted: alloyport_core::EpisodeAllowance,
+    ) -> Result<alloyport_core::EpisodeStatus, ControllerEpisodeError> {
         self.runner
-            .resume(&mut self.episodes)
+            .resume(&mut self.episodes, granted)
             .map_err(|error| ControllerEpisodeError(error.to_string()))
     }
 

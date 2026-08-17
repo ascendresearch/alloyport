@@ -144,6 +144,8 @@ impl MigrationDispatcher {
             .preflight_provider()
             .await
             .map_err(|error| error.to_string())?;
+        // Captured before the spec is moved: this is what a resumption may grant.
+        let allowance = candidate.episode.loop_policy.allowance();
         let episode = open_candidate_episode_https(
             candidate.episode,
             candidate.catalog,
@@ -160,6 +162,7 @@ impl MigrationDispatcher {
             required_workers: candidate.required_workers,
             poll_interval: candidate.worker_poll_interval,
             ready_timeout: candidate.worker_ready_timeout,
+            allowance,
         };
         runtime::drive_candidate_for_task(runtime, Arc::clone(&self.tasks), task.task_id.clone())
             .await

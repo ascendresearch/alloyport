@@ -21,6 +21,8 @@ pub(super) async fn run(
     }
 
     let server = assembly::assemble(server_config).await?;
+    // Captured before the spec is moved: this is what a resumption may grant.
+    let allowance = candidate.episode.loop_policy.allowance();
     let episode = open_candidate_episode_https(
         candidate.episode,
         candidate.catalog,
@@ -36,6 +38,7 @@ pub(super) async fn run(
         required_workers: candidate.required_workers,
         poll_interval: candidate.worker_poll_interval,
         ready_timeout: candidate.worker_ready_timeout,
+        allowance,
     };
     runtime::run_candidate(server, runtime).await
 }

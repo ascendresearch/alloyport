@@ -88,6 +88,9 @@ pub(super) struct CandidateRuntime {
     pub(super) required_workers: Vec<RequiredWorker>,
     pub(super) poll_interval: std::time::Duration,
     pub(super) ready_timeout: std::time::Duration,
+    /// What the current configuration allows this Episode to spend. Applied only when reopening a
+    /// finished Episode, so a configuration edit never silently re-budgets a run in flight.
+    pub(super) allowance: alloyport_core::EpisodeAllowance,
 }
 
 pub(super) async fn run_candidate(
@@ -282,9 +285,12 @@ async fn drive_candidate_inner(
     // A task returned to the queue keeps its Episode, so a resumption continues from the turns it
     // already took instead of re-reading everything from scratch. An Episode that never finished
     // reports its current status and nothing is reopened.
-    match runtime.application.resume() {
+    match runtime.application.resume(runtime.allowance) {
         Ok(status) if status.is_terminal() => {
-            println!("resuming Candidate Episode from terminal state {status:?}");
+            println!(
+                "resuming Candidate Episode from terminal state {status:?} under allowance {:?}",
+                runtime.allowance
+            );
         }
         Ok(_) => {}
         Err(error) => return Err(error.to_string()),

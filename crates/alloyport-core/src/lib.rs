@@ -43,7 +43,7 @@ pub use agent_runtime::{
 };
 pub use agent_runtime_helpers::AgentLoopRuntimeError;
 pub use agent_runtime_helpers::derive_model_continuation_input_digest;
-pub use agent_runtime_policy::AgentLoopPolicy;
+pub use agent_runtime_policy::{AgentLoopPolicy, AllowanceGrant, EpisodeAllowance, EpisodeRules};
 pub use agent_runtime_support::{
     AgentLoopAdvance, AgentRuntimeFaultInjector, AgentRuntimeFaultPoint, AgentToolGateway,
     EpisodeRepository, EpisodeRepositoryError, InMemoryEpisodeRepository, NoAgentRuntimeFault,

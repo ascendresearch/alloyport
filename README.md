@@ -153,7 +153,8 @@ server's content-addressed store, and creates a durable `captured` task. Use `st
 `runs`, or `cancel TASK_ID` from any later CLI process. `resume TASK_ID` returns a failed migration
 to the queue so it continues the Episode it already built instead of re-running from nothing;
 `migrate --retry` keeps its old meaning of starting a fresh task. A migration that spent its budget
-is not resumable, because the budget an Episode ran under is part of its identity. `attach TASK_ID` replays canonical events
+resumes under whatever allowance the current configuration grants, and each grant is recorded
+against the Episode ([Design 0043](docs/design/0043-allowance-outside-episode-identity.md)). `attach TASK_ID` replays canonical events
 and then follows the live run stream; exiting that view does not cancel the task. When the Server
 configuration enables `migration_runtime`, its dispatcher claims captured tasks, materializes the
 CAS project under the configured persistent runtime root, and drives the existing Candidate Episode.
