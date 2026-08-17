@@ -9,10 +9,8 @@
 //! every time, cannot occur in a real candidate, and so raises the battery's detection count
 //! without raising what it establishes.
 
-use super::{
-    ReductionMutantKind, ReductionOraclePolicy, ReductionRunReceipt, ReductionRunRole,
-    tolerance_bound,
-};
+use super::evaluation::tolerance_bound;
+use super::{ReductionMutantKind, ReductionOraclePolicy, ReductionRunReceipt, ReductionRunRole};
 use crate::CandidateId;
 
 #[allow(clippy::cast_possible_truncation)]

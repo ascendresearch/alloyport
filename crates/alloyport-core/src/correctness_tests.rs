@@ -1,3 +1,4 @@
+use super::evaluation::compare_runs;
 use super::*;
 use crate::ReductionCaseKind;
 
