@@ -50,6 +50,41 @@ forwarded that one. **No production call had ever been validated.** On 2026-08-1
 `task-addd999597dcf12eded7489d` died on a malformed `submit_candidate_bundle`; 0040 was written to
 fix exactly that; three days later run 4 died the same way on the same tool.
 
+## 5 — a failure whose explanation the system destroys
+
+Run 5 confirmed the run-4 fix: `read_reference:rejected_as_invalid` appears in its operations, which
+is `validate_call` executing in production for the first time. It then died differently: **21
+consecutive `confirmed_not_sent` model attempts**, five turns in, until `max_model_attempts` ran
+out. The request never reached the provider, 21 times.
+
+**Why is unrecoverable, by construction.** `agent_runtime.rs` records the failure as
+
+```rust
+attempt.finish_without_response(
+    ModelAttemptStatus::ConfirmedNotSent,
+    Sha256Digest::digest_bytes(diagnostic.as_bytes()),
+)?;
+```
+
+It hashes the diagnostic string and stores the hash. Nothing ingests the bytes, so
+`diagnostic_digest` names an artifact that does not exist — confirmed against the store, where
+`sha256:b497dc31…` is absent. The reducer has no artifact authority, which is exactly why it cannot
+do better; the same three lines appear at `Rejected` and `DecodeFailed`.
+
+This is the defect `CLAUDE.md` already names — *a rejection named a digest with no artifact behind
+it* — and `C0` fixed it in the decoder and the reducer's unknown-tool branch. Three more branches of
+the same reducer kept it. The consequence is not theoretical: a fatal, 21-times-repeated failure
+happened and its explanation was thrown away as it was recorded.
+
+What can still be said without it: the provider endpoint answers now (HTTP 401 to an unauthenticated
+probe, so DNS/TLS/routing are fine), the secret file is present and readable at 36 bytes, and the
+first five attempts of the same run succeeded. So the cause was not standing configuration. Whether
+it was transient (rate limit, network) or deterministic cannot be determined from the record.
+
+A second observation, unverifiable for the same reason: the loop retried an identical failure 21
+times with no backoff and no distinction between transient and deterministic. If the failure was
+deterministic, 20 of those attempts were spent learning nothing.
+
 ## The shape underneath
 
 Two of the four were verified by tests that passed, because the tests exempted the thing standing in
