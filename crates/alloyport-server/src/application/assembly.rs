@@ -50,7 +50,9 @@ pub(super) async fn assemble(
     let migrations = Arc::new(SqliteMigrationTaskStore::open(&config.database)?);
     let (control, interaction_hub) =
         WorkerControlService::open_sqlite_with_interaction_hub(config.database)?;
-    let mut control = control.with_artifact_metadata(artifact.uploads.clone());
+    let mut control = control
+        .with_artifact_metadata(artifact.uploads.clone())
+        .with_artifact_store(artifact.artifacts.clone());
     if require_enrollment {
         control = control.require_identity_resolver(Arc::clone(&identity_resolver));
     }

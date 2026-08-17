@@ -246,6 +246,8 @@ pub struct WorkerControlService {
     clock: Arc<dyn Clock>,
     identity_resolver: Option<Arc<dyn ConnectionIdentityResolver>>,
     artifact_metadata: Option<Arc<dyn ArtifactMetadataStore>>,
+    /// The controller's own object store, so a bundle it wrote can be adopted into the ledger.
+    artifact_store: Option<Arc<dyn alloyport_artifacts::ArtifactStore>>,
     interactions: Arc<dyn InteractionStore>,
     persistence: persistence::ServerPersistence,
     connection_counter: Arc<AtomicU64>,
@@ -383,6 +385,7 @@ impl WorkerControlService {
             clock,
             identity_resolver: None,
             artifact_metadata: None,
+            artifact_store: None,
             interactions,
             persistence: persistence::ServerPersistence::default(),
             connection_counter: Arc::new(AtomicU64::new(unique_seed())),
@@ -427,6 +430,16 @@ impl WorkerControlService {
     #[must_use]
     pub fn artifact_metadata(&self) -> Option<Arc<dyn ArtifactMetadataStore>> {
         self.artifact_metadata.clone()
+    }
+
+    /// Supplies the controller object store used to adopt bundles it authored itself.
+    #[must_use]
+    pub fn with_artifact_store(
+        mut self,
+        store: Arc<dyn alloyport_artifacts::ArtifactStore>,
+    ) -> Self {
+        self.artifact_store = Some(store);
+        self
     }
 
     /// Requires terminal Artifact identities to match finalized uploads and creates typed roots.

@@ -1,5 +1,7 @@
 //! Assignment admission, access grants, reassignment, and cancellation use cases.
 
+use alloyport_artifacts::Sha256Digest;
+
 use super::{
     ArtifactReferenceKind, Assignment, AssignmentContract, CancelOutcome, CancellationStoreOutcome,
     EnqueueError, EnqueueOutcome, GrantArtifactReference, InteractionError, RepositoryError,
@@ -216,12 +218,19 @@ impl WorkerControlService {
             )
         })?;
         let digest = contract.execution.bundle.digest;
-        let stored_size = uploads
+        let published = uploads
             .artifact_size_bytes(digest)
-            .map_err(|error| EnqueueError::Artifact(error.to_string()))?
-            .ok_or_else(|| {
-                EnqueueError::Artifact(format!("input bundle {digest} is not published"))
-            })?;
+            .map_err(|error| EnqueueError::Artifact(error.to_string()))?;
+        let stored_size = match published {
+            Some(size) => size,
+            // Not in the ledger. It may still be an object the controller wrote into its own store,
+            // which no upload session ever announced. Adopting it here rather than at dispatch is
+            // deliberate: this function is the single point every path funnels through — first
+            // enqueue, expired reassignment, and the periodic reconciler that completes abandoned
+            // preparation. Publishing at dispatch alone left a half-enqueued assignment that the
+            // reconciler could never finish, so it was observed forever.
+            None => self.adopt_controller_bundle(worker_id, digest)?,
+        };
         if stored_size != contract.execution.bundle.size_bytes {
             return Err(EnqueueError::Artifact(format!(
                 "input bundle {digest} has size {stored_size}, assignment declares {}",
@@ -240,6 +249,38 @@ impl WorkerControlService {
             })
             .map_err(|error| EnqueueError::Artifact(error.to_string()))?;
         Ok(())
+    }
+
+    /// Records a bundle the controller wrote into its own store so a worker may be granted it.
+    ///
+    /// Existence and size are read from the store, never from the assignment, because the
+    /// assignment is the thing being checked. An object that is in neither the ledger nor the store
+    /// is still refused.
+    fn adopt_controller_bundle(
+        &self,
+        worker_id: &str,
+        digest: Sha256Digest,
+    ) -> Result<u64, EnqueueError> {
+        let store = self.artifact_store.as_ref().ok_or_else(|| {
+            EnqueueError::Artifact(format!("input bundle {digest} is not published"))
+        })?;
+        let identity = store
+            .open(digest)
+            .map_err(|_| {
+                EnqueueError::Artifact(format!(
+                    "input bundle {digest} is neither published nor present in the controller store"
+                ))
+            })?
+            .identity();
+        let uploads = self.artifact_metadata.as_ref().ok_or_else(|| {
+            EnqueueError::Artifact(
+                "fixed device fixture assignments require the Artifact metadata service".into(),
+            )
+        })?;
+        uploads
+            .record_local_artifact(worker_id, identity)
+            .map_err(|error| EnqueueError::Artifact(error.to_string()))?;
+        Ok(identity.size_bytes)
     }
 
     /// Durably requests cancellation and sends it when the owning worker is connected.

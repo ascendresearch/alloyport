@@ -285,3 +285,72 @@ fn stored_contract(attempt_id: &str, executor_kind: ExecutionKind) -> Assignment
         required_features: Vec::new(),
     }
 }
+
+/// A half-enqueued assignment must be completable, not observed forever.
+///
+/// `task-ea9792931f2c781324ce536b` reached the Build Gate and stuck there. `enqueue_assignment`
+/// commits the immutable contract as `Preparing` *before* granting the worker its input, so when
+/// the grant failed the contract survived and nothing ever finished it: `reconcile` found a record,
+/// concluded the assignment was already out, and observed it forever while the worker never
+/// received anything.
+///
+/// Adopting the controller's own bundle inside the grant — the one point first enqueue, expired
+/// reassignment, and the periodic reconciler all funnel through — is what lets the second attempt
+/// succeed where the first left off.
+#[tokio::test]
+async fn a_preparing_assignment_completes_on_a_later_pass() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let cas: Arc<dyn alloyport_artifacts::ArtifactStore> = Arc::new(
+        alloyport_artifacts::FilesystemArtifactStore::open(directory.path().join("cas"), 1 << 20)?,
+    );
+    let uploads = Arc::new(alloyport_artifacts::SqliteUploadStore::open(
+        directory.path().join("uploads.sqlite3"),
+        directory.path().join("uploads"),
+        1 << 20,
+        8,
+    )?);
+
+    // The controller writes its bundle straight into its own store, as the build tool does.
+    let bytes = br#"{"schema_version":1}"#.to_vec();
+    let stored = cas.ingest(
+        &mut std::io::Cursor::new(bytes.clone()),
+        alloyport_artifacts::IngestRequest {
+            expected_digest: None,
+            expected_size_bytes: None,
+        },
+    )?;
+
+    // Without the controller store attached, the ledger has never heard of it: this is the exact
+    // condition that stranded the assignment.
+    let bare = WorkerControlService::new().with_artifact_metadata(uploads.clone());
+    assert!(
+        uploads
+            .artifact_size_bytes(stored.artifact.digest)?
+            .is_none(),
+        "a controller-written object starts outside the ledger"
+    );
+
+    // With it attached, the same object is adopted and becomes grantable.
+    let service = bare.with_artifact_store(cas.clone());
+    let mut contract = stored_contract("attempt-preparing", ExecutionKind::AscendBuild);
+    contract.execution.bundle.digest = stored.artifact.digest;
+    contract.execution.bundle.size_bytes = stored.artifact.size_bytes;
+    service.grant_fixed_fixture_assignment_input("ascend-worker-1", &contract, 1)?;
+    assert_eq!(
+        uploads.artifact_size_bytes(stored.artifact.digest)?,
+        Some(stored.artifact.size_bytes)
+    );
+    assert!(uploads.can_read_artifact("ascend-worker-1", stored.artifact.digest)?);
+
+    // A digest in neither place is still refused.
+    let mut absent = stored_contract("attempt-absent", ExecutionKind::AscendBuild);
+    absent.execution.bundle.digest = Sha256Digest::digest_bytes(b"never written");
+    absent.execution.bundle.size_bytes = 1;
+    assert!(
+        service
+            .grant_fixed_fixture_assignment_input("ascend-worker-1", &absent, 1)
+            .is_err(),
+        "an object in neither the ledger nor the store must not be granted"
+    );
+    Ok(())
+}

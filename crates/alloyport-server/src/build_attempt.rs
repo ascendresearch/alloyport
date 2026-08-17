@@ -48,44 +48,10 @@ impl WorkerBuildAttemptAdapter {
         })
     }
 
-    /// Makes the controller-authored bundle downloadable before the assignment references it.
-    ///
-    /// The controller writes its build bundle straight into the CAS, which the Artifact ledger
-    /// never hears about, so the assignment named a digest the coordinator could not grant:
-    /// "input bundle ... is not published". The size comes from the stored object rather than from
-    /// the assignment, because the assignment is the thing being checked.
-    fn publish_bundle(
-        &self,
-        assignment: &AssignmentContract,
-    ) -> Result<(), AscendBuildAttemptError> {
-        let digest = assignment.execution.bundle.digest;
-        let identity = self
-            .artifacts
-            .open(digest)
-            .map_err(|error| {
-                AscendBuildAttemptError::Rejected(format!(
-                    "build bundle {digest} is not readable in the controller store: {error}"
-                ))
-            })?
-            .identity();
-        self.service
-            .artifact_metadata()
-            .ok_or_else(|| {
-                AscendBuildAttemptError::Rejected(
-                    "publishing a build bundle requires the Artifact metadata service".to_owned(),
-                )
-            })?
-            .record_local_artifact(&self.worker_id, identity)
-            .map_err(|error| {
-                AscendBuildAttemptError::Rejected(format!("cannot publish build bundle: {error}"))
-            })
-    }
-
     async fn dispatch_or_observe(
         &self,
         assignment: &AssignmentContract,
     ) -> Result<AscendBuildAttemptObservation, AscendBuildAttemptError> {
-        self.publish_bundle(assignment)?;
         self.service
             .enqueue_assignment(self.worker_id.clone(), contract_to_assignment(assignment))
             .await

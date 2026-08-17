@@ -113,51 +113,12 @@ impl WorkerCorrectnessAttemptAdapter {
             (&self.cuda, &assignments[0]),
             (&self.ascend, &assignments[1]),
         ] {
-            // Same defect as the Build Gate, one hop later: the controller writes each execution
-            // bundle into its own store, which the Artifact ledger never hears about, so the
-            // assignment would name a digest the coordinator cannot grant.
-            self.publish_bundle(&target.worker_id, assignment)?;
             self.service
                 .enqueue_assignment(target.worker_id.clone(), contract_to_assignment(assignment))
                 .await
                 .map_err(|error| enqueue_error(&error))?;
         }
         self.observe_pair(spec, &assignments).await
-    }
-
-    /// Makes a controller-authored execution bundle downloadable by the worker that needs it.
-    ///
-    /// The size comes from the stored object rather than from the assignment, because the
-    /// assignment is the thing being checked.
-    fn publish_bundle(
-        &self,
-        worker_id: &str,
-        assignment: &AssignmentContract,
-    ) -> Result<(), ReductionCorrectnessAttemptError> {
-        let digest = assignment.execution.bundle.digest;
-        let identity = self
-            .artifacts
-            .open(digest)
-            .map_err(|error| {
-                ReductionCorrectnessAttemptError::Rejected(format!(
-                    "execution bundle {digest} is not readable in the controller store: {error}"
-                ))
-            })?
-            .identity();
-        self.service
-            .artifact_metadata()
-            .ok_or_else(|| {
-                ReductionCorrectnessAttemptError::Rejected(
-                    "publishing an execution bundle requires the Artifact metadata service"
-                        .to_owned(),
-                )
-            })?
-            .record_local_artifact(worker_id, identity)
-            .map_err(|error| {
-                ReductionCorrectnessAttemptError::Rejected(format!(
-                    "cannot publish execution bundle: {error}"
-                ))
-            })
     }
 
     async fn observe_pair(
