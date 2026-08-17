@@ -512,15 +512,29 @@ impl AgentLoopRunner {
             .len()
             .checked_add(turn.semantic_turn.tool_calls.len())
             .ok_or(AgentLoopRuntimeError::CounterExhausted)?;
-        if call_count > versioned.state.policy.max_tool_calls_per_turn
-            || total > usize_from_u32(versioned.state.policy.max_total_tool_operations)
-        {
+        // Two different things were one branch, and calling both of them budget exhaustion put a
+        // false verdict in the record: a live Episode ended here holding 52 of its 60 operations,
+        // having simply asked for six tools in a turn that allows four.
+        //
+        // Spending the operation budget is terminal — there is nothing left to spend.
+        if total > usize_from_u32(versioned.state.policy.max_total_tool_operations) {
             versioned
                 .state
                 .episode
                 .transition(EpisodeStatus::BudgetExhausted)?;
             repository.save(versioned.revision, versioned.state)?;
             return Ok(AgentLoopAdvance::Terminal(EpisodeStatus::BudgetExhausted));
+        }
+        // A turn that is merely too wide is a turn, not an exhausted budget. It goes to stop
+        // review, which already owns "that turn was not usable, give the model another within a
+        // bounded feedback allowance and finish `Incomplete` when the allowance is gone".
+        if call_count > versioned.state.policy.max_tool_calls_per_turn {
+            versioned
+                .state
+                .episode
+                .transition(EpisodeStatus::StopReview)?;
+            repository.save(versioned.revision, versioned.state)?;
+            return Ok(AgentLoopAdvance::Progressed(EpisodeStatus::StopReview));
         }
         for (index, call) in turn.semantic_turn.tool_calls.into_iter().enumerate() {
             let descriptor = tools

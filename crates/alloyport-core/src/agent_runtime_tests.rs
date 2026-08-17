@@ -70,6 +70,14 @@ immediate_async_test!(
     narrative_stop_without_verified_result_is_incomplete,
     narrative_stop_without_verified_result_is_incomplete_case
 );
+immediate_async_test!(
+    a_turn_wider_than_the_per_turn_cap_is_reviewed_not_charged_to_the_budget,
+    a_turn_wider_than_the_per_turn_cap_is_reviewed_not_charged_to_the_budget_case
+);
+immediate_async_test!(
+    spending_the_operation_budget_ends_the_episode_cleanly,
+    spending_the_operation_budget_ends_the_episode_cleanly_case
+);
 
 fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::digest_bytes(label.as_bytes())
@@ -778,6 +786,111 @@ async fn narrative_stop_without_verified_result_is_incomplete_case() -> Result<(
     assert_eq!(
         repository.load(&episode_id)?.state.episode().status(),
         EpisodeStatus::Incomplete
+    );
+    Ok(())
+}
+
+fn wide_turn(calls: usize) -> GatewayTurn {
+    GatewayTurn {
+        narrative: Vec::new(),
+        tool_calls: (0..calls)
+            .map(|index| GatewayToolCall {
+                native_call_id: format!("call-{index}"),
+                name: "submit_candidate_bundle".to_owned(),
+                raw_arguments: format!(r#"{{"candidate":"c{index}"}}"#).into_bytes(),
+            })
+            .collect(),
+        stop_reason: NormalizedStopReason::ToolCalls,
+        usage: None,
+    }
+}
+
+/// A turn asking for more tools than one turn allows is a turn, not an exhausted budget.
+///
+/// `task-1cadf422a8fed170618c775a` died here: the model issued six `read_reference` calls where
+/// four are allowed and the run failed with `invalid episode transition: TurnRecorded ->
+/// BudgetExhausted`. `TurnRecorded` was the one state that never listed `BudgetExhausted`, so this
+/// branch could only ever produce that error — it was dead on arrival. Recording it as budget
+/// exhaustion would also have been false: the Episode still held 52 of its 60 operations.
+async fn a_turn_wider_than_the_per_turn_cap_is_reviewed_not_charged_to_the_budget_case()
+-> Result<(), Box<dyn Error>> {
+    let episode_id = EpisodeId::try_from("episode-runtime-1")?;
+    let mut narrow = policy();
+    narrow.max_tool_calls_per_turn = 2;
+    narrow.max_total_tool_operations = 8;
+    let mut repository = InMemoryEpisodeRepository::default();
+    repository.create(state_with_policy(narrow)?)?;
+    let mut models = ScriptedFakeModelGateway::new([ScriptedGatewayStep {
+        expected_turn_index: 1,
+        expected_input_digest: digest("initial-input"),
+        outcome: ModelGatewayOutcome::Turn(exchange("too-wide", wide_turn(6))),
+    }]);
+    let mut tools = ScriptedFakeToolGateway::new(descriptors(), []);
+    let runner = AgentLoopRunner::new(episode_id.clone());
+    for _ in 0..8 {
+        let outcome = runner
+            .advance(
+                &mut repository,
+                &mut models,
+                &mut tools,
+                &mut NoAgentRuntimeFault,
+            )
+            .await?;
+        if matches!(
+            outcome,
+            AgentLoopAdvance::Progressed(EpisodeStatus::StopReview)
+        ) {
+            break;
+        }
+    }
+    let state = repository.load(&episode_id)?.state;
+    assert_eq!(state.episode().status(), EpisodeStatus::StopReview);
+    assert_eq!(
+        state.tool_operation_count(),
+        0,
+        "a discarded turn must not charge operations it never ran"
+    );
+    Ok(())
+}
+
+/// Spending the operation budget is terminal, and must be a verdict rather than an error.
+async fn spending_the_operation_budget_ends_the_episode_cleanly_case() -> Result<(), Box<dyn Error>>
+{
+    let episode_id = EpisodeId::try_from("episode-runtime-1")?;
+    let mut tiny = policy();
+    tiny.max_tool_calls_per_turn = 4;
+    tiny.max_total_tool_operations = 1;
+    let mut repository = InMemoryEpisodeRepository::default();
+    repository.create(state_with_policy(tiny)?)?;
+    let mut models = ScriptedFakeModelGateway::new([ScriptedGatewayStep {
+        expected_turn_index: 1,
+        expected_input_digest: digest("initial-input"),
+        outcome: ModelGatewayOutcome::Turn(exchange("over-budget", wide_turn(2))),
+    }]);
+    let mut tools = ScriptedFakeToolGateway::new(descriptors(), []);
+    let runner = AgentLoopRunner::new(episode_id.clone());
+    let mut reached = false;
+    for _ in 0..8 {
+        let outcome = runner
+            .advance(
+                &mut repository,
+                &mut models,
+                &mut tools,
+                &mut NoAgentRuntimeFault,
+            )
+            .await?;
+        if outcome == AgentLoopAdvance::Terminal(EpisodeStatus::BudgetExhausted) {
+            reached = true;
+            break;
+        }
+    }
+    assert!(
+        reached,
+        "an exhausted operation budget must be a terminal verdict, not an error"
+    );
+    assert_eq!(
+        repository.load(&episode_id)?.state.episode().status(),
+        EpisodeStatus::BudgetExhausted
     );
     Ok(())
 }

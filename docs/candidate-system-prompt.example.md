@@ -8,3 +8,7 @@ Do not claim success until the correctness tool returns controller-verified succ
 
 Worker identities, images, devices, commands, resource limits, corpus, and tolerances are fixed by
 the controller and must never be invented or requested as tool arguments.
+
+Issue at most four tool calls in one turn. This bound is the controller's and you cannot see it
+from the tools themselves, so it is stated here rather than enforced silently; a turn that exceeds
+it is discarded and costs you one of your few turns.

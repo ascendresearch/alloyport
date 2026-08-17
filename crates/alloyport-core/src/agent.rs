@@ -51,9 +51,18 @@ impl EpisodeStatus {
                     | Self::BudgetExhausted
                     | Self::Failed
             ),
+            // `BudgetExhausted` belongs here because `plan_turn_tools` runs in this state and ends
+            // the Episode when the total tool-operation budget is spent. Every other state that
+            // can reach it listed it; this one did not, so that branch could only ever produce
+            // `invalid episode transition: TurnRecorded -> BudgetExhausted`. It was dead on
+            // arrival and a live migration found it.
             Self::TurnRecorded => matches!(
                 next,
-                Self::ToolWorkPending | Self::StopReview | Self::CancellationPending | Self::Failed
+                Self::ToolWorkPending
+                    | Self::StopReview
+                    | Self::CancellationPending
+                    | Self::BudgetExhausted
+                    | Self::Failed
             ),
             Self::ToolWorkPending => matches!(
                 next,
