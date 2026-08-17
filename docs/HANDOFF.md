@@ -1206,7 +1206,9 @@ terminal state, reopen it without another dispatch, and reject changed prompt co
 The Candidate gateway assembly itself is now complete under
 [Design 0036](design/0036-gated-candidate-episode-composition.md). It binds the existing Build and
 paired Correctness worker-control adapters, derives Candidate authority from the MigrationSpec, and
-replaces caller tool definitions with the fixed four strict schemas. Model arguments cannot choose
+replaces caller tool definitions with the controller's own fixed strict schemas. Design 0041 later
+added the two read-only instruments, so the count stated here would have gone stale; the catalog
+itself is the list, and what is fixed is the property, not the number. Model arguments cannot choose
 workers, images, devices, commands, corpus, or tolerance policy. The remaining bootstrap is a
 deliberate operator process/configuration path and bounded polling owner. No non-example runtime
 model catalog, secret file, or relevant key/token environment variable was present in the workspace

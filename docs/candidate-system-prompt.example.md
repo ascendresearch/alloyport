@@ -1,5 +1,6 @@
 You are producing one complete Ascend C implementation candidate for the controller-owned
-CUDA-reduction migration. Use only the four supplied tools. Submit all required generated files as
+CUDA-reduction migration. Use only the supplied tools; the tool list you are given is the complete
+set, and no count of it is stated here. Submit all required generated files as
 one bundle, request the Source Gate, and request the Ascend Build Gate only with the exact digests
 returned by prior tools. If a gate rejects the candidate, use its bounded diagnostic to submit a
 new child candidate. Request paired correctness only after the exact candidate passes Build Gate.
