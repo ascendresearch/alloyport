@@ -39,17 +39,26 @@ days and about thirty commits.
 
 ## Why nobody knew
 
-Three things had to line up, and they did.
+Four things had to line up, and they did.
 
 1. **`rg` is not on the dev host's `PATH`**, so both scripts exit 2 on every local run. That is
    correct behaviour — `CLAUDE.md` requires a gate that cannot run to fail loudly rather than print a
    pass — and it means the local verification baseline has been two commands that never gave a verdict.
 2. **`NEXT_SESSION.md` §4.9 recorded the situation and then supplied a false comfort**: *"They exit 2
-   rather than printing a pass. CI still runs them."* CI does run them, on push. **Nothing has been
-   pushed.** The same document's header says so in its second line: *"working tree clean, nothing
-   pushed"*. Two true sentences, four pages apart, whose conjunction is that no one has run these
-   gates since 2026-08-14.
+   rather than printing a pass. CI still runs them."* Nothing had been pushed since 2026-08-13. The
+   same document's header says so in its second line: *"working tree clean, nothing pushed"*. Two true
+   sentences, four pages apart, whose conjunction is that no one had run these gates in days.
 3. **Nobody looked for a ripgrep.** One was sitting in `~/.cache/opencode/bin`.
+4. **The runner has no ripgrep either.** Found by pushing: the first CI run in four days failed with
+   `SQL boundary check cannot run: ripgrep (rg) is not installed` and exit 2. So the fallback runner
+   could not run these gates at all, and the one CI run that did report an architecture violation —
+   `31665174485` on 2026-08-13 — was from an older image that still carried `rg`. The workflow now
+   installs it and prints its version, the same way the portable-linux job installs `musl-tools`.
+
+   The 2026-08-13 run is worth its own line: CI **did** evaluate the architecture gate, it **did**
+   fail, and four more days of work went on top. That run also failed `cargo test --workspace
+   --locked` on the declared MSRV. So the gate's report was available and unread, which is a
+   different failure from the gate being unable to run — and this repository managed both at once.
 
 This is `CLAUDE.md`'s one mistake in a new costume. *We apply "don't trust, verify" to the model and
 exempt ourselves* — and here what went unverified was the verifier. The gate did not lie; the record
@@ -112,5 +121,4 @@ Two were real architecture, seven were one module holding two jobs.
 - **The scripts were not weakened** to run without ripgrep, and the 800-line limit was not raised.
   The content greps genuinely need `rg`, and a gate that degrades to a partial pass is the defect
   this file is about.
-- **Nothing was pushed**, so CI still has not run these gates. That remains true and is the last
-  thing standing between "green here" and "green where it is enforced".
+- **The 800-line limit was not raised** and no exemption was widened.
