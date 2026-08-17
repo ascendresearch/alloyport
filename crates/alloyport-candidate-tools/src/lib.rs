@@ -29,4 +29,5 @@ pub use record_stream::{
 pub use reference::{READ_REFERENCE_TOOL, ReferenceCorpus, ReferenceStatus};
 
 #[cfg(test)]
+#[path = "gateway_tests.rs"]
 mod tests;
