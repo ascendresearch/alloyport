@@ -3,12 +3,13 @@
 - Session closeout: 2026-08-17 (second session that day; the first ends at `6302541`)
 - Branch: `main`, working tree clean, **nothing pushed**
 - See `git log --oneline 80769dd..HEAD`
-- 373 passing tests, 2 ignored because they require Docker and a real device
-- **Both boundary gates are red and have been since 2026-08-14.** They are named in `CLAUDE.md` as
-  part of the verification baseline and nothing had run them, because `rg` is not on this host's
-  `PATH` and nothing has been pushed to CI. There is a ripgrep at
-  `/home/dawei/.cache/opencode/bin/rg`. Nine violations, none of them new this session:
-  [`boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md).
+- 374 passing tests, 2 ignored because they require Docker and a real device
+- **The whole verification baseline is green, including both boundary gates.** They had been red
+  since 2026-08-14 and nothing had run them, because `rg` is not on this host's `PATH` and nothing
+  has been pushed to CI. Run them with `/home/dawei/.cache/opencode/bin/rg` on `PATH`; all nine
+  violations are repaired ([`boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)).
+- Still nothing pushed, so CI has never run those two gates. That is now the only gap between
+  "green here" and "green where it is enforced".
 
 This is the lean entry point. [`CLAUDE.md`](../CLAUDE.md) is how this project decides what counts as
 evidence. [`HANDOFF.md`](HANDOFF.md) is the accumulated architecture record — read it for what a
@@ -63,7 +64,18 @@ worth building** — measured, a unified diff is 27–70% of the whole tree it c
 fork, against the 20× inheritance already banked. That question is now closed with evidence rather
 than deferred.
 
-Also found: **both boundary gates are red**, see the header.
+**Then the baseline itself was repaired.** Nine violations, in five commits that each build, test,
+and gate-check on their own: migration intake SQL moved behind the adapter boundary and the server's
+task lifecycle onto a port; `correctness.rs` 1311 → 658 across measure / calibrate / evaluate;
+`agent_runtime.rs` 901 → 372 across model turn and tool turn; `model.rs` 812 → 552; `gateway.rs`
+886 → 522 across submission and recovery; `main.rs` 1069 → 590 across connection and rendering; and
+three inline test modules moved to the `*_tests.rs` siblings this repository already uses.
+
+Two things the gates caught while being repaired, which is what they are for: moving a `match` on
+tool-name constants into a module where those constants were out of scope silently turned every arm
+into a catch-all (three tests failed, clippy reported the unreachable arms), and the architecture
+check noticed that `tools.reconcile` had moved file — a location assertion is how it notices a move
+at all, so the path was updated with the code.
 
 ### The previous session (through `6302541`)
 
@@ -120,9 +132,8 @@ candidate** — that has never completed, and both previous attempts ran out of 
 Afterwards, build its record and read it: `alloyport-server --config <server.json> candidate-record
 <task-id> --into <dir>`, then `git -C <dir> log --all --graph --oneline`.
 
-**Then repair the two boundary gates.** Eight module splits and one layering fix
-([`boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)). Until they are green,
-`CLAUDE.md`'s verification baseline is four commands and two absent verdicts.
+**And push.** The two boundary gates are green here and have never run in CI, because nothing has
+been pushed since 2026-08-14. A gate whose fallback runner has not run is not a fallback.
 
 ---
 
@@ -156,10 +167,10 @@ Afterwards, build its record and read it: `alloyport-server --config <server.jso
    unchanged.
 9. **Two states, `Created` and `CancellationPending`, do not permit `Failed`.** No runtime path was
    found that attempts it; that is an unverified absence, not a cleared one.
-10. **Both boundary gates are red**, and were unrun for three days because `rg` is off this host's
-    `PATH` and nothing has been pushed to CI. Nine violations, none new this session
-    ([`boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)). A ripgrep exists at
-    `/home/dawei/.cache/opencode/bin/rg`.
+10. **The boundary gates pass but have never run in CI.** They were red and unrun for three days
+    because `rg` is off this host's `PATH` and nothing has been pushed. All nine violations are fixed
+    ([`boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)), and the local run
+    needs `/home/dawei/.cache/opencode/bin/rg` on `PATH`. Nothing has been pushed yet.
 
 ---
 

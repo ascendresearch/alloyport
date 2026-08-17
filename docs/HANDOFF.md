@@ -1395,8 +1395,12 @@ Run against the three real Episodes from 2026-08-16, it corrected this file's ow
 building, and that 18–20 corpus reads precede the first line of Ascend C
 ([`evidence/candidate-record-20260817.md`](evidence/candidate-record-20260817.md)).
 
-Separately: **both `scripts/check_*_boundaries.sh` are red and have been since 2026-08-14** — eight
-modules over the 800-line limit plus one layering violation, and `rusqlite` outside
-`adapters/sqlite/`. They had not run because `rg` is off this host's `PATH` and nothing has been
-pushed to CI. Nine violations, none introduced by this session's work
-([`evidence/boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)).
+Separately: **both `scripts/check_*_boundaries.sh` had been red since 2026-08-14 and are now green.**
+Eight modules over the 800-line limit, one layering violation, and `rusqlite` outside
+`adapters/sqlite/`; they had not run because `rg` is off this host's `PATH` and nothing has been
+pushed to CI. All nine are repaired in five commits that each build, test, and gate-check on their
+own — the intake store gained a `MigrationTaskStore` port with the SQLite implementation beside the
+other stores, and seven modules that each held two jobs were split along the seam, using child
+modules so no receipt or record had to widen a private field
+([`evidence/boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)). Nothing has
+been pushed, so CI still has not run either gate.

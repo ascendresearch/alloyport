@@ -1,4 +1,4 @@
-# Both boundary gates have been red since 2026-08-14, and nothing said so
+# Both boundary gates had been red since 2026-08-14, and nothing said so
 
 - Date: 2026-08-17
 - Found by: running them. `ripgrep` exists on the dev host at
@@ -6,6 +6,7 @@
 - Status when found: `scripts/check_architecture_boundaries.sh` exit 1 with nine violations,
   `scripts/check_sql_boundaries.sh` exit 1 with one. Both are named in `CLAUDE.md` as part of the
   verification baseline.
+- Status now: **both pass.** See [Both gates are now green](#both-gates-are-now-green).
 
 ## What is red
 
@@ -58,18 +59,58 @@ The general form is worth keeping: **a gate whose fallback is another runner mus
 runner has actually run.** "CI still runs them" is a claim about a fact — the last push — and it was
 never checked against one.
 
-## What was and was not done about it
+## Both gates are now green
 
-- **Not fixed.** Eight module splits and one layering repair are a refactor of their own, and this
-  session's work was Design 0044.
-- **Not made worse.** The 0044 implementation adds five modules, the largest 497 lines, and adds no
-  line to `gateway.rs` (886) or `agent_runtime.rs` (901). Re-running both scripts after it reports the
-  same nine violations and no new one.
-- **The scripts were not weakened** to run without ripgrep. The content greps genuinely need it, and
-  a gate that degrades to a partial pass is the defect this file is about.
+```
+Architecture boundary check passed; production modules <= 800 lines and plugin ports are
+abstract and typed
+SQL boundary check passed; legacy database modules remaining: 0
+```
 
-## The one thing that should change first
+Five commits, each of which builds, tests, and gate-checks on its own — verified by running the
+suite and both scripts at every one in a detached worktree. The gates go green monotonically and
+never regress:
 
-`NEXT_SESSION.md` §4.9 should not say "CI still runs them" unless something has been pushed. Either
-push, or state that the gates are unrun and red. The cheapest durable fix is a `PATH` that finds a
-ripgrep on this host, so the local baseline gives a verdict again.
+| commit | what it did | arch | sql |
+|---|---|---|---|
+| `6a69e8c` | migration intake SQL behind the adapter boundary; `runtime.rs` on a port | fail | **pass** |
+| `a6e07a6` | `correctness.rs` 1311 → 658, three child modules | fail | pass |
+| `f67cf42` | `agent_runtime.rs` 901 → 372, `model.rs` 812 → 552 | fail | pass |
+| `87c6c82` | `gateway.rs` 886 → 522, its 1531-line test module split three ways | fail | pass |
+| `f9d6391` | `candidate_config.rs`, worker `assembly.rs`, `main.rs` 1069 → 590 | **pass** | pass |
+
+### What the nine violations actually were
+
+Two were real architecture, seven were one module holding two jobs.
+
+- **`migration_task.rs` held `rusqlite` and nine SQL statements**, and `application/runtime.rs`
+  depended on the concrete store. Both findings were one change: the module keeps the model and gains
+  a `MigrationTaskStore` port, the SQLite implementation moved beside the other stores, and only the
+  composition root names it. Its `submit` took eight positional arguments, five of them strings; it
+  now takes one struct, so transposing an owner and a request identity is a compile error.
+- **The size violations each had an obvious seam** — measure/calibrate/evaluate in the oracle, model
+  turn versus tool turn in the agent loop, catalogue versus attempt in the model module, submission
+  versus recovery in the gateway, connection versus rendering in the CLI. Child modules were used
+  throughout so no receipt or record had to widen a private field to be split.
+- **Three inline test modules** moved to the `*_tests.rs` sibling this repository already uses
+  everywhere else. That is convention, not gate-avoidance: two of the three files were left with
+  683 and 732 lines of production code, comfortably inside the limit either way.
+
+### Two things the gates caught while being repaired, which is the point
+
+- **Moving a `match` on tool-name constants silently turned it into a catch-all.** In
+  `gateway_recovery.rs` the constants were not in scope, so Rust read `READ_REFERENCE_TOOL` as a fresh
+  binding and every arm matched everything. Three tests failed and clippy reported the unreachable
+  arms. Nothing about the diff looked wrong; the compiler and the suite are what found it.
+- **The architecture check pinned a behaviour to a filename.** It asserted
+  `tools.reconcile(&invocation).await` appears in `agent_runtime.rs`; the call moved to
+  `agent_runtime_tools.rs` with the method that makes it. The gate failed, the path was updated with
+  the code, and that is the gate working — a location assertion is how it notices a move at all.
+
+### What was deliberately not done
+
+- **The scripts were not weakened** to run without ripgrep, and the 800-line limit was not raised.
+  The content greps genuinely need `rg`, and a gate that degrades to a partial pass is the defect
+  this file is about.
+- **Nothing was pushed**, so CI still has not run these gates. That remains true and is the last
+  thing standing between "green here" and "green where it is enforced".
