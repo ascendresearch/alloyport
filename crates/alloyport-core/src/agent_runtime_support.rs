@@ -180,12 +180,18 @@ pub trait AgentToolGateway: Debug + Send {
     /// readable — but must not materialize a candidate, dispatch remote work, or otherwise advance
     /// the migration.
     ///
+    /// This method has **no default**, deliberately. It used to default to `Ok(())`, and the
+    /// production composition wraps the real gateway in a decorator that forwarded `descriptor`,
+    /// `execute`, and `reconcile` but not this — so every call silently skipped validation and
+    /// Design 0040's whole correction path was dead in production while its tests passed against
+    /// the unwrapped gateway. A defaulted method that quietly disables a safety mechanism is worse
+    /// than no method, so omitting it is now a compile error and each implementor must say what it
+    /// means.
+    ///
     /// # Errors
     ///
     /// Returns the published rejection when the call cannot be dispatched as written.
-    fn validate_call(&self, _call: &GatewayToolCall) -> Result<(), ToolInputRejection> {
-        Ok(())
-    }
+    fn validate_call(&self, call: &GatewayToolCall) -> Result<(), ToolInputRejection>;
 
     /// Executes one stable logical operation.
     ///
@@ -270,6 +276,11 @@ impl ScriptedFakeToolGateway {
 impl AgentToolGateway for ScriptedFakeToolGateway {
     fn descriptor(&self, name: &str) -> Option<RuntimeToolDescriptor> {
         self.descriptors.get(name).cloned()
+    }
+
+    /// A scripted fake validates nothing: its calls are written by the test, not by a model.
+    fn validate_call(&self, _call: &GatewayToolCall) -> Result<(), ToolInputRejection> {
+        Ok(())
     }
 
     fn execute<'a>(&'a mut self, request: &'a ToolInvocation) -> ToolGatewayFuture<'a> {
