@@ -78,12 +78,17 @@ artifacts: the receipt, unchanged and still the thing gates and audits read; and
 naming it, which is what `result_digest` points at and therefore what the model reads.
 
 ```json
-{"status": "succeeded",
- "receipt": {"digest": "sha256:…", "size_bytes": N,
+{"receipt": {"digest": "sha256:…", "size_bytes": 412,
              "media_type": "application/vnd.alloyport.source-gate-receipt+json"},
- "passed": true,
- "failures": []}
+ "result": {"schema_version": 1, "gate_revision": "source-gate-v2", "passed": true,
+            "candidate_id": "candidate-…", "manifest_digest": "sha256:…",
+            "inspected_artifacts": ["sha256:…"], "failures": []}}
 ```
+
+The receipt document goes under `result` verbatim, so the model loses nothing it had before — the
+Source Gate's `failures` are what it corrects against — and gains the reference it must cite. The
+Correctness result additionally names its calibration receipt beside the verdict, because a reader
+asking what bounded a verdict should not have to already know that digest.
 
 This implements 0025 §7.3's `receipts` for the tools that need it, using the mechanism already
 proven by `submit_candidate_bundle`. It requires no change to the codecs, the provider transport,
