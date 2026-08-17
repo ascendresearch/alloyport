@@ -304,6 +304,40 @@ impl SqliteMigrationTaskStore {
         Ok(())
     }
 
+    /// Returns a failed task to the queue so its Episode continues instead of starting over.
+    ///
+    /// Only from `Failed`. A completed task has nothing to continue and a cancelled one was stopped
+    /// on purpose; both would be a new decision rather than a resumption.
+    ///
+    /// # Errors
+    ///
+    /// Returns not found when no failed task carries this identity, or a storage error.
+    pub fn resume(
+        &self,
+        owner_id: &str,
+        task_id: &str,
+    ) -> Result<MigrationTaskRecord, MigrationTaskError> {
+        let connection = self.connection()?;
+        let changed = connection.execute(
+            "UPDATE migration_tasks SET state = ?3
+             WHERE owner_id = ?1 AND task_id = ?2 AND state = ?4",
+            params![
+                owner_id,
+                task_id,
+                MigrationTaskState::Captured as i64,
+                MigrationTaskState::Failed as i64,
+            ],
+        )?;
+        if changed == 0 {
+            // Deliberately not silent. Resuming a completed, cancelled, or already queued task
+            // would look like it worked and do nothing.
+            return Err(MigrationTaskError::Corrupt(
+                "only a failed migration can be resumed".to_owned(),
+            ));
+        }
+        select_by_id(&connection, owner_id, task_id)?.ok_or(MigrationTaskError::NotFound)
+    }
+
     /// Reports whether a task has been cancelled by its owner.
     ///
     /// # Errors
@@ -437,6 +471,61 @@ fn invalid_column(field: &'static str) -> rusqlite::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a failed migration returns to the queue, and it keeps its identity when it does.
+    ///
+    /// The identity is the point: the Episode is derived from the task id, so a resumed task
+    /// recovers the Episode it already built instead of starting a new one. A retry mints a new id
+    /// and throws that work away, which is what four consecutive live runs did.
+    #[test]
+    fn only_a_failed_migration_resumes_and_it_keeps_its_task_identity()
+    -> Result<(), MigrationTaskError> {
+        let store = SqliteMigrationTaskStore::in_memory()?;
+        let digest = Sha256Digest::digest_bytes(b"project");
+        store.submit(
+            "owner-a",
+            "request-a",
+            "task-a",
+            "project-a",
+            digest,
+            7,
+            1,
+            10,
+        )?;
+        store.claim_next()?.expect("captured task");
+
+        // Running is not finished; there is nothing to resume yet.
+        assert!(store.resume("owner-a", "task-a").is_err());
+
+        store.finish("task-a", MigrationTaskState::Failed)?;
+        assert!(
+            store.claim_next()?.is_none(),
+            "a failed task stays out of the queue"
+        );
+
+        let resumed = store.resume("owner-a", "task-a")?;
+        assert_eq!(
+            resumed.task_id, "task-a",
+            "resuming must not mint a new identity"
+        );
+        assert_eq!(resumed.state, MigrationTaskState::Captured);
+        assert_eq!(
+            store
+                .claim_next()?
+                .expect("resumed task is queued again")
+                .task_id,
+            "task-a"
+        );
+
+        // Another owner cannot resume it, and a completed task is not resumable at all.
+        store.finish("task-a", MigrationTaskState::Failed)?;
+        assert!(store.resume("owner-b", "task-a").is_err());
+        store.resume("owner-a", "task-a")?;
+        store.claim_next()?;
+        store.finish("task-a", MigrationTaskState::Completed)?;
+        assert!(store.resume("owner-a", "task-a").is_err());
+        Ok(())
+    }
 
     #[test]
     fn claim_resume_cancel_and_finish_are_durable_state_transitions()

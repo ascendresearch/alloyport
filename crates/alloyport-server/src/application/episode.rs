@@ -158,6 +158,19 @@ where
         })
     }
 
+    /// Reopens a recovered Episode that had already finished, keeping the turns it took.
+    ///
+    /// Returns the status it resumed from, or the current status when nothing needed reopening.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Episode finished in a state that cannot be continued.
+    pub fn resume(&mut self) -> Result<alloyport_core::EpisodeStatus, ControllerEpisodeError> {
+        self.runner
+            .resume(&mut self.episodes)
+            .map_err(|error| ControllerEpisodeError(error.to_string()))
+    }
+
     /// Advances at most one external model or tool action and durably commits each boundary.
     ///
     /// # Errors

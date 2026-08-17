@@ -279,6 +279,17 @@ async fn drive_candidate_inner(
     }
     println!("Candidate Episode workers are ready; authorized provider dispatch may begin");
 
+    // A task returned to the queue keeps its Episode, so a resumption continues from the turns it
+    // already took instead of re-reading everything from scratch. An Episode that never finished
+    // reports its current status and nothing is reopened.
+    match runtime.application.resume() {
+        Ok(status) if status.is_terminal() => {
+            println!("resuming Candidate Episode from terminal state {status:?}");
+        }
+        Ok(_) => {}
+        Err(error) => return Err(error.to_string()),
+    }
+
     loop {
         check_cancelled(cancellation)?;
         match runtime

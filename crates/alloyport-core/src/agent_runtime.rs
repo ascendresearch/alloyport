@@ -67,6 +67,12 @@ pub struct DurableEpisodeState {
     stop_feedback_turns: u32,
     subtask_satisfied: bool,
     cancellation_requested: bool,
+    /// How many times an operator reopened this Episode after it finished.
+    ///
+    /// Defaulted so states written before resumption existed still load, and recorded rather than
+    /// inferred: a run whose turns span two operator decisions should say so.
+    #[serde(default)]
+    resumptions: u32,
 }
 
 #[path = "agent_runtime_state.rs"]
@@ -136,6 +142,38 @@ impl AgentLoopRunner {
             | EpisodeStatus::BudgetExhausted
             | EpisodeStatus::Failed => unreachable!("terminal states returned above"),
         }
+    }
+
+    /// Reopens a finished Episode so its accumulated turns and tool results are not thrown away.
+    ///
+    /// Every retry before this started from nothing: four consecutive runs each spent their first
+    /// four to eight turns re-reading the same reference documents before doing any work, because a
+    /// new task minted a new Episode. Recovery already existed — the repository loads and
+    /// revalidates an existing Episode — and only the terminal status stood in the way.
+    ///
+    /// Returns the status it resumed from, or the current status when the Episode is still running.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Episode finished in a state that cannot be continued, or for
+    /// persistence failure.
+    pub fn resume<R: EpisodeRepository>(
+        &self,
+        repository: &mut R,
+    ) -> Result<EpisodeStatus, AgentLoopRuntimeError> {
+        let mut versioned = repository.load(&self.episode_id)?;
+        versioned.state.validate_recovered()?;
+        let resumed_from = versioned.state.episode.status();
+        if !resumed_from.is_terminal() {
+            return Ok(resumed_from);
+        }
+        versioned.state.episode.resume()?;
+        versioned.state.resumptions = versioned.state.resumptions.saturating_add(1);
+        // A cancellation request belongs to the run that ended; carrying it forward would cancel
+        // the resumption before it took a turn.
+        versioned.state.cancellation_requested = false;
+        repository.save(versioned.revision, versioned.state)?;
+        Ok(resumed_from)
     }
 
     /// Durably requests cancellation without erasing an in-flight ambiguous effect.

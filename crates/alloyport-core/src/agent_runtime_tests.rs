@@ -90,6 +90,10 @@ immediate_async_test!(
     the_same_failure_twice_stops_instead_of_burning_the_attempt_budget,
     the_same_failure_twice_stops_instead_of_burning_the_attempt_budget_case
 );
+immediate_async_test!(
+    resuming_a_failed_episode_keeps_the_work_it_already_did,
+    resuming_a_failed_episode_keeps_the_work_it_already_did_case
+);
 
 fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::digest_bytes(label.as_bytes())
@@ -1034,6 +1038,95 @@ async fn the_same_failure_twice_stops_instead_of_burning_the_attempt_budget_case
     assert!(
         state.attempt_count() <= 3,
         "stopping must happen early, not after the attempt budget is gone"
+    );
+    Ok(())
+}
+
+/// Resuming continues the Episode instead of starting a new one.
+///
+/// Four consecutive live retries each re-read the same reference corpus from scratch, because a
+/// retry minted a new task and therefore a new Episode. The turns already taken are the expensive
+/// part, and they survive.
+async fn resuming_a_failed_episode_keeps_the_work_it_already_did_case() -> Result<(), Box<dyn Error>>
+{
+    let episode_id = EpisodeId::try_from("episode-runtime-1")?;
+    let mut repository = InMemoryEpisodeRepository::default();
+    repository.create(state_with_policy(policy())?)?;
+    // A dispatch that cannot succeed on retry ends the Episode as Failed.
+    let mut models = ScriptedFakeModelGateway::new([ScriptedGatewayStep {
+        expected_turn_index: 1,
+        expected_input_digest: digest("initial-input"),
+        outcome: not_sent("secret file is unreadable", ModelTransportRetryHint::Never),
+    }]);
+    let mut tools = ScriptedFakeToolGateway::new(descriptors(), []);
+    let runner = AgentLoopRunner::new(episode_id.clone());
+    for _ in 0..4 {
+        if matches!(
+            runner
+                .advance(
+                    &mut repository,
+                    &mut models,
+                    &mut tools,
+                    &mut NoAgentRuntimeFault
+                )
+                .await?,
+            AgentLoopAdvance::Terminal(_)
+        ) {
+            break;
+        }
+    }
+    let failed = repository.load(&episode_id)?.state;
+    assert_eq!(failed.episode().status(), EpisodeStatus::Failed);
+    let attempts_before = failed.attempt_count();
+    assert!(attempts_before > 0);
+
+    let resumed_from = runner.resume(&mut repository)?;
+    assert_eq!(resumed_from, EpisodeStatus::Failed);
+    let state = repository.load(&episode_id)?.state;
+    assert_eq!(state.episode().status(), EpisodeStatus::ReadyForModel);
+    assert_eq!(state.resumptions(), 1);
+    assert_eq!(
+        state.attempt_count(),
+        attempts_before,
+        "resuming must continue the Episode, not restart it"
+    );
+
+    // A spent budget is a different decision: continuing past it means running under a policy the
+    // Episode's own identity does not describe, so it is refused rather than quietly allowed.
+    // Reached through the real path rather than by forcing the status, so the refusal is proved
+    // against a state the loop can actually produce.
+    let mut exhausted = InMemoryEpisodeRepository::default();
+    let mut tiny = policy();
+    tiny.max_tool_calls_per_turn = 4;
+    tiny.max_total_tool_operations = 1;
+    exhausted.create(state_with_policy(tiny)?)?;
+    let mut spending = ScriptedFakeModelGateway::new([ScriptedGatewayStep {
+        expected_turn_index: 1,
+        expected_input_digest: digest("initial-input"),
+        outcome: ModelGatewayOutcome::Turn(exchange("over-budget", wide_turn(2))),
+    }]);
+    for _ in 0..4 {
+        if matches!(
+            runner
+                .advance(
+                    &mut exhausted,
+                    &mut spending,
+                    &mut tools,
+                    &mut NoAgentRuntimeFault
+                )
+                .await?,
+            AgentLoopAdvance::Terminal(_)
+        ) {
+            break;
+        }
+    }
+    assert_eq!(
+        exhausted.load(&episode_id)?.state.episode().status(),
+        EpisodeStatus::BudgetExhausted
+    );
+    assert!(
+        runner.resume(&mut exhausted).is_err(),
+        "resuming a spent budget is a fork, not a resumption"
     );
     Ok(())
 }

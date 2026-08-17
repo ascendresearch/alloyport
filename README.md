@@ -150,7 +150,10 @@ create-only and refuses a nonempty destination; it never overwrites certificates
 `ALLOYPORT_SERVER_ENDPOINT` only when the server is not using the local default. `migrate` skips
 `.git`, `target`, `build`, and `.cache`, uploads the remaining bounded regular files into the
 server's content-addressed store, and creates a durable `captured` task. Use `status TASK_ID`,
-`runs`, or `cancel TASK_ID` from any later CLI process. `attach TASK_ID` replays canonical events
+`runs`, or `cancel TASK_ID` from any later CLI process. `resume TASK_ID` returns a failed migration
+to the queue so it continues the Episode it already built instead of re-running from nothing;
+`migrate --retry` keeps its old meaning of starting a fresh task. A migration that spent its budget
+is not resumable, because the budget an Episode ran under is part of its identity. `attach TASK_ID` replays canonical events
 and then follows the live run stream; exiting that view does not cancel the task. When the Server
 configuration enables `migration_runtime`, its dispatcher claims captured tasks, materializes the
 CAS project under the configured persistent runtime root, and drives the existing Candidate Episode.

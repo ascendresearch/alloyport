@@ -202,6 +202,35 @@ impl AgentEpisodeRecord {
         Ok(())
     }
 
+    /// Reopens a finished Episode so its accumulated work is not thrown away.
+    ///
+    /// Deliberately not a `can_transition_to` edge. Terminal means terminal for the loop; this is
+    /// an operator decision taken from outside it, and keeping it off the transition table means
+    /// the reducer still cannot resurrect an Episode by itself.
+    ///
+    /// `BudgetExhausted` is refused. The budget an Episode ran under is bound into its identity
+    /// through `loop_policy_digest`, so continuing past a spent budget means running under a
+    /// different one — a fork of this Episode rather than this Episode, and a decision this method
+    /// has no business making silently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the Episode finished in a state that still has budget to spend.
+    pub fn resume(&mut self) -> Result<(), AgentRecordError> {
+        if !matches!(
+            self.status,
+            EpisodeStatus::Failed | EpisodeStatus::Incomplete
+        ) {
+            return Err(invalid_transition(
+                "episode",
+                self.status,
+                EpisodeStatus::ReadyForModel,
+            ));
+        }
+        self.status = EpisodeStatus::ReadyForModel;
+        Ok(())
+    }
+
     #[must_use]
     pub const fn id(&self) -> &EpisodeId {
         &self.id

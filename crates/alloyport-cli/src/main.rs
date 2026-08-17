@@ -13,7 +13,7 @@ use alloyport_proto::management_v1::management_service_client::ManagementService
 use alloyport_proto::management_v1::{
     CancelMigrationRequest, GetMigrationRequest, GetServerStatusRequest, ListMigrationsRequest,
     ListWorkersRequest, MigrationProjectBundle, MigrationTask, MigrationTaskState, ProjectFile,
-    SubmitMigrationRequest,
+    ResumeMigrationRequest, SubmitMigrationRequest,
 };
 use alloyport_proto::v1::{Backend, WorkerHealth};
 use alloyport_proto::{
@@ -152,6 +152,10 @@ async fn run(arguments: &mut impl Iterator<Item = String>) -> Result<(), String>
             Ok(task_id) => cancel_migration(task_id).await,
             Err(error) => Err(error),
         },
+        Some("resume") => match one_text_argument(arguments, "resume", "TASK_ID") {
+            Ok(task_id) => resume_migration(task_id).await,
+            Err(error) => Err(error),
+        },
         Some("attach") => match one_text_argument(arguments, "attach", "TASK_ID") {
             Ok(task_id) => attach_migration(task_id).await,
             Err(error) => Err(error),
@@ -174,7 +178,7 @@ async fn run(arguments: &mut impl Iterator<Item = String>) -> Result<(), String>
             }
         }
         _ => Err(
-            "usage: alloyport-cli [--config PATH] <migrate PROJECT [--retry]|runs|status TASK_ID|attach TASK_ID|\
+            "usage: alloyport-cli [--config PATH] <migrate PROJECT [--retry]|resume TASK_ID|runs|status TASK_ID|attach TASK_ID|\
              cancel TASK_ID|\
              server status|workers|about|lifecycle|\
              inspect-migration SPEC_PATH BUNDLE_ROOT|render-events [--jsonl]|event-demo [--jsonl]>"
@@ -410,6 +414,22 @@ async fn cancel_migration(task_id: String) -> Result<(), String> {
         .cancel_migration(CancelMigrationRequest { task_id })
         .await
         .map_err(|error| format!("migration cancellation failed: {error}"))?
+        .into_inner();
+    print_task(&task);
+    Ok(())
+}
+
+/// Continues a failed migration's Episode instead of starting a new one.
+///
+/// A retry mints a new task and therefore a new Episode, which throws away every turn already
+/// taken; four consecutive live retries each re-read the same reference corpus before doing
+/// anything. Resuming keeps that work.
+async fn resume_migration(task_id: String) -> Result<(), String> {
+    let task = management_client()
+        .await?
+        .resume_migration(ResumeMigrationRequest { task_id })
+        .await
+        .map_err(|error| format!("migration resumption failed: {error}"))?
         .into_inner();
     print_task(&task);
     Ok(())

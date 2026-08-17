@@ -10,6 +10,8 @@ service ManagementService {
   rpc GetMigration(GetMigrationRequest) returns (MigrationTask);
   rpc ListMigrations(ListMigrationsRequest) returns (ListMigrationsResponse);
   rpc CancelMigration(CancelMigrationRequest) returns (MigrationTask);
+  // Returns a failed task to the queue so its Episode continues rather than restarting.
+  rpc ResumeMigration(ResumeMigrationRequest) returns (MigrationTask);
 }
 
 message GetServerStatusRequest {}
@@ -83,6 +85,10 @@ message MigrationTask {
 }
 
 message GetMigrationRequest {
+  string task_id = 1;
+}
+
+message ResumeMigrationRequest {
   string task_id = 1;
 }
 

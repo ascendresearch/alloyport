@@ -26,7 +26,14 @@ impl DurableEpisodeState {
             stop_feedback_turns: 0,
             subtask_satisfied: false,
             cancellation_requested: false,
+            resumptions: 0,
         })
+    }
+
+    /// Times an operator reopened this Episode after it finished.
+    #[must_use]
+    pub const fn resumptions(&self) -> u32 {
+        self.resumptions
     }
 
     #[must_use]

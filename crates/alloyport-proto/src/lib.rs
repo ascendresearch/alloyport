@@ -55,7 +55,7 @@ pub mod management_v1 {
 }
 
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 6;
+pub const PROTOCOL_MINOR: u32 = 7;
 /// Maximum encoded worker-to-server control frame accepted by the service.
 pub const MAX_WORKER_TO_SERVER_MESSAGE_BYTES: usize = 128 * 1024;
 /// Maximum encoded server-to-worker control frame accepted by the worker.

@@ -15,7 +15,8 @@ use alloyport_proto::management_v1::management_service_server::ManagementService
 use alloyport_proto::management_v1::{
     CancelMigrationRequest, GetMigrationRequest, GetServerStatusRequest, ListMigrationsRequest,
     ListMigrationsResponse, ListWorkersRequest, ListWorkersResponse, MigrationProjectBundle,
-    MigrationTask, MigrationTaskState, ServerStatus, SubmitMigrationRequest, Worker, WorkerDevice,
+    MigrationTask, MigrationTaskState, ResumeMigrationRequest, ServerStatus,
+    SubmitMigrationRequest, Worker, WorkerDevice,
 };
 use alloyport_proto::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use prost::Message;
@@ -260,6 +261,23 @@ impl ManagementService for ManagementServiceImpl {
             .map(task_to_proto)
             .collect();
         Ok(Response::new(ListMigrationsResponse { tasks }))
+    }
+
+    async fn resume_migration(
+        &self,
+        request: Request<ResumeMigrationRequest>,
+    ) -> Result<Response<MigrationTask>, Status> {
+        let owner_id = self.owner(&request).await?;
+        let task_id = required_text(&request.get_ref().task_id, "task_id")?.to_owned();
+        let (migrations, _) = self.intake()?;
+        let migrations = Arc::clone(migrations);
+        let record = self
+            .persistence
+            .run(move || migrations.resume(&owner_id, &task_id))
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?
+            .map_err(task_status)?;
+        Ok(Response::new(task_to_proto(record)))
     }
 
     async fn cancel_migration(
