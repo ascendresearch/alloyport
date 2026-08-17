@@ -103,6 +103,49 @@ pub(super) fn enforce_quota(
     }
 }
 
+/// Enforces the same two ceilings a session reservation enforces, for an object already written.
+///
+/// There is no reservation to lean on here: the bytes are in the CAS before the ledger hears about
+/// them. So the check is made against what is currently stored plus what open sessions have
+/// reserved, exactly as `reserve_quota` does, and the caller's size is never trusted.
+pub(super) fn enforce_local_artifact_quota(
+    transaction: &rusqlite::Transaction<'_>,
+    owner_id: &str,
+    size_bytes: u64,
+    quotas: UploadQuotas,
+    now_ms: u64,
+) -> Result<(), UploadError> {
+    let total_stored = query_bytes(
+        transaction,
+        "SELECT COALESCE(SUM(size_bytes), 0) FROM artifact_objects",
+        [],
+    )?;
+    let total_reserved = query_bytes(
+        transaction,
+        "SELECT COALESCE(SUM(quota_reserved_bytes), 0) FROM upload_sessions
+         WHERE state IN (?1, ?2) AND expires_at_ms > ?3",
+        params![
+            UploadState::Open as i64,
+            UploadState::Finalizing as i64,
+            to_i64(now_ms)?
+        ],
+    )?;
+    enforce_quota(
+        QuotaScope::Total,
+        quotas.total_bytes,
+        total_stored.saturating_add(total_reserved),
+        size_bytes,
+    )?;
+    let owner_stored = owner_stored_bytes(transaction, owner_id)?;
+    let owner_reserved = owner_reserved_bytes(transaction, owner_id, now_ms)?;
+    enforce_quota(
+        QuotaScope::Owner,
+        quotas.per_owner_bytes,
+        owner_stored.saturating_add(owner_reserved),
+        size_bytes,
+    )
+}
+
 pub(super) fn owner_stored_bytes(
     connection: &Connection,
     owner_id: &str,

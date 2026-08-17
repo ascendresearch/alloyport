@@ -9,6 +9,65 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Records an object the controller minted, with a retention reference of its own.
+///
+/// Mirrors `record_completed_artifact` except for provenance: there is no upload session, and the
+/// reference is a retention root rather than an upload, so conservative GC keeps it until the
+/// assignment that needs it has been granted its own reference.
+pub(super) fn record_local_artifact(
+    transaction: &rusqlite::Transaction<'_>,
+    owner_id: &str,
+    artifact: ArtifactIdentity,
+    now_ms: u64,
+) -> Result<(), UploadError> {
+    let digest = artifact.digest.to_string();
+    let size = to_i64(artifact.size_bytes)?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO artifact_objects(digest, size_bytes) VALUES (?1, ?2)",
+        params![digest, size],
+    )?;
+    let stored_size = transaction.query_row(
+        "SELECT size_bytes FROM artifact_objects WHERE digest = ?1",
+        [&digest],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if stored_size != size {
+        return Err(UploadError::Corrupt(format!(
+            "artifact {digest} has conflicting recorded sizes"
+        )));
+    }
+    transaction.execute(
+        "DELETE FROM artifact_gc_pending WHERE digest = ?1",
+        [&digest],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO artifact_references(
+            owner_id, reference_key, digest, kind, purpose, created_at_ms,
+            retained_until_ms, revoked_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, 'controller artifact', ?5, NULL, NULL)",
+        params![
+            owner_id,
+            format!("controller:{digest}"),
+            digest,
+            ArtifactReferenceKind::RetentionRoot as i64,
+            to_i64(now_ms)?
+        ],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO artifact_owner_references(owner_id, digest, size_bytes)
+         VALUES (?1, ?2, ?3)",
+        params![owner_id, digest, size],
+    )?;
+    Ok(())
+}
+
+pub(super) fn now_ms() -> Result<u64, UploadError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .map_err(|error| UploadError::Corrupt(error.to_string()))
+}
+
 pub(super) fn record_completed_artifact(
     transaction: &rusqlite::Transaction<'_>,
     owner_id: &str,

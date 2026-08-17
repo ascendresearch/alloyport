@@ -8,6 +8,7 @@ use super::upload_references::{
     validate_reference_identity,
 };
 use super::upload_store::SqliteUploadStore;
+use crate::ArtifactIdentity;
 use crate::Sha256Digest;
 use crate::upload::{
     ArtifactMetadataStore, ArtifactReference, GrantArtifactReference, QuotaScope, UploadError,
@@ -65,6 +66,35 @@ impl SqliteUploadStore {
     pub fn artifact_size_bytes(&self, digest: Sha256Digest) -> Result<Option<u64>, UploadError> {
         let database = self.connection()?;
         artifact_size(&database, digest)
+    }
+
+    /// Records a CAS object the controller wrote itself, under the same quotas as an upload.
+    pub fn record_local_artifact(
+        &self,
+        owner_id: &str,
+        artifact: ArtifactIdentity,
+    ) -> Result<(), UploadError> {
+        if owner_id.trim().is_empty() {
+            return Err(UploadError::Corrupt(
+                "local artifact owner is empty".to_owned(),
+            ));
+        }
+        let now_ms = super::upload_records::now_ms()?;
+        let _artifact_guard = self.artifact_guard()?;
+        let mut database = self.connection()?;
+        let transaction = database.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if super::upload_quota::artifact_size(&transaction, artifact.digest)?.is_none() {
+            super::upload_quota::enforce_local_artifact_quota(
+                &transaction,
+                owner_id,
+                artifact.size_bytes,
+                self.quotas,
+                now_ms,
+            )?;
+        }
+        super::upload_records::record_local_artifact(&transaction, owner_id, artifact, now_ms)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn grant_reference(
@@ -190,6 +220,14 @@ impl ArtifactMetadataStore for SqliteUploadStore {
 
     fn artifact_size_bytes(&self, digest: Sha256Digest) -> Result<Option<u64>, UploadError> {
         Self::artifact_size_bytes(self, digest)
+    }
+
+    fn record_local_artifact(
+        &self,
+        owner_id: &str,
+        artifact: ArtifactIdentity,
+    ) -> Result<(), UploadError> {
+        Self::record_local_artifact(self, owner_id, artifact)
     }
 
     fn grant_reference(

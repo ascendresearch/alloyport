@@ -755,6 +755,29 @@ impl ArtifactMetadataStore for MemoryUploadMetadataStore {
         Ok(self.state()?.objects.get(&digest).copied())
     }
 
+    fn record_local_artifact(
+        &self,
+        owner_id: &str,
+        artifact: crate::ArtifactIdentity,
+    ) -> Result<(), UploadError> {
+        if owner_id.trim().is_empty() {
+            return Err(UploadError::Corrupt(
+                "local artifact owner is empty".to_owned(),
+            ));
+        }
+        let mut state = self.state()?;
+        if let Some(existing) = state.objects.get(&artifact.digest)
+            && *existing != artifact.size_bytes
+        {
+            return Err(UploadError::Corrupt(format!(
+                "artifact {} has conflicting recorded sizes",
+                artifact.digest
+            )));
+        }
+        state.objects.insert(artifact.digest, artifact.size_bytes);
+        Ok(())
+    }
+
     fn grant_reference(
         &self,
         request: &GrantArtifactReference,

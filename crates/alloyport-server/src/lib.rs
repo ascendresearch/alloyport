@@ -422,6 +422,13 @@ impl WorkerControlService {
         self
     }
 
+    /// The Artifact ledger, when one is attached. A controller-authored bundle must be recorded
+    /// here before an assignment can reference it.
+    #[must_use]
+    pub fn artifact_metadata(&self) -> Option<Arc<dyn ArtifactMetadataStore>> {
+        self.artifact_metadata.clone()
+    }
+
     /// Requires terminal Artifact identities to match finalized uploads and creates typed roots.
     #[must_use]
     pub fn with_artifact_metadata(mut self, metadata: Arc<dyn ArtifactMetadataStore>) -> Self {

@@ -183,6 +183,19 @@ pub trait ArtifactMetadataStore: Debug + Send + Sync {
         &self,
         request: &GrantArtifactReference,
     ) -> Result<ArtifactReference, UploadError>;
+
+    /// Records an object the controller wrote straight into the CAS, so a worker may be granted it.
+    ///
+    /// Uploaded objects reach this ledger through a session that reserved quota first. A
+    /// controller-authored assignment bundle never had a session, so it was absent here — and
+    /// absent here means a worker may not download it, which is how the first migration to reach
+    /// the Build Gate died. It counts against the same quotas as anything a client uploaded:
+    /// authorship is provenance, never a trust level.
+    fn record_local_artifact(
+        &self,
+        owner_id: &str,
+        artifact: ArtifactIdentity,
+    ) -> Result<(), UploadError>;
 }
 
 #[derive(Debug)]

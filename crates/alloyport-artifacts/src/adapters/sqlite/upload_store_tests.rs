@@ -459,3 +459,57 @@ impl ArtifactRetentionStore for RecordingRetentionStore {
         Ok(true)
     }
 }
+
+/// A bundle the controller writes itself must become referenceable, and must count against quota.
+///
+/// `task-ea9792931f2c781324ce536b` reached the Build Gate for the first time and died on
+/// "input bundle ... is not published". The controller had written its build bundle straight into
+/// the CAS, and this ledger — the authority for whether a worker may download an object — is
+/// written only by the upload path that external clients use. Every hardware run before it used
+/// operator-uploaded fixture bundles, so the controller-authored path had never been exercised.
+///
+/// It counts against the same quotas as an upload: authorship is provenance, not a trust level.
+#[test]
+fn a_controller_written_object_publishes_and_counts_against_quota() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let limits = UploadQuotas {
+        total_bytes: 16,
+        per_owner_bytes: 16,
+    };
+    let uploads = SqliteUploadStore::open_with_quotas(
+        directory.path().join("uploads.sqlite3"),
+        directory.path().join("uploads"),
+        100,
+        100,
+        limits,
+    )?;
+    let bundle = crate::ArtifactIdentity {
+        digest: digest(b"controller bundle"),
+        size_bytes: 10,
+    };
+
+    // Exactly the condition the assignment coordinator reports as "is not published".
+    assert_eq!(uploads.artifact_size_bytes(bundle.digest)?, None);
+
+    uploads.record_local_artifact("ascend-worker-1", bundle)?;
+    assert_eq!(uploads.artifact_size_bytes(bundle.digest)?, Some(10));
+    assert!(uploads.can_read_artifact("ascend-worker-1", bundle.digest)?);
+
+    // Idempotent, so a redispatched assignment does not double-count.
+    uploads.record_local_artifact("ascend-worker-1", bundle)?;
+    assert_eq!(uploads.artifact_size_bytes(bundle.digest)?, Some(10));
+
+    // The quota is real: a second controller object that would exceed it is refused.
+    let oversized = crate::ArtifactIdentity {
+        digest: digest(b"second controller bundle"),
+        size_bytes: 10,
+    };
+    assert!(
+        matches!(
+            uploads.record_local_artifact("ascend-worker-1", oversized),
+            Err(UploadError::QuotaExceeded { .. })
+        ),
+        "a controller-written object must be charged like any other"
+    );
+    Ok(())
+}
