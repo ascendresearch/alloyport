@@ -81,6 +81,40 @@ Note also what the citation buys: `verify_source_gate_receipt` re-evaluates the 
 manifest and sources anyway. The model's digest is never the source of the verdict — it can only
 disagree with a verdict already computed. It adds no authority and one fatal failure mode.
 
+## The same break exists at every remaining link
+
+Enumerating where else this class lives, as law 6 requires, the chain is broken past the first hop:
+
+| tool | required argument | obtainable by the model? |
+|---|---|---|
+| `request_source_gate` | `manifest_digest` | **yes** — `submit_candidate_bundle` returns it |
+| `request_ascend_build` | `source_gate_receipt_digest` | no |
+| `read_build_diagnostics` | `build_gate_receipt_digest` | no |
+| `request_reduction_correctness` | `manifest_digest`, `source_gate_receipt_digest`, `build_gate_receipt_digest` | one of three |
+
+Even had turn 12 succeeded, the run would have died one hop later for the same reason. Design 0041
+added `read_build_diagnostics` so the model could finally read the compiler's opinion of its own
+source; **the model cannot invoke it**, because its only argument is the Build Gate receipt's own
+digest.
+
+`AscendBuildReceipt` illustrates the pattern exactly: it carries `manifest_digest` and
+`source_gate_receipt_digest` — its predecessors' digests — and never its own.
+
+### Why the one working link works
+
+`submit_candidate_bundle` returns a *wrapper document* that names a **separate** artifact:
+
+```json
+{"candidate_id": "candidate-3fb3ae54…",
+ "manifest": {"digest": "sha256:98913b93…", "size_bytes": 2088,
+              "media_type": "application/vnd.alloyport.candidate-source-manifest+json"},
+ "source_bundle_digest": "sha256:7695909d…"}
+```
+
+A result can name another artifact's digest. It can never name its own — that is circular under a
+content hash. Every broken link asks the model for the tool result's own digest; the working link
+asks for a neighbour's. The shape that already works in this codebase is the shape the others need.
+
 ## What worked, and should be said plainly
 
 - **`read_reference` was used, first and heavily.** The model's opening move was to list the corpus,
@@ -115,5 +149,11 @@ the 972 sub-files carry no trust state at all; serving them is a ledger decision
 - **No correctness verdict, no `reorder_output_bits` observation, no calibration report.** Every
   hardware-unproven mechanism listed in `NEXT_SESSION.md` §3 except `read_reference` remains
   unproven.
+- **Whether the generated kernel is any good is completely unknown.** It passed a structural text
+  gate. That gate deliberately says almost nothing about method, so a Source Gate pass is not
+  evidence about the code — 0040 made it that way on purpose.
+- **The digest chain was proved unobtainable, not the tools themselves wrong.** Whether
+  `read_build_diagnostics` and the Correctness Gate behave correctly once reachable is still
+  untested on hardware.
 - **Nothing was adjusted by hand to make this run pass**, and nothing should be until the two
   defects above are decided.
