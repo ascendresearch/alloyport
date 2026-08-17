@@ -4,7 +4,7 @@ use crate::WorkerControlService;
 use crate::identity::ConnectionIdentityResolver;
 use crate::migration_task::{
     MigrationTaskError, MigrationTaskRecord, MigrationTaskState as StoredTaskState,
-    SqliteMigrationTaskStore,
+    MigrationTaskStore, MigrationTaskSubmission,
 };
 use crate::persistence::ServerPersistence;
 use crate::storage::{Clock, SystemClock};
@@ -31,10 +31,13 @@ const MAX_PROJECT_FILES: usize = 4_096;
 const MAX_PROJECT_FILE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PROJECT_BYTES: u64 = 60 * 1024 * 1024;
 
+/// The two collaborators intake needs, present together or not at all.
+type ConfiguredIntake<'a> = (&'a Arc<dyn MigrationTaskStore>, &'a Arc<dyn ArtifactStore>);
+
 #[derive(Clone)]
 pub struct ManagementServiceImpl {
     control: WorkerControlService,
-    migrations: Option<Arc<SqliteMigrationTaskStore>>,
+    migrations: Option<Arc<dyn MigrationTaskStore>>,
     artifacts: Option<Arc<dyn ArtifactStore>>,
     identities: Option<Arc<dyn ConnectionIdentityResolver>>,
     clock: Arc<dyn Clock>,
@@ -57,7 +60,7 @@ impl ManagementServiceImpl {
     #[must_use]
     pub fn with_migration_intake(
         mut self,
-        migrations: Arc<SqliteMigrationTaskStore>,
+        migrations: Arc<dyn MigrationTaskStore>,
         artifacts: Arc<dyn ArtifactStore>,
         identities: Option<Arc<dyn ConnectionIdentityResolver>>,
     ) -> Self {
@@ -74,7 +77,7 @@ impl ManagementServiceImpl {
         }
     }
 
-    fn intake(&self) -> Result<(&Arc<SqliteMigrationTaskStore>, &Arc<dyn ArtifactStore>), Status> {
+    fn intake(&self) -> Result<ConfiguredIntake<'_>, Status> {
         match (&self.migrations, &self.artifacts) {
             (Some(migrations), Some(artifacts)) => Ok((migrations, artifacts)),
             _ => Err(Status::unavailable("migration intake is not configured")),
@@ -176,16 +179,16 @@ impl ManagementService for ManagementServiceImpl {
         let record = self
             .persistence
             .run(move || {
-                migrations.submit(
-                    &owner_id,
-                    &request_id,
-                    &task_id,
-                    &project_name,
+                migrations.submit(MigrationTaskSubmission {
+                    owner_id: &owner_id,
+                    request_id: &request_id,
+                    task_id: &task_id,
+                    project_name: &project_name,
                     project_digest,
                     project_size_bytes,
                     file_count,
                     created_at_ms,
-                )
+                })
             })
             .await
             .map_err(|error| Status::internal(error.to_string()))?
@@ -429,7 +432,8 @@ mod tests {
     #[tokio::test]
     async fn submission_is_durable_queryable_and_cancellable()
     -> Result<(), Box<dyn std::error::Error>> {
-        let migrations = Arc::new(SqliteMigrationTaskStore::in_memory()?);
+        let migrations: Arc<dyn MigrationTaskStore> =
+            Arc::new(crate::adapters::sqlite::SqliteMigrationTaskStore::in_memory()?);
         let artifacts: Arc<dyn ArtifactStore> =
             Arc::new(InMemoryArtifactStore::new(64 * 1024 * 1024));
         let control = WorkerControlService::new();

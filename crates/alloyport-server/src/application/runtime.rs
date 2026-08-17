@@ -4,7 +4,7 @@ use super::CandidateEpisodeApplication;
 use super::assembly::ServerApplication;
 use super::candidate_config::RequiredWorker;
 use crate::WorkerControlService;
-use crate::migration_task::SqliteMigrationTaskStore;
+use crate::migration_task::MigrationTaskStore;
 use crate::storage::RepositoryError;
 use alloyport_core::{AgentLoopAdvance, EpisodeStatus};
 use alloyport_proto::artifact_v1::artifact_service_server::ArtifactServiceServer;
@@ -230,15 +230,15 @@ async fn drive_candidate(mut runtime: CandidateRuntime) -> Result<(), String> {
 
 pub(super) async fn drive_candidate_for_task(
     mut runtime: CandidateRuntime,
-    tasks: Arc<SqliteMigrationTaskStore>,
+    tasks: Arc<dyn MigrationTaskStore>,
     task_id: String,
 ) -> Result<(), String> {
-    drive_candidate_inner(&mut runtime, Some((&tasks, task_id.as_str()))).await
+    drive_candidate_inner(&mut runtime, Some((tasks.as_ref(), task_id.as_str()))).await
 }
 
 async fn drive_candidate_inner(
     runtime: &mut CandidateRuntime,
-    cancellation: Option<(&SqliteMigrationTaskStore, &str)>,
+    cancellation: Option<(&dyn MigrationTaskStore, &str)>,
 ) -> Result<(), String> {
     // One-shot operator validation remains bounded, while a submitted migration is durable work:
     // it stays queued until its workers report capacity or the user cancels it.
@@ -330,7 +330,7 @@ async fn drive_candidate_inner(
     }
 }
 
-fn check_cancelled(cancellation: Option<(&SqliteMigrationTaskStore, &str)>) -> Result<(), String> {
+fn check_cancelled(cancellation: Option<(&dyn MigrationTaskStore, &str)>) -> Result<(), String> {
     if let Some((tasks, task_id)) = cancellation
         && tasks
             .is_cancelled(task_id)

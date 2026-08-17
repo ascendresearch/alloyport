@@ -12,7 +12,7 @@ use crate::interaction::InteractionStore;
 use crate::interaction_service::{EnrolledInteractionAccessPolicy, InteractionServiceImpl};
 use crate::interaction_service::{InteractionAccessPolicy, LocalInteractionAccessPolicy};
 use crate::management_service::ManagementServiceImpl;
-use crate::migration_task::SqliteMigrationTaskStore;
+use crate::migration_task::MigrationTaskStore;
 use crate::storage::SystemClock;
 use alloyport_artifacts::upload::UploadQuotas;
 use alloyport_artifacts::{FilesystemArtifactStore, SqliteUploadStore};
@@ -47,7 +47,9 @@ pub(super) async fn assemble(
     let identity_resolver: Arc<dyn ConnectionIdentityResolver> =
         Arc::new(MtlsConnectionIdentityResolver::new(identity_registry));
     let artifact = assemble_artifact(&config.artifact, Arc::clone(&identity_resolver))?;
-    let migrations = Arc::new(SqliteMigrationTaskStore::open(&config.database)?);
+    let migrations: Arc<dyn MigrationTaskStore> = Arc::new(
+        crate::adapters::sqlite::SqliteMigrationTaskStore::open(&config.database)?,
+    );
     let (control, interaction_hub) =
         WorkerControlService::open_sqlite_with_interaction_hub(config.database)?;
     let mut control = control

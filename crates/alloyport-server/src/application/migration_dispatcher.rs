@@ -4,7 +4,7 @@ use super::candidate_config::CandidateEpisodeConfig;
 use super::config::MigrationRuntimeConfig;
 use super::{open_candidate_episode_https, runtime};
 use crate::WorkerControlService;
-use crate::migration_task::{MigrationTaskRecord, MigrationTaskState, SqliteMigrationTaskStore};
+use crate::migration_task::{MigrationTaskRecord, MigrationTaskState, MigrationTaskStore};
 use alloyport_artifacts::{ArtifactStore, Sha256Digest};
 use alloyport_core::BundlePath;
 use alloyport_events::{Authority, Event, Producer, ProducerEvent, Visibility};
@@ -21,7 +21,7 @@ const MAX_ENCODED_PROJECT_BYTES: u64 = 64 * 1024 * 1024;
 
 pub(super) struct MigrationDispatcher {
     config: MigrationRuntimeConfig,
-    tasks: Arc<SqliteMigrationTaskStore>,
+    tasks: Arc<dyn MigrationTaskStore>,
     artifacts: Arc<dyn ArtifactStore>,
     control: WorkerControlService,
 }
@@ -29,7 +29,7 @@ pub(super) struct MigrationDispatcher {
 impl MigrationDispatcher {
     pub(super) fn new(
         config: MigrationRuntimeConfig,
-        tasks: Arc<SqliteMigrationTaskStore>,
+        tasks: Arc<dyn MigrationTaskStore>,
         artifacts: Arc<dyn ArtifactStore>,
         control: WorkerControlService,
     ) -> Result<Self, Box<dyn Error>> {
