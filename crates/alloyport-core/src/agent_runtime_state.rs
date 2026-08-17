@@ -127,6 +127,19 @@ impl DurableEpisodeState {
             .collect()
     }
 
+    /// Every recorded tool operation in the order it happened, for offline projections.
+    ///
+    /// Ordering is the whole value here: candidate identities are content-derived and therefore
+    /// unordered, so the sequence a run actually took exists only in this list. The records are
+    /// immutable and carry no authority, which is why a read-only view of them is safe to hand out;
+    /// a reader gets what the Episode recorded and cannot re-decide any of it.
+    #[must_use]
+    pub fn tool_operations(&self) -> impl ExactSizeIterator<Item = &crate::ToolOperationRecord> {
+        self.tool_operations
+            .iter()
+            .map(|operation| &operation.record)
+    }
+
     pub(crate) const fn episode_id(&self) -> &EpisodeId {
         self.episode.id()
     }

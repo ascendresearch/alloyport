@@ -5,6 +5,7 @@ mod bootstrap;
 mod candidate_bootstrap;
 mod candidate_config;
 mod candidate_episode;
+mod candidate_record;
 mod command;
 mod config;
 mod episode;
@@ -48,6 +49,14 @@ pub async fn run_from_args() -> Result<(), Box<dyn Error>> {
         } => {
             let config = config::ServerConfig::load(config_path)?;
             candidate_bootstrap::run(config, candidate_config_path, action).await
+        }
+        command::ServerCommand::CandidateRecord {
+            config_path,
+            task_id,
+            into,
+        } => {
+            let config = config::ServerConfig::load(config_path)?;
+            candidate_record::run(&config, &task_id, &into)
         }
     }
 }

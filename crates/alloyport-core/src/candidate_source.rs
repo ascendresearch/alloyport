@@ -205,6 +205,12 @@ impl CandidateSourceManifest {
         &self.task_id
     }
 
+    /// The candidate this one was assembled from, when it inherited rather than started fresh.
+    #[must_use]
+    pub const fn parent_candidate_id(&self) -> Option<&CandidateId> {
+        self.parent_candidate_id.as_ref()
+    }
+
     #[must_use]
     pub const fn migration_spec_digest(&self) -> Sha256Digest {
         self.migration_spec_digest

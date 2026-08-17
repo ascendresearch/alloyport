@@ -514,6 +514,15 @@ impl ToolOperationRecord {
     pub const fn result_digest(&self) -> Option<Sha256Digest> {
         self.result_digest
     }
+
+    /// Receipts this operation published, in the order the tool published them.
+    ///
+    /// A tool may publish more than one — the Correctness Gate publishes its calibration receipt
+    /// beside its verdict — so a reader must select by shape rather than assume the first.
+    #[must_use]
+    pub fn receipt_digests(&self) -> &[Sha256Digest] {
+        &self.receipt_digests
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

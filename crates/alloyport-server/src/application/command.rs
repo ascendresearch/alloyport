@@ -21,6 +21,12 @@ pub(super) enum ServerCommand {
         candidate_config_path: PathBuf,
         action: CandidateEpisodeAction,
     },
+    /// Offline projection of one task's candidate lineage into a readable git repository.
+    CandidateRecord {
+        config_path: Option<PathBuf>,
+        task_id: String,
+        into: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,6 +106,21 @@ impl ServerCommand {
                     action,
                 })
             }
+            Some(command) if command == "candidate-record" => {
+                let task_id = required_utf8_argument(&mut arguments, "task ID")?;
+                if required_argument(&mut arguments, "record destination flag")? != "--into" {
+                    return Err(usage().into());
+                }
+                let into = PathBuf::from(required_argument(&mut arguments, "record directory")?);
+                if arguments.next().is_some() {
+                    return Err(usage().into());
+                }
+                Ok(Self::CandidateRecord {
+                    config_path,
+                    task_id,
+                    into,
+                })
+            }
             _ => Err(usage().into()),
         }
     }
@@ -149,7 +170,7 @@ fn required_utf8_argument(
 }
 
 const fn usage() -> &'static str {
-    "usage: alloyport-server bootstrap DIRECTORY | alloyport-server [--config PATH] [identity enroll OWNER CERT | identity rotate OWNER OLD_CERT NEW_CERT | identity revoke CERT | candidate-episode validate CANDIDATE_CONFIG | candidate-episode run CANDIDATE_CONFIG --authorize-provider-dispatch]"
+    "usage: alloyport-server bootstrap DIRECTORY | alloyport-server [--config PATH] [identity enroll OWNER CERT | identity rotate OWNER OLD_CERT NEW_CERT | identity revoke CERT | candidate-episode validate CANDIDATE_CONFIG | candidate-episode run CANDIDATE_CONFIG --authorize-provider-dispatch | candidate-record TASK_ID --into DIRECTORY]"
 }
 
 #[cfg(test)]
@@ -227,6 +248,38 @@ mod tests {
                 ..
             }
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn a_candidate_record_names_one_task_and_one_empty_destination() -> Result<(), Box<dyn Error>> {
+        let command = ServerCommand::parse(
+            [
+                "--config",
+                "server.json",
+                "candidate-record",
+                "task-abc",
+                "--into",
+                "/srv/record",
+            ]
+            .map(OsString::from),
+        )?;
+        assert!(matches!(
+            command,
+            ServerCommand::CandidateRecord { task_id, into, .. }
+                if task_id == "task-abc" && into == std::path::Path::new("/srv/record")
+        ));
+        // A destination that is merely positional would be easy to give by accident, and this
+        // command writes a directory tree.
+        assert!(
+            ServerCommand::parse(
+                ["candidate-record", "task-abc", "/srv/record"].map(OsString::from)
+            )
+            .is_err()
+        );
+        assert!(
+            ServerCommand::parse(["candidate-record", "task-abc"].map(OsString::from)).is_err()
+        );
         Ok(())
     }
 
