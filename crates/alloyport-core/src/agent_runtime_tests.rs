@@ -1,8 +1,9 @@
 use super::*;
+use crate::agent_runtime_helpers::derive_model_continuation_input_digest;
 use crate::{
     AgentLoopAdvance, AgentRuntimeFaultPoint, EpisodeRepository, EpisodeSpec, GatewayTurn,
-    GatewayTurnExchange, InMemoryEpisodeRepository, ModelGatewayOutcome, NoAgentRuntimeFault,
-    NormalizedStopReason, OneShotAgentRuntimeFault, RuntimeToolDescriptor,
+    GatewayTurnExchange, InMemoryEpisodeRepository, ModelGatewayOutcome, ModelTransportRetryHint,
+    NoAgentRuntimeFault, NormalizedStopReason, OneShotAgentRuntimeFault, RuntimeToolDescriptor,
     ScriptedFakeModelGateway, ScriptedFakeToolGateway, ScriptedGatewayStep, ScriptedToolStep,
     SearchRunId, TaskId, ToolEffectClass, ToolGatewayAction, ToolGatewayOutcome,
     ToolOperationStatus, ToolResultAuthority,

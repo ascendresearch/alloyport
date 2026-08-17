@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    EpisodeId, GatewayToolCall, GatewayTurn, GatewayTurnExchange, ModelGateway,
+    EpisodeId, GatewayToolCall, GatewayTurn, GatewayTurnExchange, ModelAttemptId, ModelGateway,
     ModelGatewayOutcome, ModelTurnRequest, NormalizedStopReason, ScriptedFakeModelGateway,
     ScriptedGatewayStep, TurnId, TurnRecord, TurnRecordError, TurnSpec,
 };

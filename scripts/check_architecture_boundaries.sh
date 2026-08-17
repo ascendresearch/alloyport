@@ -558,7 +558,8 @@ if candidate_tool_provider_coupling=$(rg -n -i \
 fi
 if ! rg -q '^    Running,' crates/alloyport-core/src/agent.rs \
     || ! rg -q '^    Pending \{' crates/alloyport-core/src/agent_runtime_support.rs \
-    || ! rg -q 'tools\.reconcile\(&invocation\)\.await' crates/alloyport-core/src/agent_runtime.rs; then
+    || ! rg -q 'tools\.reconcile\(&invocation\)\.await' \
+        crates/alloyport-core/src/agent_runtime_tools.rs; then
     violations+=("remote Agent tools no longer retain asynchronous pending/running reconciliation semantics")
 fi
 if ! rg -q 'AscendBuild = 6' crates/alloyport-core/src/execution.rs \
