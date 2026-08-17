@@ -85,6 +85,50 @@ A second observation, unverifiable for the same reason: the loop retried an iden
 times with no backoff and no distinction between transient and deterministic. If the failure was
 deterministic, 20 of those attempts were spent learning nothing.
 
+## Reached the compiler, and what that cost
+
+`task-ea9792931f2c781324ce536b` became the first migration to compile model-authored Ascend C on
+real hardware. It passed the Source Gate, dispatched a build to the NPU worker, and the compiler
+answered in 270 ms with exit code 1:
+
+```
+/alloyport/bundle/generated/op_host/reduce_sum_launch.cpp:1:10:
+fatal error: acl/acl.h: No such file or directory
+```
+
+The model then called `read_build_diagnostics` — the instrument Design 0041 added and that no run
+could invoke until the receipt reference existed — and read that message. Two of
+`NEXT_SESSION.md` §3's open questions are answered: the instrument is used, and its 64 KiB bound is
+nowhere near binding. Total compiler output was 1 945 bytes and `truncated` was false on both
+streams.
+
+The image does carry the header, at `$ASCEND_HOME_PATH/x86_64-linux/include/acl/acl.h`, so the
+missing include path is the model's to fix and it now has the error naming it.
+
+## Six defects that only this depth could find
+
+1. **A complete bundle costs a whole response.** Submissions measured 14 730, 3 478, **16 384**, and
+   2 587 output tokens against a 16 384 ceiling that is already the profile maximum. Turn 19 hit
+   100.0% and truncated its own JSON mid-string. Fixed: a candidate may inherit the files it did not
+   change.
+2. **The controller could not hand a worker anything it wrote itself.** Fixed, then fixed again in
+   the right layer — see below.
+3. **A half-enqueued assignment was unrecoverable.** `enqueue_assignment` commits the contract as
+   `Preparing` before granting the input, so a failed grant left a record that `reconcile` mistook
+   for a dispatched assignment and observed forever. Fixed at the funnel every path shares.
+4. **`gmake: TMPDIR value /alloyport/work/tmp: No such file or directory`**, four times per build.
+   The trusted build runner sets a temporary directory it never creates. Harmless — it falls back
+   to `/tmp` — and pure noise in the one output the model is supposed to read. **Unfixed.**
+5. **A resumed run cannot record why it failed twice.** `cannot publish terminal event: interaction
+   dedup key migration-failed has conflicting content`. The dedup key is per run, which was safe
+   only while a run could fail once. Resumption made that false. **Unfixed.**
+6. **Changing a tool or prompt makes every existing Episode unresumable.** Correct — the rules a
+   recorded turn was produced under are part of its identity — but it means resumption preserves
+   work only across a harness that did not change. Recovery refused the Episode before `resume`
+   could grant anything: status stayed `budget_exhausted`, `grants` stayed empty, and the raised
+   allowance was never applied. Working as designed, and worth stating because it was not obvious
+   when resumption was proposed as the way to preserve twenty turns of work.
+
 ## The shape underneath
 
 Two of the four were verified by tests that passed, because the tests exempted the thing standing in
