@@ -2,81 +2,33 @@ use alloyport_core::{
     BundlePath, Gate, GenerationStrategy, MigrationSpec, Sha256Digest, TaskState,
     inspect_migration_source,
 };
-use alloyport_events::{
-    Authority, Event, EventEnvelope, EventSequencer, FileChange, FileChangeKind, MessageRole,
-    OutputStream, Producer, ProducerEvent, RunReducer, Visibility, producer_event_from_json_line,
-    render_plain,
-};
+use alloyport_events::{Event, EventEnvelope, RunReducer, render_plain};
 use alloyport_proto::interaction_v1::SubscribeRunRequest;
-use alloyport_proto::interaction_v1::interaction_service_client::InteractionServiceClient;
-use alloyport_proto::management_v1::management_service_client::ManagementServiceClient;
 use alloyport_proto::management_v1::{
     CancelMigrationRequest, GetMigrationRequest, GetServerStatusRequest, ListMigrationsRequest,
     ListWorkersRequest, MigrationProjectBundle, MigrationTask, MigrationTaskState, ProjectFile,
     ResumeMigrationRequest, SubmitMigrationRequest,
 };
 use alloyport_proto::v1::{Backend, WorkerHealth};
-use alloyport_proto::{
-    MAX_MANAGEMENT_REQUEST_MESSAGE_BYTES, MAX_MANAGEMENT_RESPONSE_MESSAGE_BYTES,
-};
 use prost::Message;
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
+
+mod connection;
+mod events;
+
+use connection::{CONNECTION, CliConnectionConfig, interaction_client, management_client};
+use events::{render_demo, render_events};
 
 const MAX_SPEC_BYTES: u64 = 1024 * 1024;
 const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_PROJECT_BYTES: u64 = 60 * 1024 * 1024;
 const MAX_PROJECT_FILES: usize = 4_096;
-
-const DEFAULT_SERVER_ENDPOINT: &str = "http://127.0.0.1:50051";
-const SIBLING_CONFIG_NAME: &str = "alloyport-cli.json";
-const SYSTEM_CONFIG_PATH: &str = "/etc/alloyport-cli/client.json";
-static CONNECTION: OnceLock<CliConnectionConfig> = OnceLock::new();
-
-#[derive(Clone, Debug)]
-struct CliConnectionConfig {
-    endpoint: String,
-    tls: Option<CliTlsConfig>,
-}
-
-#[derive(Clone, Debug)]
-struct CliTlsConfig {
-    certificate: PathBuf,
-    private_key: PathBuf,
-    server_ca: PathBuf,
-    server_name: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CliFileConfig {
-    schema_version: u16,
-    server: CliServerFileConfig,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CliServerFileConfig {
-    endpoint: String,
-    tls: Option<CliTlsFileConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CliTlsFileConfig {
-    certificate: PathBuf,
-    private_key: PathBuf,
-    server_ca: PathBuf,
-    server_name: String,
-}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -187,147 +139,12 @@ async fn run(arguments: &mut impl Iterator<Item = String>) -> Result<(), String>
     }
 }
 
-impl CliConnectionConfig {
-    fn load(explicit: Option<PathBuf>) -> Result<Self, String> {
-        let path = explicit
-            .or_else(|| env::var_os("ALLOYPORT_CLI_CONFIG").map(PathBuf::from))
-            .or_else(|| {
-                env::current_exe()
-                    .ok()
-                    .and_then(|executable| executable.parent().map(Path::to_path_buf))
-                    .map(|directory| directory.join(SIBLING_CONFIG_NAME))
-                    .filter(|path| path.is_file())
-            })
-            .or_else(|| {
-                let path = PathBuf::from(SYSTEM_CONFIG_PATH);
-                path.is_file().then_some(path)
-            });
-        let Some(path) = path else {
-            return Ok(Self {
-                endpoint: DEFAULT_SERVER_ENDPOINT.to_owned(),
-                tls: None,
-            });
-        };
-        let path = fs::canonicalize(&path)
-            .map_err(|error| format!("cannot open CLI config {}: {error}", path.display()))?;
-        let base = path
-            .parent()
-            .ok_or_else(|| "CLI config has no parent directory".to_owned())?;
-        let file: CliFileConfig = serde_json::from_slice(
-            &fs::read(&path)
-                .map_err(|error| format!("cannot read CLI config {}: {error}", path.display()))?,
-        )
-        .map_err(|error| format!("invalid CLI config {}: {error}", path.display()))?;
-        if file.schema_version != 1 {
-            return Err(format!(
-                "unsupported CLI config schema {}; expected 1",
-                file.schema_version
-            ));
-        }
-        if file.server.endpoint.trim().is_empty() {
-            return Err("CLI server endpoint is required".to_owned());
-        }
-        let tls = file.server.tls.map(|tls| CliTlsConfig {
-            certificate: resolve_config_path(base, tls.certificate),
-            private_key: resolve_config_path(base, tls.private_key),
-            server_ca: resolve_config_path(base, tls.server_ca),
-            server_name: tls.server_name,
-        });
-        if tls
-            .as_ref()
-            .is_some_and(|tls| tls.server_name.trim().is_empty())
-        {
-            return Err("CLI TLS server_name is required".to_owned());
-        }
-        Ok(Self {
-            endpoint: file.server.endpoint,
-            tls,
-        })
-    }
-}
-
-fn resolve_config_path(base: &Path, path: PathBuf) -> PathBuf {
-    if path.is_relative() {
-        base.join(path)
-    } else {
-        path
-    }
-}
-
 fn no_extra_arguments(arguments: &mut impl Iterator<Item = String>) -> Result<(), String> {
     if arguments.next().is_some() {
         Err("server status accepts no arguments".to_owned())
     } else {
         Ok(())
     }
-}
-
-fn server_endpoint() -> String {
-    env::var("ALLOYPORT_SERVER_ENDPOINT").unwrap_or_else(|_| {
-        CONNECTION.get().map_or_else(
-            || DEFAULT_SERVER_ENDPOINT.to_owned(),
-            |config| config.endpoint.clone(),
-        )
-    })
-}
-
-async fn server_channel() -> Result<Channel, String> {
-    let endpoint_uri = server_endpoint();
-    let mut endpoint = Endpoint::from_shared(endpoint_uri.clone())
-        .map_err(|error| format!("invalid AlloyPort server endpoint {endpoint_uri}: {error}"))?;
-    if let Some(tls) = CONNECTION.get().and_then(|config| config.tls.as_ref()) {
-        let identity = Identity::from_pem(
-            fs::read(&tls.certificate).map_err(|error| {
-                format!(
-                    "cannot read client certificate {}: {error}",
-                    tls.certificate.display()
-                )
-            })?,
-            fs::read(&tls.private_key).map_err(|error| {
-                format!(
-                    "cannot read client private key {}: {error}",
-                    tls.private_key.display()
-                )
-            })?,
-        );
-        let ca = Certificate::from_pem(fs::read(&tls.server_ca).map_err(|error| {
-            format!("cannot read server CA {}: {error}", tls.server_ca.display())
-        })?);
-        endpoint = endpoint
-            .tls_config(
-                ClientTlsConfig::new()
-                    .identity(identity)
-                    .ca_certificate(ca)
-                    .domain_name(tls.server_name.clone()),
-            )
-            .map_err(|error| format!("invalid CLI TLS configuration: {error}"))?;
-    }
-    endpoint
-        .connect()
-        .await
-        .map_err(|error| format!("cannot connect to AlloyPort server at {endpoint_uri}: {error}"))
-}
-
-async fn management_client() -> Result<ManagementServiceClient<Channel>, String> {
-    server_channel()
-        .await
-        .map(ManagementServiceClient::new)
-        .map(|client| {
-            client
-                .max_encoding_message_size(MAX_MANAGEMENT_REQUEST_MESSAGE_BYTES)
-                .max_decoding_message_size(MAX_MANAGEMENT_RESPONSE_MESSAGE_BYTES)
-        })
-}
-
-async fn interaction_client() -> Result<InteractionServiceClient<Channel>, String> {
-    server_channel()
-        .await
-        .map(InteractionServiceClient::new)
-        .map(|client| {
-            client
-                .max_encoding_message_size(alloyport_proto::MAX_INTERACTION_REQUEST_MESSAGE_BYTES)
-                .max_decoding_message_size(alloyport_proto::MAX_INTERACTION_EVENT_MESSAGE_BYTES)
-        })
 }
 
 fn one_text_argument(
@@ -744,234 +561,6 @@ pub(crate) fn read_bounded_regular_file(
     fs::read(path).map_err(|error| format!("cannot read {kind} {}: {error}", path.display()))
 }
 
-fn render_events(jsonl: bool) -> Result<(), String> {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout().lock();
-    let mut sequencer: Option<EventSequencer> = None;
-    let mut reducer = RunReducer::new();
-
-    for (index, line) in stdin.lock().lines().enumerate() {
-        let line_number = index + 1;
-        let line = line.map_err(|error| format!("line {line_number}: {error}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let frame = producer_event_from_json_line(&line)
-            .map_err(|error| format!("line {line_number}: invalid producer event: {error}"))?;
-        let sequencer = sequencer.get_or_insert_with(|| EventSequencer::new(frame.run_id.clone()));
-        let envelope = sequencer
-            .ingest(frame)
-            .map_err(|error| format!("line {line_number}: {error}"))?;
-        reducer
-            .apply(&envelope)
-            .map_err(|error| format!("line {line_number}: {error}"))?;
-        write_envelope(&mut stdout, &envelope, jsonl)?;
-    }
-    stdout.flush().map_err(|error| error.to_string())
-}
-
-fn render_demo(jsonl: bool) -> Result<(), String> {
-    let mut sequencer = EventSequencer::new("demo-run");
-    let mut reducer = RunReducer::new();
-    let mut stdout = io::stdout().lock();
-    for frame in demo_events() {
-        let envelope = sequencer.ingest(frame).map_err(|error| error.to_string())?;
-        reducer
-            .apply(&envelope)
-            .map_err(|error| error.to_string())?;
-        write_envelope(&mut stdout, &envelope, jsonl)?;
-    }
-    stdout.flush().map_err(|error| error.to_string())
-}
-
-fn write_envelope(
-    writer: &mut impl Write,
-    envelope: &alloyport_events::EventEnvelope,
-    jsonl: bool,
-) -> Result<(), String> {
-    let output = if jsonl {
-        format!(
-            "{}\n",
-            envelope.to_json_line().map_err(|error| error.to_string())?
-        )
-    } else {
-        render_plain(envelope)
-    };
-    writer
-        .write_all(output.as_bytes())
-        .map_err(|error| error.to_string())
-}
-
-fn demo_events() -> Vec<ProducerEvent> {
-    let run_id = "demo-run";
-    let mut events = vec![
-        frame(
-            run_id,
-            Event::RunStarted {
-                task: "migrate vector_add.cu to Ascend C".to_owned(),
-            },
-        ),
-        frame(run_id, Event::TurnStarted { turn: 1 }),
-        with_operation(
-            frame(
-                run_id,
-                Event::MessageStarted {
-                    role: MessageRole::Assistant,
-                },
-            ),
-            "message-1",
-            None,
-        ),
-    ];
-    events.extend(demo_tool_events(run_id));
-    events.extend([
-        frame(
-            run_id,
-            Event::TurnCompleted {
-                turn: 1,
-                outcome: "verified".to_owned(),
-            },
-        ),
-        frame(
-            run_id,
-            Event::RunCompleted {
-                result: "demo completed".to_owned(),
-            },
-        ),
-    ]);
-    events
-}
-
-fn demo_tool_events(run_id: &str) -> Vec<ProducerEvent> {
-    vec![
-        with_operation(
-            frame(
-                run_id,
-                Event::MessageDelta {
-                    text: "我先编译生成的 Ascend C，再运行正确性检查。".to_owned(),
-                },
-            ),
-            "message-1",
-            None,
-        ),
-        with_operation(
-            frame(run_id, Event::MessageCompleted {}),
-            "message-1",
-            None,
-        ),
-        with_operation(
-            frame(
-                run_id,
-                Event::ToolStarted {
-                    name: "project_verify".to_owned(),
-                    arguments: serde_json_value("port"),
-                },
-            ),
-            "tool-1",
-            None,
-        ),
-        with_operation(
-            frame(
-                run_id,
-                Event::CommandStarted {
-                    command: "cmake --build build && ./build/verify".to_owned(),
-                    cwd: Some("/work/vector_add".to_owned()),
-                    execution_site: "ascend-worker-0".to_owned(),
-                    description: Some("compile and verify generated kernel".to_owned()),
-                },
-            ),
-            "command-1",
-            Some("tool-1"),
-        ),
-        with_operation(
-            frame(
-                run_id,
-                Event::CommandOutput {
-                    stream: OutputStream::Stdout,
-                    byte_offset: 0,
-                    text: "build: ok\nmax_abs_error: 0.0\n".to_owned(),
-                    display_sanitized: false,
-                },
-            ),
-            "command-1",
-            Some("tool-1"),
-        ),
-        with_operation(
-            frame(
-                run_id,
-                Event::CommandCompleted {
-                    exit_code: 0,
-                    elapsed_ms: 842,
-                    timed_out: false,
-                    output_artifact: None,
-                },
-            ),
-            "command-1",
-            Some("tool-1"),
-        ),
-        with_operation(
-            frame(
-                run_id,
-                Event::WorkspaceDelta {
-                    changes: vec![FileChange {
-                        path: "src/vector_add.cpp".to_owned(),
-                        kind: FileChangeKind::Modified,
-                        additions: Some(2),
-                        deletions: Some(1),
-                        before_digest: None,
-                        after_digest: None,
-                    }],
-                    diff: Some(
-                        "@@ -18,1 +18,2 @@\n-constexpr int block = 128;\n+constexpr int tile = 256;\n+constexpr int block = tile;\n"
-                            .to_owned(),
-                    ),
-                    commit: Some("8c2fd71".to_owned()),
-                },
-            ),
-            "tool-1",
-            None,
-        ),
-        with_operation(
-            frame(
-                run_id,
-                Event::ToolCompleted {
-                    name: "project_verify".to_owned(),
-                    output: "oracle verdict: PASS".to_owned(),
-                },
-            ),
-            "tool-1",
-            None,
-        ),
-    ]
-}
-
-fn frame(run_id: &str, event: Event) -> ProducerEvent {
-    let mut frame = ProducerEvent::new(run_id, Producer::new("alloyport-cli", "demo"), event);
-    frame.task_id = Some("demo-task".to_owned());
-    frame.authority = Authority::Observed;
-    frame.visibility = Visibility::User;
-    frame
-}
-
-fn with_operation(
-    mut frame: ProducerEvent,
-    operation_id: &str,
-    parent_operation_id: Option<&str>,
-) -> ProducerEvent {
-    frame.operation_id = Some(operation_id.to_owned());
-    frame.parent_operation_id = parent_operation_id.map(str::to_owned);
-    frame
-}
-
-fn serde_json_value(variant: &str) -> serde_json::Value {
-    let mut value = serde_json::Map::new();
-    value.insert(
-        "variant".to_owned(),
-        serde_json::Value::String(variant.to_owned()),
-    );
-    serde_json::Value::Object(value)
-}
-
 const fn lifecycle() -> [TaskState; 10] {
     [
         TaskState::Captured,
@@ -997,73 +586,5 @@ const fn generation_strategies() -> [GenerationStrategy; 4] {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn first_product_fixture_passes_filesystem_inspection() -> Result<(), String> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/migrations/cuda-reduction-v1");
-        let spec_path = root.join("migration-spec-v1.json");
-        let spec_bytes = read_bounded_regular_file(&spec_path, MAX_SPEC_BYTES, "MigrationSpec")?;
-        let spec: MigrationSpec = serde_json::from_slice(&spec_bytes)
-            .map_err(|error| format!("invalid fixture spec: {error}"))?;
-        let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
-        let files = load_declared_sources(&spec, &root)?;
-        let report = inspect_migration_source(&spec, &files);
-
-        assert!(report.passed, "{:?}", report.failures);
-        assert_eq!(report.inspected_files, 5);
-        Ok(())
-    }
-
-    #[test]
-    fn first_product_fixture_is_packaged_in_stable_path_order() -> Result<(), String> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/migrations/cuda-reduction-v1");
-        let project = load_project(&root)?;
-
-        assert_eq!(project.name, "cuda-reduction-v1");
-        assert!(project.files.iter().any(|file| {
-            Path::new(&file.path)
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("cu"))
-        }));
-        assert!(
-            project
-                .files
-                .windows(2)
-                .all(|pair| pair[0].path < pair[1].path)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn explicit_cli_config_resolves_tls_files_relative_to_it() -> Result<(), String> {
-        let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let path = directory.path().join("client.json");
-        fs::write(
-            &path,
-            r#"{
-              "schema_version": 1,
-              "server": {
-                "endpoint": "https://controller.example:50051",
-                "tls": {
-                  "certificate": "pki/client.pem",
-                  "private_key": "pki/client-key.pem",
-                  "server_ca": "pki/ca.pem",
-                  "server_name": "alloyport-server"
-                }
-              }
-            }"#,
-        )
-        .map_err(|error| error.to_string())?;
-
-        let config = CliConnectionConfig::load(Some(path))?;
-        let tls = config.tls.expect("TLS config");
-        assert_eq!(config.endpoint, "https://controller.example:50051");
-        assert_eq!(tls.certificate, directory.path().join("pki/client.pem"));
-        assert_eq!(tls.server_name, "alloyport-server");
-        Ok(())
-    }
-}
+#[path = "main_tests.rs"]
+mod tests;
