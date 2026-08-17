@@ -2,6 +2,7 @@
 
 use super::backend_config::{
     AscendCeilingsConfig, AscendDeviceConfig, AscendEnvironmentConfig, DeviceSelectionConfig,
+    resolve_probe_timeout,
 };
 use crate::ascend::{AscendEnvironmentFacts, AscendResourceCeilings};
 use crate::ascend_build::AscendBuildPolicy;
@@ -12,6 +13,7 @@ use serde::Deserialize;
 use std::error::Error;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +42,8 @@ pub(super) struct AscendCandidateWorkerConfig {
     pub(super) docker_binary: PathBuf,
     pub(super) docker_stop_timeout_seconds: u32,
     pub(super) npu_smi_binary: PathBuf,
+    #[serde(default)]
+    pub(super) device_probe_timeout_ms: Option<u64>,
 }
 
 impl AscendCandidateWorkerConfig {
@@ -75,6 +79,7 @@ impl AscendCandidateWorkerConfig {
             return Err("Ascend candidate resource and transport limits are invalid".into());
         }
         self.device_selection.policy()?;
+        self.probe_timeout()?;
         let validation_device = AcceleratorDevice {
             device_id: "0".into(),
             product_name: self.environment.architecture.clone(),
@@ -89,6 +94,10 @@ impl AscendCandidateWorkerConfig {
         self.build_policy_for(validation_device.clone(), validation_nodes.clone())?;
         self.correctness_policy_for(validation_device, validation_nodes)?;
         Ok(())
+    }
+
+    pub(super) fn probe_timeout(&self) -> Result<Duration, Box<dyn Error>> {
+        resolve_probe_timeout(self.device_probe_timeout_ms)
     }
 
     pub(super) fn selection_policy(

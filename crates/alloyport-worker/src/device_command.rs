@@ -54,7 +54,9 @@ pub(crate) fn run_bounded_command(
             let _ = join_reader(stdout_task, "stdout");
             let _ = join_reader(stderr_task, "stderr");
             return Err(DeviceStatusError::Unavailable(format!(
-                "accelerator probe exceeded its {timeout:?} timeout"
+                "accelerator probe {} exceeded its {timeout:?} bound; measure this probe on this \
+                 host and set worker device_probe_timeout_ms above its observed spread",
+                binary.display()
             )));
         }
         thread::sleep(Duration::from_millis(2));

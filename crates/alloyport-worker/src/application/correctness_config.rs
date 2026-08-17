@@ -1,6 +1,8 @@
 //! Strict standalone configuration for reduction correctness workers.
 
-use super::backend_config::{AscendDeviceConfig, AscendEnvironmentConfig, DeviceSelectionConfig};
+use super::backend_config::{
+    AscendDeviceConfig, AscendEnvironmentConfig, DeviceSelectionConfig, resolve_probe_timeout,
+};
 use crate::ascend::AscendEnvironmentFacts;
 use crate::cuda_runtime::CudaEnvironmentFacts;
 use crate::reduction_correctness::{CorrectnessResourceCeilings, ReductionCorrectnessPolicy};
@@ -11,6 +13,7 @@ use serde::Deserialize;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,6 +58,8 @@ pub(super) struct CudaCorrectnessWorkerConfig {
     pub(super) docker_binary: PathBuf,
     pub(super) docker_stop_timeout_seconds: u32,
     pub(super) nvidia_smi_binary: PathBuf,
+    #[serde(default)]
+    pub(super) device_probe_timeout_ms: Option<u64>,
 }
 
 impl CudaCorrectnessWorkerConfig {
@@ -75,9 +80,14 @@ impl CudaCorrectnessWorkerConfig {
             return Err("CUDA correctness nvidia-smi path must be absolute".into());
         }
         self.device_selection.policy()?;
+        self.probe_timeout()?;
         let environment = CudaEnvironmentFacts::new("validated", "validated", "validated")?;
         self.policy_for("validated-device", &environment)?;
         Ok(())
+    }
+
+    pub(super) fn probe_timeout(&self) -> Result<Duration, Box<dyn Error>> {
+        resolve_probe_timeout(self.device_probe_timeout_ms)
     }
 
     pub(super) fn policy_for(
@@ -119,6 +129,8 @@ pub(super) struct AscendCorrectnessWorkerConfig {
     pub(super) docker_binary: PathBuf,
     pub(super) docker_stop_timeout_seconds: u32,
     pub(super) npu_smi_binary: PathBuf,
+    #[serde(default)]
+    pub(super) device_probe_timeout_ms: Option<u64>,
 }
 
 impl AscendCorrectnessWorkerConfig {
@@ -138,8 +150,13 @@ impl AscendCorrectnessWorkerConfig {
         if !self.npu_smi_binary.is_absolute() {
             return Err("Ascend correctness npu-smi path must be absolute".into());
         }
+        self.probe_timeout()?;
         self.policy()?;
         Ok(())
+    }
+
+    pub(super) fn probe_timeout(&self) -> Result<Duration, Box<dyn Error>> {
+        resolve_probe_timeout(self.device_probe_timeout_ms)
     }
 
     pub(super) fn device(&self) -> AcceleratorDevice {

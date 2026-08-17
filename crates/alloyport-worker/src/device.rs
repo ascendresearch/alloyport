@@ -9,6 +9,22 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+/// Default bound on one local accelerator probe, in milliseconds.
+///
+/// This bound exists to catch a *hung* driver, not a slow one, and it was previously a hard-coded
+/// `5s` in both `npu-smi` and `nvidia-smi` adapters that nobody had measured. Measured on
+/// 2026-08-16 (see `docs/evidence/device-probe-timeout-20260816.md`), a single `npu-smi info` on a
+/// healthy, shared `Ascend950PR` host took 2.17–7.16 s across twelve startup sequences: four of
+/// twelve exceeded the 5 s bound, so a healthy host could not start its worker. The same constant
+/// bounded `nvidia-smi` on GB10, which measured 0.02–0.03 s — 170× under it.
+///
+/// One constant therefore cannot be right for both, which is why this is a default and
+/// `device_probe_timeout_ms` is a worker configuration field. This value is ~4× the slowest probe
+/// observed on real hardware, so it sits outside that command's own spread while still bounding a
+/// hang. It is a default, not a measurement of any host: measure the probe on a new host and set
+/// the field.
+pub const DEFAULT_DEVICE_PROBE_TIMEOUT_MS: u64 = 30_000;
+
 /// Future returned by a device observation provider.
 pub type DeviceSnapshotFuture<'a> =
     Pin<Box<dyn Future<Output = Result<DeviceSnapshot, DeviceStatusError>> + Send + 'a>>;

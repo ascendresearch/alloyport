@@ -41,7 +41,8 @@
       "upload_ttl_ms": 3600000,
       "docker_binary": "/usr/bin/docker",
       "docker_stop_timeout_seconds": 10,
-      "npu_smi_binary": "/usr/local/bin/npu-smi"
+      "npu_smi_binary": "/usr/local/bin/npu-smi",
+      "device_probe_timeout_ms": 30000
     }
   }
 }

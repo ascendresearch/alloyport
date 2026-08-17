@@ -103,3 +103,17 @@ Utilization and memory counters are telemetry only. Zero utilization does not pr
 safe to reuse. NVIDIA unified-memory devices may report memory counters as `[N/A]`; the worker
 records zero plus `memory_counters=unavailable` in the observation detail while continuing to base
 eligibility on explicit recovery health, compute processes, and durable leases.
+
+## Probe bound
+
+`device_probe_timeout_ms` bounds one `npu-smi` or `nvidia-smi` invocation. It defaults to 30000 and
+must be positive; a probe that exceeds it fails the invocation, which refuses worker startup and
+degrades a running worker's heartbeat.
+
+**This bound is a property of the host, not of AlloyPort, and it must be measured there.** It was a
+hard-coded 5 s in both adapters until 2026-08-16, when a healthy Ascend950PR host could not start
+its worker: `npu-smi info` on that host measures 2.17–7.16 s, so the bound sat *inside* the spread
+of the command it bounds and rejected a healthy machine one startup in three. The same constant
+bounded `nvidia-smi` on GB10 at 0.02–0.03 s, 170× under it. One constant cannot serve both.
+[`evidence/device-probe-timeout-20260816.md`](evidence/device-probe-timeout-20260816.md) records the
+samples and how to repeat them. Time the probe on a new host before trusting the default.

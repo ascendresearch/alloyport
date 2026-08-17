@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const DEFAULT_OUTPUT_LIMIT: u64 = 1024 * 1024;
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const GPU_QUERY: &[&str] = &[
     "--query-gpu=index,name,uuid,vbios_version,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,gpu_recovery_action",
     "--format=csv,noheader,nounits",
@@ -54,16 +53,23 @@ impl Debug for NvidiaSmi {
 impl NvidiaSmi {
     /// Creates an adapter around one absolute `nvidia-smi` binary.
     ///
+    /// `probe_timeout` bounds each individual `nvidia-smi` invocation. It is a deployment fact
+    /// rather than a constant: see [`crate::device::DEFAULT_DEVICE_PROBE_TIMEOUT_MS`] for what was
+    /// measured and why no single value fits every host.
+    ///
     /// # Errors
     ///
     /// Returns an error when the binary path is not absolute.
-    pub fn new(binary: impl Into<PathBuf>) -> Result<Self, DeviceStatusError> {
+    pub fn new(
+        binary: impl Into<PathBuf>,
+        probe_timeout: Duration,
+    ) -> Result<Self, DeviceStatusError> {
         Self::with_runner(
             Arc::new(SystemNvidiaSmiCommandRunner {
                 binary: binary.into(),
             }),
             DEFAULT_OUTPUT_LIMIT,
-            DEFAULT_TIMEOUT,
+            probe_timeout,
         )
     }
 

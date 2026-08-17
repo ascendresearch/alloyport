@@ -362,6 +362,7 @@ fn instance_id(worker_id: &str) -> Result<String, Box<dyn Error>> {
 mod tests {
     use super::*;
     use alloyport_artifacts::Sha256Digest;
+    use std::time::Duration;
 
     #[test]
     fn locator_precedence_is_explicit_environment_sibling_then_system() -> Result<(), Box<dyn Error>>
@@ -559,6 +560,64 @@ mod tests {
         ));
         assert_eq!(candidate.hello.worker_id, "ascend-worker-1");
         assert_eq!(candidate.hello.capabilities.unwrap().max_concurrency, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn device_probe_bound_is_configured_per_host_and_outlives_a_slow_probe()
+    -> Result<(), Box<dyn Error>> {
+        // A hard-coded 5s bound could not start a healthy Ascend host whose own `npu-smi info`
+        // measured 2.17-7.16s; see docs/evidence/device-probe-timeout-20260816.md. The bound is a
+        // deployment fact, so a configuration states it and the default must sit outside the
+        // slowest probe that measurement observed.
+        let slowest_probe_observed_ms: u64 = 7_160;
+        assert!(
+            crate::device::DEFAULT_DEVICE_PROBE_TIMEOUT_MS > slowest_probe_observed_ms,
+            "the default probe bound is inside the measured spread of the probe it bounds"
+        );
+
+        // Deliberately not the default value: a configured bound equal to the default cannot tell
+        // "the configuration was read" from "the configuration was ignored".
+        let example = String::from_utf8(
+            include_bytes!("../../../../docs/ascend-candidate-worker-config.example.json").to_vec(),
+        )?;
+        assert!(example.contains("\"device_probe_timeout_ms\": 30000"));
+        let distinct = example.replace(
+            "\"device_probe_timeout_ms\": 30000",
+            "\"device_probe_timeout_ms\": 45000",
+        );
+        let candidate = WorkerFileConfig::parse(distinct.as_bytes())?.into_loaded()?;
+        let BackendPolicy::AscendCandidate(policy) = candidate.backend else {
+            return Err("expected the Ascend candidate backend".into());
+        };
+        assert_eq!(policy.probe_timeout()?, Duration::from_secs(45));
+        assert_ne!(
+            u64::try_from(policy.probe_timeout()?.as_millis())?,
+            crate::device::DEFAULT_DEVICE_PROBE_TIMEOUT_MS
+        );
+
+        let defaulted = WorkerFileConfig::parse(include_bytes!(
+            "../../../../docs/cuda-correctness-worker-config.example.json"
+        ))?
+        .into_loaded()?;
+        let BackendPolicy::CudaCorrectness(policy) = defaulted.backend else {
+            return Err("expected the CUDA correctness backend".into());
+        };
+        assert_eq!(
+            policy.probe_timeout()?,
+            Duration::from_millis(crate::device::DEFAULT_DEVICE_PROBE_TIMEOUT_MS)
+        );
+
+        let unbounded = example.replace(
+            "\"device_probe_timeout_ms\": 30000",
+            "\"device_probe_timeout_ms\": 0",
+        );
+        assert!(
+            WorkerFileConfig::parse(unbounded.as_bytes())
+                .and_then(WorkerFileConfig::into_loaded)
+                .is_err(),
+            "a zero probe bound must be refused rather than silently defaulted"
+        );
         Ok(())
     }
 

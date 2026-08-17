@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const DEFAULT_OUTPUT_LIMIT: u64 = 1024 * 1024;
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub type AscendDeviceFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, DeviceStatusError>> + Send + 'a>>;
@@ -49,12 +48,17 @@ impl Debug for NpuSmi {
 impl NpuSmi {
     /// Creates a bounded local adapter around one absolute `npu-smi` binary.
     ///
+    /// `probe_timeout` bounds each individual `npu-smi` invocation. It is a deployment fact rather
+    /// than a constant: see [`crate::device::DEFAULT_DEVICE_PROBE_TIMEOUT_MS`] for what was
+    /// measured and why no single value fits every host.
+    ///
     /// # Errors
     ///
     /// Returns an error for a relative binary, empty firmware identity, or zero bounds.
     pub fn new(
         binary: impl Into<PathBuf>,
         firmware_version: impl Into<String>,
+        probe_timeout: Duration,
     ) -> Result<Self, DeviceStatusError> {
         Self::with_runner(
             Arc::new(SystemNpuSmiCommandRunner {
@@ -62,7 +66,7 @@ impl NpuSmi {
             }),
             firmware_version,
             DEFAULT_OUTPUT_LIMIT,
-            DEFAULT_TIMEOUT,
+            probe_timeout,
         )
     }
 

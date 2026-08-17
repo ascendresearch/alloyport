@@ -4,7 +4,7 @@ use crate::ascend::{
     ASCEND_ADD_FIXTURE_ID, AscendEnvironmentFacts, AscendFixturePolicy, AscendResourceCeilings,
 };
 use crate::cuda::{CudaFixturePolicy, CudaResourceCeilings, VECTOR_ADD_FIXTURE_ID};
-use crate::device::DeviceSelectionPolicy;
+use crate::device::{DEFAULT_DEVICE_PROBE_TIMEOUT_MS, DeviceSelectionPolicy};
 use alloyport_artifacts::Sha256Digest;
 use alloyport_core::AcceleratorDevice;
 use alloyport_proto::v1::AcceleratorDevice as WireDevice;
@@ -12,6 +12,20 @@ use serde::Deserialize;
 use std::error::Error;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
+
+/// Resolves the bound on one local accelerator probe.
+///
+/// The field is optional so an installed worker configuration keeps loading, and an absent value
+/// means [`DEFAULT_DEVICE_PROBE_TIMEOUT_MS`]. A host whose probe is slower than the default must
+/// measure it and say so here rather than have the worker refuse to start.
+pub(super) fn resolve_probe_timeout(configured: Option<u64>) -> Result<Duration, Box<dyn Error>> {
+    let millis = configured.unwrap_or(DEFAULT_DEVICE_PROBE_TIMEOUT_MS);
+    if millis == 0 {
+        return Err("device_probe_timeout_ms must be positive".into());
+    }
+    Ok(Duration::from_millis(millis))
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +48,8 @@ pub(super) struct CudaWorkerConfig {
     pub(super) docker_binary: PathBuf,
     pub(super) docker_stop_timeout_seconds: u32,
     pub(super) nvidia_smi_binary: PathBuf,
+    #[serde(default)]
+    pub(super) device_probe_timeout_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -138,6 +154,10 @@ impl CudaWorkerConfig {
             output_bytes: self.ceilings.output_bytes,
         }
     }
+
+    pub(super) fn probe_timeout(&self) -> Result<Duration, Box<dyn Error>> {
+        resolve_probe_timeout(self.device_probe_timeout_ms)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,6 +184,8 @@ pub(super) struct AscendWorkerConfig {
     pub(super) docker_binary: PathBuf,
     pub(super) docker_stop_timeout_seconds: u32,
     pub(super) npu_smi_binary: PathBuf,
+    #[serde(default)]
+    pub(super) device_probe_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,6 +294,10 @@ impl AscendWorkerConfig {
             &self.environment.driver_version,
             &self.environment.firmware_version,
         )?)
+    }
+
+    pub(super) fn probe_timeout(&self) -> Result<Duration, Box<dyn Error>> {
+        resolve_probe_timeout(self.device_probe_timeout_ms)
     }
 
     pub(super) const fn ceilings(&self) -> AscendResourceCeilings {

@@ -34,9 +34,9 @@ use alloyport_worker::cuda_supervisor::{
     ContainerPhase, ContainerSnapshot, CudaContainerEngine, CudaContainerSupervisor, EngineFuture,
 };
 use alloyport_worker::device::{
-    BoundDeviceStatusProvider, DeviceLifecycleFuture, DeviceLifecycleManager,
-    DeviceSelectionPolicy, DeviceSnapshot, DeviceSnapshotFuture, DeviceStatusError,
-    DeviceStatusProvider, bind_worker_device,
+    BoundDeviceStatusProvider, DEFAULT_DEVICE_PROBE_TIMEOUT_MS, DeviceLifecycleFuture,
+    DeviceLifecycleManager, DeviceSelectionPolicy, DeviceSnapshot, DeviceSnapshotFuture,
+    DeviceStatusError, DeviceStatusProvider, bind_worker_device,
 };
 use alloyport_worker::nvidia_smi::{CudaDeviceManager, NvidiaSmi};
 use alloyport_worker::{OutboundWorker, StoredFinished};
@@ -367,7 +367,11 @@ impl RealAscendLoopbackFixture {
         let (endpoint, shutdown, server_task) =
             start_loopback_services(service.clone(), uploads, remote_artifacts, "ascend-1").await?;
 
-        let manager = Arc::new(NpuSmi::new(&npu_smi_binary, &firmware_version)?);
+        let manager = Arc::new(NpuSmi::new(
+            &npu_smi_binary,
+            &firmware_version,
+            Duration::from_millis(DEFAULT_DEVICE_PROBE_TIMEOUT_MS),
+        )?);
         let inventory = manager.inventory().await?;
         let snapshot = manager.snapshot().await?;
         let selected = bind_worker_device(
@@ -528,7 +532,10 @@ impl RealCudaLoopbackFixture {
             policy,
             local_artifacts.clone(),
         ));
-        let device_manager = Arc::new(NvidiaSmi::new("/usr/bin/nvidia-smi")?);
+        let device_manager = Arc::new(NvidiaSmi::new(
+            "/usr/bin/nvidia-smi",
+            Duration::from_millis(DEFAULT_DEVICE_PROBE_TIMEOUT_MS),
+        )?);
         let device = device_manager
             .inventory()
             .await?

@@ -1,6 +1,8 @@
 //! Strict standalone configuration for the Ascend candidate Build Gate worker.
 
-use super::backend_config::{AscendCeilingsConfig, AscendDeviceConfig, AscendEnvironmentConfig};
+use super::backend_config::{
+    AscendCeilingsConfig, AscendDeviceConfig, AscendEnvironmentConfig, resolve_probe_timeout,
+};
 use crate::ascend::{AscendEnvironmentFacts, AscendResourceCeilings};
 use crate::ascend_build::AscendBuildPolicy;
 use alloyport_artifacts::Sha256Digest;
@@ -10,6 +12,7 @@ use serde::Deserialize;
 use std::error::Error;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +36,8 @@ pub(super) struct AscendBuildWorkerConfig {
     pub(super) docker_binary: PathBuf,
     pub(super) docker_stop_timeout_seconds: u32,
     pub(super) npu_smi_binary: PathBuf,
+    #[serde(default)]
+    pub(super) device_probe_timeout_ms: Option<u64>,
 }
 
 impl AscendBuildWorkerConfig {
@@ -70,8 +75,13 @@ impl AscendBuildWorkerConfig {
                 "Ascend build Artifact, upload, Docker, and output limits are invalid".into(),
             );
         }
+        self.probe_timeout()?;
         self.policy()?;
         Ok(())
+    }
+
+    pub(super) fn probe_timeout(&self) -> Result<Duration, Box<dyn Error>> {
+        resolve_probe_timeout(self.device_probe_timeout_ms)
     }
 
     pub(super) fn device(&self) -> AcceleratorDevice {

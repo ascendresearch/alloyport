@@ -70,7 +70,10 @@ async fn attach_cuda(
         return Err("the fixed CUDA worker requires container_runtime=docker".into());
     }
 
-    let manager = Arc::new(NvidiaSmi::new(&config.nvidia_smi_binary)?);
+    let manager = Arc::new(NvidiaSmi::new(
+        &config.nvidia_smi_binary,
+        config.probe_timeout()?,
+    )?);
     let inventory = manager.inventory().await?;
     let snapshot = manager.snapshot().await?;
     let selected = bind_worker_device(
@@ -166,6 +169,7 @@ async fn attach_ascend(
     let manager = Arc::new(NpuSmi::new(
         &config.npu_smi_binary,
         &config.environment.firmware_version,
+        config.probe_timeout()?,
     )?);
     let inventory = manager.inventory().await?;
     let snapshot = manager.snapshot().await?;
@@ -241,7 +245,10 @@ async fn attach_cuda_correctness(
     if capabilities.max_concurrency != 1 || capabilities.container_runtime != "docker" {
         return Err("the CUDA correctness worker requires concurrency one and Docker".into());
     }
-    let manager = Arc::new(NvidiaSmi::new(&config.nvidia_smi_binary)?);
+    let manager = Arc::new(NvidiaSmi::new(
+        &config.nvidia_smi_binary,
+        config.probe_timeout()?,
+    )?);
     let inventory = manager.inventory().await?;
     let selection = config.device_selection.policy()?;
     let status_provider: Arc<dyn DeviceStatusProvider> = manager.clone();
@@ -341,6 +348,7 @@ async fn attach_ascend_build(
     let manager = Arc::new(NpuSmi::new(
         &config.npu_smi_binary,
         &config.environment.firmware_version,
+        config.probe_timeout()?,
     )?);
     let inventory = manager.inventory().await?;
     let snapshot = manager.snapshot().await?;
@@ -436,6 +444,7 @@ async fn attach_ascend_correctness(
     let manager = Arc::new(NpuSmi::new(
         &config.npu_smi_binary,
         &config.environment.firmware_version,
+        config.probe_timeout()?,
     )?);
     let inventory = manager.inventory().await?;
     let snapshot = manager.snapshot().await?;
@@ -521,6 +530,7 @@ async fn attach_ascend_candidate(
     let manager = Arc::new(NpuSmi::new(
         &config.npu_smi_binary,
         &config.environment.firmware_version,
+        config.probe_timeout()?,
     )?);
     let inventory = manager.inventory().await?;
     let selection = config.selection_policy()?;
