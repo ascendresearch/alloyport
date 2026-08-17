@@ -250,6 +250,11 @@ impl SqliteModelContextStore {
 }
 
 impl ModelTurnContextStore for SharedSqliteModelContextStore {
+    /// Stores the bytes a failure diagnostic refers to, using the same CAS as exchange bodies.
+    fn publish_diagnostic(&mut self, text: &str) -> Result<Sha256Digest, String> {
+        self.ingest(text.as_bytes())
+    }
+
     fn load(&mut self, request: &ModelTurnRequest) -> Result<ProviderTurnInput, String> {
         let connection = self.connection()?;
         let context = connection

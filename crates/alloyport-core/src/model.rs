@@ -702,10 +702,10 @@ impl ModelAttemptRecord {
     /// Returns an error unless a provider response was recorded.
     pub fn mark_decode_failed(
         &mut self,
-        diagnostic_digest: Sha256Digest,
+        diagnostic_digest: Option<Sha256Digest>,
     ) -> Result<(), ModelAttemptError> {
         self.require_status(ModelAttemptStatus::Responded)?;
-        self.diagnostic_digest = Some(diagnostic_digest);
+        self.diagnostic_digest = diagnostic_digest;
         self.status = ModelAttemptStatus::DecodeFailed;
         Ok(())
     }
@@ -717,10 +717,10 @@ impl ModelAttemptRecord {
     /// Returns an error unless a provider response was recorded.
     pub fn mark_response_failed(
         &mut self,
-        diagnostic_digest: Sha256Digest,
+        diagnostic_digest: Option<Sha256Digest>,
     ) -> Result<(), ModelAttemptError> {
         self.require_status(ModelAttemptStatus::Responded)?;
-        self.diagnostic_digest = Some(diagnostic_digest);
+        self.diagnostic_digest = diagnostic_digest;
         self.status = ModelAttemptStatus::Failed;
         Ok(())
     }
@@ -733,7 +733,7 @@ impl ModelAttemptRecord {
     pub fn finish_without_response(
         &mut self,
         terminal: ModelAttemptStatus,
-        diagnostic_digest: Sha256Digest,
+        diagnostic_digest: Option<Sha256Digest>,
     ) -> Result<(), ModelAttemptError> {
         self.require_status(ModelAttemptStatus::Dispatching)?;
         if !matches!(
@@ -745,7 +745,7 @@ impl ModelAttemptRecord {
         ) {
             return Err(ModelAttemptError::InvalidTerminal(terminal));
         }
-        self.diagnostic_digest = Some(diagnostic_digest);
+        self.diagnostic_digest = diagnostic_digest;
         self.status = terminal;
         Ok(())
     }

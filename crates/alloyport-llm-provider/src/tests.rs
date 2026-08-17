@@ -95,9 +95,18 @@ fn provider_input() -> ProviderTurnInput {
 struct OneTurnContextStore {
     input: Mutex<Option<ProviderTurnInput>>,
     committed: Mutex<Vec<ProviderTurnExchange>>,
+    published: Mutex<Vec<String>>,
 }
 
 impl ModelTurnContextStore for OneTurnContextStore {
+    fn publish_diagnostic(&mut self, text: &str) -> Result<Sha256Digest, String> {
+        self.published
+            .lock()
+            .expect("published")
+            .push(text.to_owned());
+        Ok(Sha256Digest::digest_bytes(text.as_bytes()))
+    }
+
     fn load(&mut self, _request: &ModelTurnRequest) -> Result<ProviderTurnInput, String> {
         self.input
             .lock()
@@ -160,6 +169,7 @@ async fn sdk_gateway_resolves_configured_default_and_commits_exact_exchange() {
     let contexts = OneTurnContextStore {
         input: Mutex::new(Some(input)),
         committed: Mutex::new(Vec::new()),
+        published: Mutex::new(Vec::new()),
     };
     let mut gateway = ProviderModelGateway::new(sdk, None, contexts).expect("gateway");
     let outcome = gateway
@@ -232,6 +242,7 @@ async fn agent_loop_invokes_the_provider_sdk_through_model_gateway() {
     let contexts = OneTurnContextStore {
         input: Mutex::new(Some(input)),
         committed: Mutex::new(Vec::new()),
+        published: Mutex::new(Vec::new()),
     };
     let mut gateway = ProviderModelGateway::new(sdk, None, contexts).expect("gateway");
     let episode_id = EpisodeId::try_from("episode-sdk-loop-1").expect("episode ID");
@@ -268,4 +279,78 @@ async fn agent_loop_invokes_the_provider_sdk_through_model_gateway() {
             .expect("stop review"),
         AgentLoopAdvance::Progressed(EpisodeStatus::StopReview)
     );
+}
+
+/// A dispatch that never reaches the provider must leave an explanation that can be read.
+///
+/// `task-ccd149dfc0f421d97ed7feb4` died on 21 consecutive `confirmed_not_sent` attempts and its
+/// cause is permanently unknowable: the reducer recorded
+/// `Sha256Digest::digest_bytes(diagnostic.as_bytes())`, hashing the explanation and storing the
+/// hash while nothing stored the bytes. The diagnostic digest named an artifact that was never
+/// written. Publishing belongs to the gateway, which is the layer that can store bytes — the same
+/// rule Design 0040 applied to tool rejections.
+#[tokio::test]
+async fn a_dispatch_failure_publishes_the_diagnostic_it_names() {
+    let catalog = catalog();
+    let input = provider_input();
+    // A transport that refuses before sending, which is what 21 attempts hit.
+    let transport = FailingTransport;
+    let sdk = LlmProviderSdk::new(catalog, transport, CodecLimits::default()).expect("SDK");
+    let contexts = OneTurnContextStore {
+        input: Mutex::new(Some(input)),
+        committed: Mutex::new(Vec::new()),
+        published: Mutex::new(Vec::new()),
+    };
+    let mut gateway = ProviderModelGateway::new(sdk, None, contexts).expect("gateway");
+    let outcome = gateway
+        .invoke(&ModelTurnRequest {
+            attempt_id: "attempt-not-sent-1".try_into().expect("attempt ID"),
+            episode_id: EpisodeId::try_from("episode-not-sent").expect("episode ID"),
+            input_digest: digest("initial-input"),
+            turn_index: 1,
+        })
+        .await
+        .expect("gateway outcome");
+
+    let ModelGatewayOutcome::ConfirmedNotSent {
+        diagnostic,
+        diagnostic_digest,
+    } = outcome
+    else {
+        panic!("a transport refusing before send must be confirmed-not-sent");
+    };
+    let digest = diagnostic_digest.expect("the diagnostic must be published, not merely hashed");
+    assert_eq!(digest, Sha256Digest::digest_bytes(diagnostic.as_bytes()));
+    assert!(
+        gateway
+            .contexts()
+            .published
+            .lock()
+            .expect("published")
+            .iter()
+            .any(|text| text == &diagnostic),
+        "the bytes the digest names must actually have been stored"
+    );
+}
+
+#[derive(Debug)]
+struct FailingTransport;
+
+impl alloyport_core::ModelTransport for FailingTransport {
+    fn dispatch<'a>(
+        &'a self,
+        _deployment: &'a alloyport_core::ResolvedRuntimeModel,
+        _request: &'a alloyport_core::PreparedModelPayload,
+    ) -> alloyport_core::ModelTransportFuture<'a> {
+        Box::pin(async {
+            alloyport_core::ModelTransportOutcome::ConfirmedNotSent(
+                alloyport_core::ModelTransportFailure::new(
+                    alloyport_core::ModelTransportFailureKind::Connection,
+                    "connection refused before any byte was sent",
+                    None,
+                    alloyport_core::ModelTransportRetryHint::NewAttempt,
+                ),
+            )
+        })
+    }
 }

@@ -268,6 +268,17 @@ pub trait ModelTurnContextStore: Debug + Send {
         request: &ModelTurnRequest,
         exchange: &ProviderTurnExchange,
     ) -> Result<(), String>;
+
+    /// Publishes a failure diagnostic so the durable record names bytes that exist.
+    ///
+    /// A successful exchange has its request and response bodies ingested by `commit`; a failed one
+    /// has no exchange, so its explanation was previously only hashed by the reducer and never
+    /// stored. A run then died on 21 identical dispatch failures with nothing left to read.
+    ///
+    /// # Errors
+    ///
+    /// Returns a sanitized diagnostic when the bytes cannot be stored.
+    fn publish_diagnostic(&mut self, text: &str) -> Result<Sha256Digest, String>;
 }
 
 /// Concrete `ModelGateway` used by the agent loop; all provider behavior remains inside the SDK.
@@ -322,7 +333,11 @@ where
             let input = match self.contexts.load(request) {
                 Ok(input) => input,
                 Err(diagnostic) => {
-                    return Ok(ModelGatewayOutcome::ConfirmedNotSent { diagnostic });
+                    let diagnostic_digest = self.contexts.publish_diagnostic(&diagnostic).ok();
+                    return Ok(ModelGatewayOutcome::ConfirmedNotSent {
+                        diagnostic,
+                        diagnostic_digest,
+                    });
                 }
             };
             let outcome = self.sdk.invoke(&self.deployment, &input).await;
@@ -333,27 +348,47 @@ where
                         .map_err(ModelGatewayError::Adapter)?;
                     ModelGatewayOutcome::Turn(exchange.gateway_exchange)
                 }
+                // Every failure below publishes its explanation before the reducer records it.
+                // `ok()` rather than `?`: a store that cannot take the diagnostic is not a reason
+                // to lose the outcome, and `None` states honestly that nothing was stored instead
+                // of naming an artifact that is not there.
                 ProviderSdkOutcome::ConfirmedNotSent { diagnostic } => {
-                    ModelGatewayOutcome::ConfirmedNotSent { diagnostic }
+                    let diagnostic_digest = self.contexts.publish_diagnostic(&diagnostic).ok();
+                    ModelGatewayOutcome::ConfirmedNotSent {
+                        diagnostic,
+                        diagnostic_digest,
+                    }
                 }
                 ProviderSdkOutcome::Rejected {
                     response_digest,
                     diagnostic,
                     retryable,
-                } => ModelGatewayOutcome::Rejected {
-                    response_digest,
-                    diagnostic,
-                    retryable,
-                },
+                } => {
+                    let diagnostic_digest = self.contexts.publish_diagnostic(&diagnostic).ok();
+                    ModelGatewayOutcome::Rejected {
+                        response_digest,
+                        diagnostic,
+                        diagnostic_digest,
+                        retryable,
+                    }
+                }
                 ProviderSdkOutcome::DecodeFailed {
                     response_digest,
                     diagnostic,
-                } => ModelGatewayOutcome::DecodeFailed {
-                    response_digest,
-                    diagnostic,
-                },
+                } => {
+                    let diagnostic_digest = self.contexts.publish_diagnostic(&diagnostic).ok();
+                    ModelGatewayOutcome::DecodeFailed {
+                        response_digest,
+                        diagnostic,
+                        diagnostic_digest,
+                    }
+                }
                 ProviderSdkOutcome::Ambiguous { diagnostic } => {
-                    ModelGatewayOutcome::Ambiguous { diagnostic }
+                    let diagnostic_digest = self.contexts.publish_diagnostic(&diagnostic).ok();
+                    ModelGatewayOutcome::Ambiguous {
+                        diagnostic,
+                        diagnostic_digest,
+                    }
                 }
             })
         })

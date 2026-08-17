@@ -185,7 +185,7 @@ fn model_attempt_preserves_ambiguous_dispatch_as_terminal_history() -> Result<()
         predecessor_continuation_digest: None,
     })?;
     attempt.mark_dispatching()?;
-    attempt.finish_without_response(ModelAttemptStatus::Ambiguous, digest("diagnostic"))?;
+    attempt.finish_without_response(ModelAttemptStatus::Ambiguous, Some(digest("diagnostic")))?;
     assert_eq!(attempt.status(), ModelAttemptStatus::Ambiguous);
     assert!(attempt.status().is_terminal());
     assert!(attempt.mark_dispatching().is_err());

@@ -174,18 +174,22 @@ pub enum ModelGatewayOutcome {
     Turn(GatewayTurnExchange),
     ConfirmedNotSent {
         diagnostic: String,
+        diagnostic_digest: Option<Sha256Digest>,
     },
     Rejected {
         response_digest: Sha256Digest,
         diagnostic: String,
+        diagnostic_digest: Option<Sha256Digest>,
         retryable: bool,
     },
     DecodeFailed {
         response_digest: Sha256Digest,
         diagnostic: String,
+        diagnostic_digest: Option<Sha256Digest>,
     },
     Ambiguous {
         diagnostic: String,
+        diagnostic_digest: Option<Sha256Digest>,
     },
 }
 

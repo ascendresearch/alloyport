@@ -166,10 +166,10 @@ impl AgentLoopRunner {
             )
         });
         if model_ambiguous && let Some(attempt) = versioned.state.attempts.last_mut() {
-            attempt.finish_without_response(
-                ModelAttemptStatus::CancelledAmbiguous,
-                digest_label("cancelled-ambiguous-model"),
-            )?;
+            // No provider diagnostic exists for an attempt cancelled mid-dispatch. Hashing a
+            // label produced a digest for an artifact nobody had stored; the status carries the
+            // meaning, and `None` says plainly that there is nothing to read.
+            attempt.finish_without_response(ModelAttemptStatus::CancelledAmbiguous, None)?;
         }
         if tool_ambiguous
             && let Some(operation) = versioned
@@ -327,7 +327,9 @@ impl AgentLoopRunner {
             } else {
                 ModelAttemptStatus::Ambiguous
             };
-            attempt.finish_without_response(terminal, digest_label("ambiguous-model-dispatch"))?;
+            // Likewise: recovery found a dispatch whose outcome is unknown, and there is no
+            // diagnostic to name.
+            attempt.finish_without_response(terminal, None)?;
             versioned.state.ambiguous_model_attempts = versioned
                 .state
                 .ambiguous_model_attempts
@@ -416,11 +418,16 @@ impl AgentLoopRunner {
                 crash_if(faults, AgentRuntimeFaultPoint::AfterTurnCommit)?;
                 Ok(AgentLoopAdvance::Progressed(EpisodeStatus::TurnRecorded))
             }
-            ModelGatewayOutcome::ConfirmedNotSent { diagnostic } => {
+            ModelGatewayOutcome::ConfirmedNotSent {
+                diagnostic_digest, ..
+            } => {
                 let attempt = versioned.state.attempts.last_mut().expect("checked above");
+                // The digest arrives already published. Hashing the string here named an artifact
+                // nobody had stored, so a run that died on 21 identical dispatch failures threw
+                // away its own explanation while recording it.
                 attempt.finish_without_response(
                     ModelAttemptStatus::ConfirmedNotSent,
-                    Sha256Digest::digest_bytes(diagnostic.as_bytes()),
+                    diagnostic_digest,
                 )?;
                 versioned
                     .state
@@ -431,12 +438,13 @@ impl AgentLoopRunner {
             }
             ModelGatewayOutcome::Rejected {
                 response_digest,
-                diagnostic,
+                diagnostic_digest,
                 retryable,
+                ..
             } => {
                 let attempt = versioned.state.attempts.last_mut().expect("checked above");
                 attempt.record_response(response_digest, None, None)?;
-                attempt.mark_response_failed(Sha256Digest::digest_bytes(diagnostic.as_bytes()))?;
+                attempt.mark_response_failed(diagnostic_digest)?;
                 let next = if retryable {
                     EpisodeStatus::ReadyForModel
                 } else {
@@ -448,21 +456,22 @@ impl AgentLoopRunner {
             }
             ModelGatewayOutcome::DecodeFailed {
                 response_digest,
-                diagnostic,
+                diagnostic_digest,
+                ..
             } => {
                 let attempt = versioned.state.attempts.last_mut().expect("checked above");
                 attempt.record_response(response_digest, None, None)?;
-                attempt.mark_decode_failed(Sha256Digest::digest_bytes(diagnostic.as_bytes()))?;
+                attempt.mark_decode_failed(diagnostic_digest)?;
                 versioned.state.episode.transition(EpisodeStatus::Failed)?;
                 repository.save(versioned.revision, versioned.state)?;
                 Ok(AgentLoopAdvance::Terminal(EpisodeStatus::Failed))
             }
-            ModelGatewayOutcome::Ambiguous { diagnostic } => {
+            ModelGatewayOutcome::Ambiguous {
+                diagnostic_digest, ..
+            } => {
                 let attempt = versioned.state.attempts.last_mut().expect("checked above");
-                attempt.finish_without_response(
-                    ModelAttemptStatus::Ambiguous,
-                    Sha256Digest::digest_bytes(diagnostic.as_bytes()),
-                )?;
+                attempt
+                    .finish_without_response(ModelAttemptStatus::Ambiguous, diagnostic_digest)?;
                 versioned.state.ambiguous_model_attempts += 1;
                 let next = if versioned.state.ambiguous_model_attempts
                     > versioned.state.policy.max_ambiguous_model_attempts
