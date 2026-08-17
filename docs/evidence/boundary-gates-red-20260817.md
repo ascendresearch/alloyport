@@ -1,4 +1,4 @@
-# Both boundary gates had been red since 2026-08-14, and nothing said so
+# Both boundary gates had been red since 2026-08-13, and nothing said so
 
 - Date: 2026-08-17
 - Found by: running them. `ripgrep` exists on the dev host at
@@ -8,7 +8,7 @@
   verification baseline.
 - Status now: **both pass.** See [Both gates are now green](#both-gates-are-now-green).
 
-## What is red
+## What was red
 
 ```
 Architecture boundary check failed:
@@ -34,8 +34,9 @@ on it directly.
 ## When
 
 Both checks were green at `b61e0c0` (2026-08-12) and red at `8a7b2d3` (2026-08-14), verified by
-running them in a detached worktree at each commit. So the baseline has been red for roughly three
-days and about thirty commits.
+running them in a detached worktree at each commit. CI narrows it further: run `31665174485` on
+2026-08-13 already reported the architecture failure. So the baseline was red for four days and
+roughly forty commits.
 
 ## Why nobody knew
 
@@ -118,7 +119,7 @@ Two were real architecture, seven were one module holding two jobs.
 
 ### What was deliberately not done
 
-- **The scripts were not weakened** to run without ripgrep, and the 800-line limit was not raised.
-  The content greps genuinely need `rg`, and a gate that degrades to a partial pass is the defect
-  this file is about.
+- **The scripts were not weakened** to run without ripgrep. The content greps genuinely need `rg`,
+  and a gate that degrades to a partial pass is the defect this file is about. The runner gets
+  ripgrep instead.
 - **The 800-line limit was not raised** and no exemption was widened.
