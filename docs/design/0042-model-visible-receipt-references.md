@@ -1,6 +1,6 @@
 # 0042 — The model-visible result must carry the references its tools require
 
-- Status: Proposed
+- Status: Accepted and implemented
 - Date: 2026-08-16
 - Completes an unimplemented part of: [0025](0025-pluggable-llm-provider-architecture.md) §7.3
 - Repairs contracts written against it: [0026](0026-ascend-build-gate-connection.md) §2,

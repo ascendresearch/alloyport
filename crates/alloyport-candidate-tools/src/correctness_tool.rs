@@ -281,7 +281,19 @@ impl CandidateCorrectnessTool {
         let receipt_bytes = serde_json::to_vec(&receipt).map_err(|error| {
             adapter_error(format!("cannot encode Correctness Gate receipt: {error}"))
         })?;
-        let receipt_artifact = ingest_bytes(artifacts, &receipt_bytes)?;
+        // The calibration receipt is named beside the verdict rather than folded into it: a reader
+        // asking what bounded this verdict should not have to already know the digest.
+        let published = crate::gate_result::publish_gate_result_with(
+            artifacts,
+            &receipt_bytes,
+            crate::gate_result::CORRECTNESS_RECEIPT_MEDIA_TYPE,
+            vec![(
+                "calibration",
+                calibration_artifact.digest,
+                calibration_artifact.size_bytes,
+                crate::gate_result::CALIBRATION_RECEIPT_MEDIA_TYPE,
+            )],
+        )?;
         Ok(ToolGatewayOutcome::Completed {
             status: match verdict {
                 CorrectnessVerdict::Pass => ToolOperationStatus::Succeeded,
@@ -290,8 +302,8 @@ impl CandidateCorrectnessTool {
                     ToolOperationStatus::InfraFailed
                 }
             },
-            result_digest: receipt_artifact.digest,
-            receipt_digests: vec![calibration_artifact.digest, receipt_artifact.digest],
+            result_digest: published.result_digest,
+            receipt_digests: vec![calibration_artifact.digest, published.receipt_digest],
             satisfies_subtask: verdict == CorrectnessVerdict::Pass,
         })
     }

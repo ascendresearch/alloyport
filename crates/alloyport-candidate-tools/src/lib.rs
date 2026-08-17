@@ -2,6 +2,7 @@
 
 mod build_tool;
 mod correctness_tool;
+mod gate_result;
 mod gateway;
 mod materialization;
 mod reference;

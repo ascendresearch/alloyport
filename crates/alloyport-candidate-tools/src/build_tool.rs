@@ -269,11 +269,17 @@ impl CandidateBuildTool {
         };
         let bytes = serde_json::to_vec(&receipt)
             .map_err(|error| adapter_error(format!("cannot encode Build Gate receipt: {error}")))?;
-        let stored = ingest_bytes(artifacts, &bytes)?;
+        // `read_build_diagnostics` and the Correctness Gate both require this receipt's digest.
+        // Until the model was handed a document naming it, neither could be called at all.
+        let published = crate::gate_result::publish_gate_result(
+            artifacts,
+            &bytes,
+            crate::gate_result::ASCEND_BUILD_RECEIPT_MEDIA_TYPE,
+        )?;
         Ok(ToolGatewayOutcome::Completed {
             status,
-            result_digest: stored.digest,
-            receipt_digests: vec![stored.digest],
+            result_digest: published.result_digest,
+            receipt_digests: vec![published.receipt_digest],
             satisfies_subtask: passed,
         })
     }
@@ -297,15 +303,28 @@ fn verify_source_gate_receipt(
         let bytes = serde_json::to_vec(&expected).map_err(|error| {
             adapter_error(format!("cannot encode Source Gate receipt: {error}"))
         })?;
-        return crate::gateway::ingest_bytes(artifacts, &bytes)
-            .map(|artifact| Some(artifact.digest));
+        return crate::gate_result::publish_gate_result(
+            artifacts,
+            &bytes,
+            crate::gate_result::SOURCE_GATE_RECEIPT_MEDIA_TYPE,
+        )
+        .map(|published| Some(published.result_digest));
     }
-    let expected = serde_json::to_vec(&expected)
+    let bytes = serde_json::to_vec(&expected)
         .map_err(|error| adapter_error(format!("cannot encode Source Gate receipt: {error}")))?;
-    if supplied != expected || Sha256Digest::digest_bytes(&supplied) != receipt_digest {
-        return Err(adapter_error(
-            alloyport_core::CandidateBuildError::SourceGateReceiptMismatch.to_string(),
-        ));
+    if supplied != bytes || Sha256Digest::digest_bytes(&supplied) != receipt_digest {
+        // Design 0040 made a candidate the gate rejects recoverable and left this branch fatal one
+        // line away. A model that cites the wrong real artifact has made a defect it can read and
+        // fix, so it is told which digest this tree produces rather than losing the migration.
+        return crate::gate_result::publish_citation_rejection(
+            artifacts,
+            REQUEST_ASCEND_BUILD_TOOL,
+            "source_gate_receipt_digest",
+            receipt_digest,
+            Sha256Digest::digest_bytes(&bytes),
+            crate::gate_result::SOURCE_GATE_RECEIPT_MEDIA_TYPE,
+        )
+        .map(Some);
     }
     Ok(None)
 }
@@ -403,8 +422,18 @@ pub(crate) fn read_build_diagnostics(
         arguments.build_gate_receipt_digest,
         MAX_SOURCE_GATE_RECEIPT_BYTES,
     )?;
-    let receipt: AscendBuildReceipt = serde_json::from_slice(&receipt_bytes)
-        .map_err(|error| adapter_error(format!("invalid Build Gate receipt: {error}")))?;
+    // Citing the build result document instead of the receipt it names is a defect the model can
+    // read and fix. An instrument that grants no authority must not be able to end a migration.
+    let Ok(receipt) = serde_json::from_slice::<AscendBuildReceipt>(&receipt_bytes) else {
+        return crate::gate_result::publish_unresolved_citation(
+            artifacts,
+            READ_BUILD_DIAGNOSTICS_TOOL,
+            "build_gate_receipt_digest",
+            arguments.build_gate_receipt_digest,
+            crate::gate_result::ASCEND_BUILD_RECEIPT_MEDIA_TYPE,
+        )
+        .map(candidate_rejected);
+    };
     let manifest_bytes = read_bounded(artifacts, receipt.manifest_digest(), MAX_MANIFEST_BYTES)?;
     let manifest: CandidateSourceManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|error| adapter_error(format!("invalid candidate manifest: {error}")))?;

@@ -82,6 +82,76 @@ fn read_json(artifacts: &dyn ArtifactStore, digest: Sha256Digest) -> Value {
     serde_json::from_slice(&bytes).expect("JSON Artifact")
 }
 
+/// The receipt content a gate result carries, read the way the model reads it.
+fn gate_payload(artifacts: &dyn ArtifactStore, result_digest: Sha256Digest) -> Value {
+    read_json(artifacts, result_digest)["result"].clone()
+}
+
+/// The receipt digest a later tool must cite, taken only from bytes the model would receive.
+///
+/// Tests must not take a citable digest from the gateway's return value. That exemption is exactly
+/// what let `source_gate_receipt_digest` ship unobtainable: the mechanism was proved for a caller
+/// who is handed the digest, and the runtime model is not one.
+fn cited_receipt_digest(
+    artifacts: &dyn ArtifactStore,
+    result_digest: Sha256Digest,
+) -> Sha256Digest {
+    read_json(artifacts, result_digest)["receipt"]["digest"]
+        .as_str()
+        .expect("a gate result must name its receipt")
+        .parse()
+        .expect("receipt digest")
+}
+
+/// Everything the model could possibly cite: digests that appeared in bytes it was handed.
+///
+/// The first real migration died because `request_ascend_build` required a digest no tool result
+/// had ever shown the model. Nothing caught it because the tests took their digests from the
+/// gateway's own return value — a channel the model does not have. This type is that channel,
+/// modelled: [`Self::observe`] records what a result actually contained and [`Self::cite`] refuses
+/// to name anything else.
+#[derive(Default)]
+pub(crate) struct ModelKnowledge {
+    seen: std::collections::BTreeSet<String>,
+}
+
+impl ModelKnowledge {
+    /// Records every digest a tool result put in front of the model, at any depth.
+    pub(crate) fn observe(&mut self, artifacts: &dyn ArtifactStore, result_digest: Sha256Digest) {
+        fn walk(value: &Value, seen: &mut std::collections::BTreeSet<String>) {
+            match value {
+                Value::String(text) if text.starts_with("sha256:") && text.len() == 71 => {
+                    seen.insert(text.clone());
+                }
+                Value::Array(items) => items.iter().for_each(|item| walk(item, seen)),
+                Value::Object(fields) => fields.values().for_each(|field| walk(field, seen)),
+                _ => {}
+            }
+        }
+        walk(&read_json(artifacts, result_digest), &mut self.seen);
+    }
+
+    /// Returns a digest for a tool argument, or fails because the model was never shown it.
+    pub(crate) fn cite(&self, digest: Sha256Digest) -> Value {
+        let rendered = digest.to_string();
+        assert!(
+            self.seen.contains(&rendered),
+            "a tool requires {rendered}, which no earlier tool result showed the model; \
+             it has only been shown {:?}",
+            self.seen
+        );
+        json!(rendered)
+    }
+}
+
+#[test]
+#[should_panic(expected = "which no earlier tool result showed the model")]
+fn citing_a_digest_the_model_was_never_shown_fails_the_suite() {
+    // The guard above is the whole point, so it is verified rather than assumed: a digest that
+    // exists and is perfectly valid is still uncitable if no result put it in front of the model.
+    ModelKnowledge::default().cite(digest("never-shown-to-the-model"));
+}
+
 fn execute(
     gateway: &mut CandidateToolGateway,
     request: &ToolInvocation,
@@ -252,9 +322,9 @@ fn candidate_submission_is_create_only_idempotent_and_source_gate_is_independent
         Err(ToolGatewayError::Adapter(message))
             if message.contains("does not belong to this migration context")
     ));
-    let (status, receipt_digest) = execute(&mut gateway, &gate);
+    let (status, result_digest) = execute(&mut gateway, &gate);
     assert_eq!(status, ToolOperationStatus::CandidateFailed);
-    let receipt = read_json(artifacts.as_ref(), receipt_digest);
+    let receipt = gate_payload(artifacts.as_ref(), result_digest);
     assert_eq!(receipt["passed"], false);
     assert!(
         receipt["failures"]
@@ -300,7 +370,7 @@ fn ascend_build_requires_the_exact_source_receipt_and_reconciles_one_stable_assi
     let candidate_id = result["candidate_id"].as_str().expect("candidate ID");
     let manifest_digest: Sha256Digest =
         serde_json::from_value(result["manifest"]["digest"].clone())?;
-    let (_, source_receipt_digest) = execute(
+    let (_, source_gate_result) = execute(
         &mut gateway,
         &invocation(
             REQUEST_SOURCE_GATE_TOOL,
@@ -308,6 +378,7 @@ fn ascend_build_requires_the_exact_source_receipt_and_reconciles_one_stable_assi
             "build-source-gate",
         ),
     );
+    let source_receipt_digest = cited_receipt_digest(artifacts.as_ref(), source_gate_result);
     let invalid_build = invocation(
         REQUEST_ASCEND_BUILD_TOOL,
         &json!({
@@ -330,7 +401,7 @@ fn ascend_build_requires_the_exact_source_receipt_and_reconciles_one_stable_assi
     let child_result = read_json(artifacts.as_ref(), child_result_digest);
     let child_manifest: Sha256Digest =
         serde_json::from_value(child_result["manifest"]["digest"].clone())?;
-    let (_, foreign_source_receipt) = execute(
+    let (_, foreign_source_result) = execute(
         &mut gateway,
         &invocation(
             REQUEST_SOURCE_GATE_TOOL,
@@ -338,6 +409,7 @@ fn ascend_build_requires_the_exact_source_receipt_and_reconciles_one_stable_assi
             "build-foreign-source-gate",
         ),
     );
+    let foreign_source_receipt = cited_receipt_digest(artifacts.as_ref(), foreign_source_result);
     let foreign_build = invocation(
         REQUEST_ASCEND_BUILD_TOOL,
         &json!({
@@ -346,10 +418,18 @@ fn ascend_build_requires_the_exact_source_receipt_and_reconciles_one_stable_assi
         }),
         "build-foreign-receipt",
     );
-    assert!(matches!(
-        complete_immediate(gateway.execute(&foreign_build)),
-        Err(ToolGatewayError::Adapter(message)) if message.contains("SourceGateReceiptMismatch")
-    ));
+    // Citing a real receipt belonging to another candidate is a defect the model can read and
+    // fix. It is returned as a terminal candidate failure naming the digest this tree does
+    // produce, so the next call can be correct rather than a guess.
+    let (status, rejected_digest) = execute(&mut gateway, &foreign_build);
+    assert_eq!(status, ToolOperationStatus::CandidateFailed);
+    let rejection = read_json(artifacts.as_ref(), rejected_digest);
+    assert_eq!(rejection["recoverable"], json!(true));
+    assert_eq!(rejection["cited"], json!(foreign_source_receipt));
+    assert_eq!(
+        rejection["expected_receipt"]["digest"],
+        json!(source_receipt_digest)
+    );
     assert!(assignments.lock().expect("assignment log").is_empty());
 
     let (_, failing_result_digest) = execute(
@@ -363,7 +443,7 @@ fn ascend_build_requires_the_exact_source_receipt_and_reconciles_one_stable_assi
     let failing_result = read_json(artifacts.as_ref(), failing_result_digest);
     let failing_manifest: Sha256Digest =
         serde_json::from_value(failing_result["manifest"]["digest"].clone())?;
-    let (_, failing_source_receipt) = execute(
+    let (_, failing_source_result) = execute(
         &mut gateway,
         &invocation(
             REQUEST_SOURCE_GATE_TOOL,
@@ -371,6 +451,7 @@ fn ascend_build_requires_the_exact_source_receipt_and_reconciles_one_stable_assi
             "build-failing-source-gate",
         ),
     );
+    let failing_source_receipt = cited_receipt_digest(artifacts.as_ref(), failing_source_result);
     let failing_build = invocation(
         REQUEST_ASCEND_BUILD_TOOL,
         &json!({
@@ -384,7 +465,7 @@ fn ascend_build_requires_the_exact_source_receipt_and_reconciles_one_stable_assi
     // adapter error, which would end the whole migration over a recoverable mistake.
     let (status, result_digest) = execute(&mut gateway, &failing_build);
     assert_eq!(status, ToolOperationStatus::CandidateFailed);
-    let reported = read_json(artifacts.as_ref(), result_digest);
+    let reported = gate_payload(artifacts.as_ref(), result_digest);
     assert_eq!(reported["passed"], json!(false));
     assert!(
         reported["failures"]
@@ -417,7 +498,7 @@ fn ascend_build_requires_the_exact_source_receipt_and_reconciles_one_stable_assi
     assert_eq!(status, ToolOperationStatus::CandidateFailed);
     assert!(!satisfies_subtask);
     assert_eq!(
-        read_json(artifacts.as_ref(), build_receipt_digest)["passed"],
+        gate_payload(artifacts.as_ref(), build_receipt_digest)["passed"],
         false
     );
 
@@ -1033,7 +1114,7 @@ fn a_failed_build_hands_the_model_the_compiler_output_not_a_digest_it_cannot_ope
     let manifest: Sha256Digest = serde_json::from_value(
         read_json(artifacts.as_ref(), submitted)["manifest"]["digest"].clone(),
     )?;
-    let (_, source_receipt) = execute(
+    let (_, source_gate_result) = execute(
         &mut gateway,
         &invocation(
             REQUEST_SOURCE_GATE_TOOL,
@@ -1041,7 +1122,8 @@ fn a_failed_build_hands_the_model_the_compiler_output_not_a_digest_it_cannot_ope
             "diag-gate",
         ),
     );
-    let (status, build_receipt) = execute(
+    let source_receipt = cited_receipt_digest(artifacts.as_ref(), source_gate_result);
+    let (status, build_result) = execute(
         &mut gateway,
         &invocation(
             REQUEST_ASCEND_BUILD_TOOL,
@@ -1054,9 +1136,11 @@ fn a_failed_build_hands_the_model_the_compiler_output_not_a_digest_it_cannot_ope
     );
     assert_eq!(status, ToolOperationStatus::CandidateFailed);
     // What the build receipt itself gives the model is a descriptor, which it has no way to open.
-    let receipt = read_json(artifacts.as_ref(), build_receipt);
+    let receipt = gate_payload(artifacts.as_ref(), build_result);
     assert!(receipt["stderr"]["digest"].is_string());
     assert!(receipt["stderr"]["text"].is_null());
+    // The result names the receipt, so the instrument below is reachable at all.
+    let build_receipt = cited_receipt_digest(artifacts.as_ref(), build_result);
 
     let (status, diagnostics) = execute(
         &mut gateway,
@@ -1116,7 +1200,7 @@ fn diagnostics_cannot_be_read_for_a_receipt_from_another_migration() -> Result<(
     let manifest: Sha256Digest = serde_json::from_value(
         read_json(artifacts.as_ref(), submitted)["manifest"]["digest"].clone(),
     )?;
-    let (_, source_receipt) = execute(
+    let (_, source_gate_result) = execute(
         &mut gateway,
         &invocation(
             REQUEST_SOURCE_GATE_TOOL,
@@ -1124,7 +1208,8 @@ fn diagnostics_cannot_be_read_for_a_receipt_from_another_migration() -> Result<(
             "foreign-gate",
         ),
     );
-    let (_, build_receipt) = execute(
+    let source_receipt = cited_receipt_digest(artifacts.as_ref(), source_gate_result);
+    let (_, build_result) = execute(
         &mut gateway,
         &invocation(
             REQUEST_ASCEND_BUILD_TOOL,
@@ -1135,6 +1220,7 @@ fn diagnostics_cannot_be_read_for_a_receipt_from_another_migration() -> Result<(
             "foreign-build",
         ),
     );
+    let build_receipt = cited_receipt_digest(artifacts.as_ref(), build_result);
 
     // A second migration shares the store. Authority must come from the receipt belonging to this
     // context, never from the model naming a digest.

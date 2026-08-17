@@ -308,15 +308,22 @@ impl CandidateToolGateway {
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_RECEIPT_BYTES {
             return Err(adapter_error("Source Gate receipt exceeded its bound"));
         }
-        let artifact = ingest_bytes(self.artifacts.as_ref(), &bytes)?;
+        // The model reads the wrapper and cites `receipt.digest` on the next call. Publishing the
+        // bare receipt as the result would ask it to name this artifact's own digest, which no
+        // document can contain.
+        let published = crate::gate_result::publish_gate_result(
+            self.artifacts.as_ref(),
+            &bytes,
+            crate::gate_result::SOURCE_GATE_RECEIPT_MEDIA_TYPE,
+        )?;
         Ok(ToolGatewayOutcome::Completed {
             status: if passed {
                 ToolOperationStatus::Succeeded
             } else {
                 ToolOperationStatus::CandidateFailed
             },
-            result_digest: artifact.digest,
-            receipt_digests: vec![artifact.digest],
+            result_digest: published.result_digest,
+            receipt_digests: vec![published.receipt_digest],
             satisfies_subtask: passed && self.build.is_none() && self.correctness.is_none(),
         })
     }

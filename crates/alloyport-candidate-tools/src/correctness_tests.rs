@@ -256,7 +256,7 @@ fn passing_build_dispatches_one_stable_calibrated_correctness_experiment()
         CandidateId::try_from(submission["candidate_id"].as_str().expect("candidate ID"))?;
     let manifest_digest: Sha256Digest =
         serde_json::from_value(submission["manifest"]["digest"].clone())?;
-    let (_, source_gate_receipt_digest) = execute(
+    let (_, source_gate_result) = execute(
         &mut build_gateway,
         &invocation(
             REQUEST_SOURCE_GATE_TOOL,
@@ -264,6 +264,7 @@ fn passing_build_dispatches_one_stable_calibrated_correctness_experiment()
             "correctness-source",
         ),
     );
+    let source_gate_receipt_digest = cited_receipt_digest(artifacts.as_ref(), source_gate_result);
     let build_request = invocation(
         REQUEST_ASCEND_BUILD_TOOL,
         &json!({
@@ -277,13 +278,14 @@ fn passing_build_dispatches_one_stable_calibrated_correctness_experiment()
         alloyport_core::ToolGatewayOutcome::Pending { .. }
     ));
     let alloyport_core::ToolGatewayOutcome::Completed {
-        result_digest: build_gate_receipt_digest,
+        result_digest: build_gate_result,
         status: ToolOperationStatus::Succeeded,
         ..
     } = complete_immediate(build_gateway.reconcile(&build_request))?
     else {
         panic!("passing Build Gate expected");
     };
+    let build_gate_receipt_digest = cited_receipt_digest(artifacts.as_ref(), build_gate_result);
 
     let experiments = Arc::new(Mutex::new(Vec::new()));
     let correctness = FakeCorrectnessAttemptPort {
@@ -333,8 +335,14 @@ fn passing_build_dispatches_one_stable_calibrated_correctness_experiment()
     assert!(satisfies_subtask);
     assert_eq!(receipt_digests.len(), 2);
     assert_eq!(
-        read_json(artifacts.as_ref(), result_digest)["verdict"],
+        gate_payload(artifacts.as_ref(), result_digest)["verdict"],
         "PASS"
+    );
+    // The calibration that bounded this verdict is named beside it, not left to be guessed.
+    assert!(
+        read_json(artifacts.as_ref(), result_digest)["calibration"]["digest"]
+            .as_str()
+            .is_some()
     );
     let experiments = experiments.lock().expect("experiment log");
     assert_eq!(experiments.len(), 2);
@@ -427,7 +435,7 @@ fn durable_episode_completes_only_after_the_calibrated_correctness_gate()
         CandidateId::try_from(submission["candidate_id"].as_str().expect("candidate ID"))?;
     let manifest_digest: Sha256Digest =
         serde_json::from_value(submission["manifest"]["digest"].clone())?;
-    let (_, source_gate_receipt_digest) = execute(
+    let (_, source_gate_result_two) = execute(
         &mut preflight,
         &invocation(
             REQUEST_SOURCE_GATE_TOOL,
@@ -435,7 +443,9 @@ fn durable_episode_completes_only_after_the_calibrated_correctness_gate()
             "episode-correctness-source",
         ),
     );
-    let (_, build_gate_receipt_digest) = execute(
+    let source_gate_receipt_digest =
+        cited_receipt_digest(artifacts.as_ref(), source_gate_result_two);
+    let (_, build_gate_result) = execute(
         &mut preflight,
         &invocation(
             REQUEST_ASCEND_BUILD_TOOL,
@@ -446,6 +456,7 @@ fn durable_episode_completes_only_after_the_calibrated_correctness_gate()
             "episode-correctness-build",
         ),
     );
+    let build_gate_receipt_digest = cited_receipt_digest(artifacts.as_ref(), build_gate_result);
 
     let correctness = FakeCorrectnessAttemptPort {
         artifacts: artifacts.clone(),
@@ -519,5 +530,129 @@ fn durable_episode_completes_only_after_the_calibrated_correctness_gate()
     let state = repository.load(&episode_id)?.state;
     assert_eq!(state.turn_count(), 2);
     assert_eq!(state.tool_statuses(), [ToolOperationStatus::Succeeded]);
+    Ok(())
+}
+
+/// Drives the whole gate chain the way the model must: every argument comes from result bytes.
+///
+/// This is the test that was missing. `task-c36ab7b63cbf64234498b88b` reached a passing Source Gate
+/// and then died, because `request_ascend_build` required the Source Gate receipt digest and no
+/// result had ever shown the model one. The existing tests could not see it: they took each digest
+/// from `execute`'s return value, which is a channel the runtime model does not have. Here
+/// [`ModelKnowledge::cite`] refuses any digest that did not appear in bytes the model was handed,
+/// so an unobtainable argument fails the suite instead of the migration.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn every_gate_argument_is_obtainable_from_the_results_the_model_was_given()
+-> Result<(), Box<dyn Error>> {
+    let artifacts: Arc<dyn ArtifactStore> = Arc::new(InMemoryArtifactStore::new(32 * 1024 * 1024));
+    let workspace = tempfile::tempdir()?;
+    let context = CandidateToolConfig::new(
+        TaskId::try_from("task-candidate-tools")?,
+        &migration_spec(),
+        alloyport_core::GenerationStrategy::DirectAscendC,
+    );
+    let mut gateway = CandidateToolGateway::new(context, artifacts.clone(), workspace.path())?
+        .with_ascend_build(
+            build_config()?,
+            Box::new(
+                FakeBuildAttemptPort::new(
+                    [FakeBuildStep::Finished {
+                        outcome: AttemptOutcome::Succeeded,
+                        build_completed: true,
+                    }],
+                    Arc::new(Mutex::new(Vec::new())),
+                )
+                .publishing(artifacts.clone(), "warning: unused variable"),
+            ),
+        )
+        .with_reduction_correctness(
+            CandidateCorrectnessToolConfig::reduction_fixture_v1(
+                &migration_spec(),
+                reference_sources(),
+            )?,
+            Box::new(FakeCorrectnessAttemptPort {
+                artifacts: artifacts.clone(),
+                steps: [CorrectnessStep::Finished].into_iter().collect(),
+                experiments: Arc::new(Mutex::new(Vec::new())),
+            }),
+        );
+
+    let mut known = ModelKnowledge::default();
+
+    let (_, submitted) = execute(
+        &mut gateway,
+        &invocation(
+            SUBMIT_CANDIDATE_BUNDLE_TOOL,
+            &bundle(true, None),
+            "chain-submit",
+        ),
+    );
+    known.observe(artifacts.as_ref(), submitted);
+    let submission = read_json(artifacts.as_ref(), submitted);
+    let candidate_id = submission["candidate_id"].as_str().expect("candidate ID");
+    let manifest_digest: Sha256Digest =
+        serde_json::from_value(submission["manifest"]["digest"].clone())?;
+
+    let (_, source_result) = execute(
+        &mut gateway,
+        &invocation(
+            REQUEST_SOURCE_GATE_TOOL,
+            &json!({"manifest_digest": known.cite(manifest_digest)}),
+            "chain-source",
+        ),
+    );
+    known.observe(artifacts.as_ref(), source_result);
+    let source_receipt = cited_receipt_digest(artifacts.as_ref(), source_result);
+
+    let build = invocation(
+        REQUEST_ASCEND_BUILD_TOOL,
+        &json!({
+            "manifest_digest": known.cite(manifest_digest),
+            "source_gate_receipt_digest": known.cite(source_receipt)
+        }),
+        "chain-build",
+    );
+    let alloyport_core::ToolGatewayOutcome::Completed {
+        result_digest: build_result,
+        status: ToolOperationStatus::Succeeded,
+        ..
+    } = complete_immediate(gateway.execute(&build))?
+    else {
+        panic!("passing Build Gate expected");
+    };
+    known.observe(artifacts.as_ref(), build_result);
+    let build_receipt = cited_receipt_digest(artifacts.as_ref(), build_result);
+
+    // 0041 added this instrument so the model could read the compiler's opinion of its own source.
+    // Until the build result named its receipt, the model could not call it at all.
+    let (status, diagnostics) = execute(
+        &mut gateway,
+        &invocation(
+            READ_BUILD_DIAGNOSTICS_TOOL,
+            &json!({"build_gate_receipt_digest": known.cite(build_receipt)}),
+            "chain-diagnostics",
+        ),
+    );
+    assert_eq!(status, ToolOperationStatus::Succeeded);
+    assert!(
+        read_json(artifacts.as_ref(), diagnostics)["stderr"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("unused variable"))
+    );
+
+    let correctness = invocation(
+        REQUEST_REDUCTION_CORRECTNESS_TOOL,
+        &json!({
+            "candidate_id": candidate_id,
+            "manifest_digest": known.cite(manifest_digest),
+            "source_gate_receipt_digest": known.cite(source_receipt),
+            "build_gate_receipt_digest": known.cite(build_receipt)
+        }),
+        "chain-correctness",
+    );
+    let (status, verdict) = execute(&mut gateway, &correctness);
+    assert_eq!(status, ToolOperationStatus::Succeeded);
+    assert_eq!(gate_payload(artifacts.as_ref(), verdict)["verdict"], "PASS");
     Ok(())
 }

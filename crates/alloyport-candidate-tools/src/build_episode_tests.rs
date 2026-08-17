@@ -30,7 +30,7 @@ fn same_episode_corrects_a_failed_build_and_retries_with_a_child_candidate()
         .to_owned();
     let first_manifest: Sha256Digest =
         serde_json::from_value(first_submit_json["manifest"]["digest"].clone())?;
-    let (_, first_source_receipt) = execute(
+    let (_, first_source_result) = execute(
         &mut preflight,
         &invocation(
             REQUEST_SOURCE_GATE_TOOL,
@@ -38,6 +38,7 @@ fn same_episode_corrects_a_failed_build_and_retries_with_a_child_candidate()
             "pre-build-first-source",
         ),
     );
+    let first_source_receipt = cited_receipt_digest(artifacts.as_ref(), first_source_result);
 
     let child_bundle = bundle(true, Some(&first_candidate));
     let (_, child_submit_result) = execute(
@@ -55,7 +56,7 @@ fn same_episode_corrects_a_failed_build_and_retries_with_a_child_candidate()
         .to_owned();
     let child_manifest: Sha256Digest =
         serde_json::from_value(child_submit_json["manifest"]["digest"].clone())?;
-    let (_, child_source_receipt) = execute(
+    let (_, child_source_result) = execute(
         &mut preflight,
         &invocation(
             REQUEST_SOURCE_GATE_TOOL,
@@ -63,6 +64,7 @@ fn same_episode_corrects_a_failed_build_and_retries_with_a_child_candidate()
             "pre-build-child-source",
         ),
     );
+    let child_source_receipt = cited_receipt_digest(artifacts.as_ref(), child_source_result);
 
     let assignments = Arc::new(Mutex::new(Vec::new()));
     let attempts = FakeBuildAttemptPort::new(
