@@ -1374,3 +1374,29 @@ they produced are [0042](design/0042-model-visible-receipt-references.md),
 What to do next is in [`NEXT_SESSION.md`](NEXT_SESSION.md), so it is stated in exactly one place. In
 short: rebuild and redeploy all three binaries, because the worker changed, then run the migration
 and watch whether the model points its build files at the CANN include paths the prompt now states.
+
+## 2026-08-17 closeout: the candidate record, and a red baseline nobody had seen
+
+[Design 0044](design/0044-git-as-the-candidate-record.md) is accepted and implemented.
+`alloyport-server candidate-record TASK_ID --into DIRECTORY` projects one task's candidate lineage
+into a real git repository: one commit per candidate whose tree is exactly that candidate, a
+lightweight tag `c001-…` per candidate in submission order, the parent taken from the manifest, and
+the gate outcomes plus the compiler's first error line in the commit message. The stream is a pure
+deterministic function of the recorded candidates — fixed identity, dates that are sequence numbers,
+every path C-quoted because the model authors paths — and after importing, every blob is re-read
+through `git cat-file` and rehashed against its manifest digest. Nothing in the trust path reads the
+repository; the manifest stays authoritative. Two amendments to 0044 as proposed are recorded in it:
+the projection is built after a run rather than during it, and it lives in `alloyport-server` rather
+than the CLI.
+
+Run against the three real Episodes from 2026-08-16, it corrected this file's own closeout above.
+`acl/acl.h` and `kernel_operator.h` are **two different migrations**, not one loop going deeper, and
+**no corrected candidate has ever been rebuilt**. It also measured that a patch interface is not worth
+building, and that 18–20 corpus reads precede the first line of Ascend C
+([`evidence/candidate-record-20260817.md`](evidence/candidate-record-20260817.md)).
+
+Separately: **both `scripts/check_*_boundaries.sh` are red and have been since 2026-08-14** — eight
+modules over the 800-line limit plus one layering violation, and `rusqlite` outside
+`adapters/sqlite/`. They had not run because `rg` is off this host's `PATH` and nothing has been
+pushed to CI. Nine violations, none introduced by this session's work
+([`evidence/boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)).
