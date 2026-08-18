@@ -87,10 +87,17 @@ message ActiveAttempt {
 
 message Heartbeat {
   repeated ActiveAttempt active_attempts = 1;
+  // Capacity for work that occupies an accelerator: clamped by cards that are Ready, process-free,
+  // and unleased.
   uint32 available_slots = 2;
   WorkerHealth health = 3;
   repeated DeviceObservation devices = 4;
   repeated DeviceLease device_leases = 5;
+  // Capacity for work that opens no accelerator, such as an Ascend build. One worker serves both
+  // roles, and the role is decided by the assignment rather than by the process: a build compiles
+  // and needs no card, an execution verifies and needs one. Advertising a single device-derived
+  // number made a builder wait for a verifier's resource.
+  uint32 device_free_slots = 6;
 }
 
 message DeviceObservation {

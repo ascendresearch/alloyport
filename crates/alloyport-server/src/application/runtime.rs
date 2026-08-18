@@ -253,18 +253,7 @@ async fn drive_candidate_inner(
                 .control
                 .worker_snapshot(&required.id)
                 .await
-                .is_some_and(|snapshot| {
-                    snapshot.connected
-                        && snapshot.heartbeat.as_ref().is_some_and(|heartbeat| {
-                            heartbeat.health == alloyport_proto::v1::WorkerHealth::Ready as i32
-                                && heartbeat.available_slots > 0
-                        })
-                        && snapshot.backend == i32::from(required.backend)
-                        && snapshot
-                            .features
-                            .iter()
-                            .any(|feature| feature == required.feature)
-                });
+                .is_some_and(|snapshot| required_worker_ready(required, &snapshot));
             if !ready {
                 missing.push(required.id.as_str());
             }
@@ -328,6 +317,30 @@ async fn drive_candidate_inner(
             }
         }
     }
+}
+
+/// Whether one required role can start on this worker right now.
+///
+/// The capacity asked for is the one the role consumes. One worker serves both roles and the role
+/// belongs to the assignment: a build compiles and opens no accelerator, an execution verifies and
+/// needs one. Asking the device-bound number for both made every build wait behind a resource it
+/// never opens, which on a shared host where every Ready card carried another user's process meant
+/// waiting forever.
+fn required_worker_ready(required: &RequiredWorker, snapshot: &crate::WorkerSnapshot) -> bool {
+    snapshot.connected
+        && snapshot.heartbeat.as_ref().is_some_and(|heartbeat| {
+            let slots = if required.requires_device {
+                heartbeat.available_slots
+            } else {
+                heartbeat.device_free_slots
+            };
+            heartbeat.health == alloyport_proto::v1::WorkerHealth::Ready as i32 && slots > 0
+        })
+        && snapshot.backend == i32::from(required.backend)
+        && snapshot
+            .features
+            .iter()
+            .any(|feature| feature == required.feature)
 }
 
 fn check_cancelled(cancellation: Option<(&dyn MigrationTaskStore, &str)>) -> Result<(), String> {
@@ -432,4 +445,86 @@ fn first_exit_detail(
 
 fn join_error_detail(error: &JoinError) -> String {
     format!("server task panicked or was cancelled: {error}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloyport_proto::v1::{Backend, Heartbeat, WorkerHealth};
+
+    fn snapshot(available_slots: u32, device_free_slots: u32) -> crate::WorkerSnapshot {
+        crate::WorkerSnapshot {
+            worker_id: "ascend-worker-1".to_owned(),
+            instance_id: "instance-1".to_owned(),
+            connection_id: "connection-1".to_owned(),
+            connected: true,
+            last_worker_sequence: 1,
+            backend: i32::from(Backend::Ascend),
+            features: vec![
+                "ascend-build-v1".to_owned(),
+                "ascend-correctness".to_owned(),
+            ],
+            heartbeat: Some(Heartbeat {
+                active_attempts: Vec::new(),
+                available_slots,
+                health: WorkerHealth::Ready as i32,
+                devices: Vec::new(),
+                device_leases: Vec::new(),
+                device_free_slots,
+            }),
+        }
+    }
+
+    fn required(feature: &'static str, requires_device: bool) -> RequiredWorker {
+        RequiredWorker {
+            id: "ascend-worker-1".to_owned(),
+            backend: Backend::Ascend,
+            feature,
+            requires_device,
+        }
+    }
+
+    /// One worker, two roles, and only one of them needs a card.
+    ///
+    /// Every Ready card on the shared host carried another user's process all of 2026-08-17, so the
+    /// worker advertised zero device-bound slots. A build opens no accelerator and was still made to
+    /// wait for one, which is what blocked the day.
+    #[test]
+    fn a_builder_starts_on_a_worker_whose_cards_are_all_busy() {
+        let busy_cards = snapshot(0, 1);
+        assert!(
+            required_worker_ready(&required("ascend-build-v1", false), &busy_cards),
+            "a build opens no card and must not wait for one"
+        );
+        assert!(
+            !required_worker_ready(&required("ascend-correctness", true), &busy_cards),
+            "an execution needs a card and must still wait"
+        );
+    }
+
+    /// Concurrency, not cards, is what a builder can actually run out of.
+    #[test]
+    fn a_builder_waits_when_the_worker_is_at_its_concurrency_limit() {
+        let full = snapshot(0, 0);
+        assert!(!required_worker_ready(
+            &required("ascend-build-v1", false),
+            &full
+        ));
+    }
+
+    /// A free card does not make a role ready if the worker cannot serve it at all.
+    #[test]
+    fn capacity_is_not_the_only_requirement() {
+        let free = snapshot(1, 1);
+        assert!(!required_worker_ready(
+            &required("ascend-nonexistent", true),
+            &free
+        ));
+        let mut offline = snapshot(1, 1);
+        offline.connected = false;
+        assert!(!required_worker_ready(
+            &required("ascend-build-v1", false),
+            &offline
+        ));
+    }
 }

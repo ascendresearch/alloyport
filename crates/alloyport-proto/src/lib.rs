@@ -548,6 +548,7 @@ mod tests {
         let heartbeat = v1::Heartbeat {
             active_attempts: Vec::new(),
             available_slots: 0,
+            device_free_slots: 0,
             health: v1::WorkerHealth::Degraded.into(),
             devices: vec![v1::DeviceObservation {
                 device_id: "0".to_owned(),

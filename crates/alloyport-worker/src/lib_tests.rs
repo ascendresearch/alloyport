@@ -260,6 +260,14 @@ async fn heartbeat_reports_dynamic_health_occupancy_and_durable_device_lease()
         alloyport_proto::v1::WorkerHealth::Ready as i32
     );
     assert_eq!(heartbeat.available_slots, 0);
+    // The role is the assignment's, not the process's. This worker's only card is leased and
+    // carries two foreign processes, so it can verify nothing — and it can still compile, because a
+    // build opens no accelerator. One number could not say both, and the one it said kept builders
+    // waiting on a verifier's resource.
+    assert_eq!(
+        heartbeat.device_free_slots, 0,
+        "one concurrency slot, already occupied by the admitted attempt"
+    );
     assert_eq!(heartbeat.devices.len(), 1);
     assert_eq!(heartbeat.devices[0].process_count, 2);
     assert_eq!(heartbeat.device_leases.len(), 1);
@@ -528,4 +536,33 @@ fn worker_hello(worker_id: &str) -> WorkerHello {
         }),
         active_attempts: Vec::new(),
     }
+}
+
+/// A worker whose every card is busy can still take work that opens no card.
+///
+/// This is the split the deployment needed. One worker serves both roles, and the role belongs to
+/// the assignment: a build compiles and needs no accelerator, an execution verifies and needs one.
+/// A single device-derived capacity number could not say both, so on a shared host where every
+/// Ready card carried another user's process the worker advertised zero slots and every build
+/// queued behind a resource it never opens. That blocked 2026-08-17.
+#[tokio::test]
+async fn a_busy_card_stops_verifying_and_does_not_stop_building() -> Result<(), Box<dyn Error>> {
+    let worker = OutboundWorker::new(
+        Endpoint::from_static("http://127.0.0.1:50051"),
+        worker_hello("worker-1"),
+    )?
+    .with_device_status_provider(Arc::new(FixedDeviceStatus));
+
+    // Nothing admitted, so concurrency is free; the only card carries foreign processes.
+    let heartbeat = worker.build_heartbeat().await?;
+    alloyport_proto::validate_heartbeat(&heartbeat)?;
+    assert_eq!(
+        heartbeat.available_slots, 0,
+        "no card is Ready and process-free, so nothing may execute"
+    );
+    assert_eq!(
+        heartbeat.device_free_slots, 1,
+        "a build opens no card, so the worker can still take one"
+    );
+    Ok(())
 }

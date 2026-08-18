@@ -235,6 +235,11 @@ impl OutboundWorker {
             } else {
                 0
             },
+            // What this worker can take on that opens no accelerator. The role is the assignment's,
+            // not the process's: a build compiles and needs no card, an execution verifies and needs
+            // one. Clamped by concurrency and by what is already running, never by cards, because a
+            // builder waiting on a verifier's resource is what blocked 2026-08-17.
+            device_free_slots: self.available_slots(u32::MAX).await?,
             health: health.into(),
             devices,
             device_leases,

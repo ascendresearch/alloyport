@@ -186,9 +186,18 @@ fn validate_heartbeat_against_hello(
         .capabilities
         .as_ref()
         .ok_or_else(|| Status::failed_precondition("registered worker capabilities are missing"))?;
-    if heartbeat.available_slots > capabilities.max_concurrency {
+    if heartbeat.available_slots > capabilities.max_concurrency
+        || heartbeat.device_free_slots > capabilities.max_concurrency
+    {
         return Err(Status::invalid_argument(
             "heartbeat available slots exceed registered concurrency",
+        ));
+    }
+    // Device-free capacity is the same worker with a card removed from the question, so it can never
+    // be the smaller of the two. A worker claiming otherwise is describing something else.
+    if heartbeat.device_free_slots < heartbeat.available_slots {
+        return Err(Status::invalid_argument(
+            "heartbeat device-free slots are below device-bound slots",
         ));
     }
     let known_devices = capabilities
@@ -283,6 +292,7 @@ mod tests {
                 phase: alloyport_proto::v1::AttemptPhase::Running.into(),
             }],
             available_slots: 0,
+            device_free_slots: 0,
             health: WorkerHealth::Ready.into(),
             devices: vec![DeviceObservation {
                 device_id: "3".to_owned(),
@@ -322,6 +332,7 @@ mod tests {
         let heartbeat = Heartbeat {
             active_attempts: Vec::new(),
             available_slots: 0,
+            device_free_slots: 0,
             health: WorkerHealth::Degraded.into(),
             devices: vec![DeviceObservation {
                 device_id: "3".to_owned(),

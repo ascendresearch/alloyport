@@ -407,6 +407,7 @@ async fn assert_rotated_worker_stream_closes(
             message: Some(worker_to_server::Message::Heartbeat(Heartbeat {
                 active_attempts: Vec::new(),
                 available_slots: 1,
+                device_free_slots: 1,
                 health: WorkerHealth::Ready.into(),
                 devices: Vec::new(),
                 device_leases: Vec::new(),

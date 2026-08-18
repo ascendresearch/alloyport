@@ -38,6 +38,12 @@ pub(super) struct RequiredWorker {
     pub(super) id: String,
     pub(super) backend: Backend,
     pub(super) feature: &'static str,
+    /// Whether this role occupies an accelerator, taken from its own configured limits.
+    ///
+    /// The role is the assignment's, not the process's: one worker builds and verifies, a build
+    /// compiles and needs no card, an execution verifies and needs one. Reading it from the role's
+    /// contract keeps the two answers from drifting apart, which naming a feature here would invite.
+    pub(super) requires_device: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -432,16 +438,19 @@ fn load_worker_policies(
             id: build_worker_id.clone(),
             backend: Backend::Ascend,
             feature: ASCEND_BUILD_FEATURE,
+            requires_device: file.build.limits.device_count > 0,
         },
         RequiredWorker {
             id: cuda_worker_id.clone(),
             backend: Backend::Cuda,
             feature: CUDA_REDUCTION_CORRECTNESS_FEATURE,
+            requires_device: file.correctness.cuda.limits.device_count > 0,
         },
         RequiredWorker {
             id: ascend_worker_id.clone(),
             backend: Backend::Ascend,
             feature: ASCEND_REDUCTION_CORRECTNESS_FEATURE,
+            requires_device: file.correctness.ascend.limits.device_count > 0,
         },
     ];
 
