@@ -1,7 +1,8 @@
 //! Durable, provider-neutral Agent Episode reducer and deterministic fake adapters.
 
 use crate::agent_runtime_helpers::{
-    AgentLoopRuntimeError, derived_model_attempt_id, progress, usize_from_u32,
+    AgentLoopRuntimeError, derive_model_continuation_input_digest, derived_model_attempt_id,
+    progress, usize_from_u32,
 };
 use crate::agent_runtime_policy::{AllowanceGrant, EpisodeAllowance};
 use crate::agent_runtime_support::{
@@ -348,6 +349,16 @@ impl AgentLoopRunner {
         ))
     }
 
+    /// Decides what a turn that asked for no tools means, and re-asks if that is still allowed.
+    ///
+    /// The re-ask must rebind its own input. A turn that called no tools leaves the provider context
+    /// with no pending results, so the next input binds the stopping turn's continuation and nothing
+    /// else. Leaving `next_input_digest` as it was re-presented a digest that bound the *previous*
+    /// turn's results, the store recomputed it from an empty pending set, and the attempt was
+    /// refused before it was sent — `model continuation input digest does not bind its results`,
+    /// which is terminal. It ended `task-d59407d835a580f4c5cf5aee` at turn 5 and is the most likely
+    /// reading of the 21 consecutive `confirmed_not_sent` attempts that ended
+    /// `task-ccd149dfc0f421d97ed7feb4`, whose own diagnostic was destroyed as it was recorded.
     fn review_stop<R: EpisodeRepository>(
         repository: &mut R,
         mut versioned: VersionedEpisodeState,
@@ -358,6 +369,15 @@ impl AgentLoopRunner {
             < versioned.state.policy.max_stop_feedback_turns
         {
             versioned.state.stop_feedback_turns += 1;
+            let continuation = versioned
+                .state
+                .turns
+                .last()
+                .ok_or(AgentLoopRuntimeError::MissingTurn)?
+                .record
+                .native_continuation_digest();
+            versioned.state.next_input_digest =
+                derive_model_continuation_input_digest(continuation, std::iter::empty());
             EpisodeStatus::ReadyForModel
         } else {
             EpisodeStatus::Incomplete

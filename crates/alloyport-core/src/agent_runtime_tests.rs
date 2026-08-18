@@ -72,6 +72,10 @@ immediate_async_test!(
     narrative_stop_without_verified_result_is_incomplete_case
 );
 immediate_async_test!(
+    a_stop_feedback_reask_binds_the_stopping_turn_and_no_results,
+    a_stop_feedback_reask_binds_the_stopping_turn_and_no_results_case
+);
+immediate_async_test!(
     a_turn_wider_than_the_per_turn_cap_is_reviewed_not_charged_to_the_budget,
     a_turn_wider_than_the_per_turn_cap_is_reviewed_not_charged_to_the_budget_case
 );
@@ -1205,5 +1209,76 @@ async fn resuming_a_failed_episode_keeps_the_work_it_already_did_case() -> Resul
     assert_eq!(grant.resumed_from, EpisodeStatus::BudgetExhausted);
     assert_eq!(grant.previous, spent_allowance);
     assert_eq!(grant.granted, larger);
+    Ok(())
+}
+
+/// A stop-feedback re-ask must bind its own input, not the previous turn's results.
+///
+/// A turn that calls no tools leaves the provider context with no pending results. The re-ask used
+/// to keep whatever `next_input_digest` the last tool turn had set, so the durable context
+/// recomputed the binding from an empty pending set, disagreed, and refused to send — terminal,
+/// before any provider call. That ended `task-d59407d835a580f4c5cf5aee` at turn 5.
+async fn a_stop_feedback_reask_binds_the_stopping_turn_and_no_results_case()
+-> Result<(), Box<dyn Error>> {
+    let episode_id = EpisodeId::try_from("episode-runtime-1")?;
+    let mut repository = InMemoryEpisodeRepository::default();
+    repository.create(state_with_policy(policy())?)?;
+    // Turn 1 calls one tool; turn 2 stops without calling any; turn 3 is the stop-feedback re-ask,
+    // whose input must bind turn 2's continuation and nothing else.
+    let stop_continuation = digest("early-stop-continuation");
+    let mut models = ScriptedFakeModelGateway::new([
+        ScriptedGatewayStep {
+            expected_turn_index: 1,
+            expected_input_digest: digest("initial-input"),
+            outcome: ModelGatewayOutcome::Turn(exchange(
+                "call",
+                tool_turn("call-1", "submit_candidate_bundle", "candidate-1"),
+            )),
+        },
+        ScriptedGatewayStep {
+            expected_turn_index: 2,
+            expected_input_digest: derive_model_continuation_input_digest(
+                digest("call-continuation"),
+                [digest("tool-result")],
+            ),
+            outcome: ModelGatewayOutcome::Turn(exchange("early-stop", final_turn())),
+        },
+        ScriptedGatewayStep {
+            expected_turn_index: 3,
+            expected_input_digest: derive_model_continuation_input_digest(
+                stop_continuation,
+                std::iter::empty(),
+            ),
+            outcome: ModelGatewayOutcome::Turn(exchange("second-stop", final_turn())),
+        },
+    ]);
+    let mut tools = ScriptedFakeToolGateway::new(
+        descriptors(),
+        [ScriptedToolStep {
+            action: ToolGatewayAction::Execute,
+            expected_tool_name: "submit_candidate_bundle".to_owned(),
+            outcome: completed(ToolOperationStatus::Succeeded, "tool-result", false),
+        }],
+    );
+    let runner = AgentLoopRunner::new(episode_id.clone());
+    for _ in 0..16 {
+        let outcome = runner
+            .advance(
+                &mut repository,
+                &mut models,
+                &mut tools,
+                &mut NoAgentRuntimeFault,
+            )
+            .await?;
+        if matches!(outcome, AgentLoopAdvance::Terminal(_)) {
+            break;
+        }
+    }
+    // Reaching `Incomplete` means the re-ask was sent and answered; a stale binding would have
+    // failed inside the scripted gateway on turn 3 instead.
+    assert_eq!(
+        repository.load(&episode_id)?.state.episode().status(),
+        EpisodeStatus::Incomplete
+    );
     Ok(())
 }
