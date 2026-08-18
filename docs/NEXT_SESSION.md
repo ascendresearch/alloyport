@@ -125,8 +125,14 @@ is measured rather than asserted
 
 ## 3. Do this next
 
-**Get one build onto a free NPU.** Everything else is downstream: no compiler has yet formed an
-opinion about a generated kernel, and the last candidate is waiting on hardware, not on code.
+**Decide how a build-capable worker advertises capacity**, then get a build to run. A build no
+longer needs a card; it still waits for one, because capacity is a single device-derived number. The
+three options are in the [0038 amendment](design/0038-standalone-ascend-build-worker.md) — the
+cheapest one is also the worst, because it would let a correctness assignment be dispatched with no
+free card and fail at attempt time instead of queueing.
+
+Everything else is downstream of that: no compiler has yet formed an opinion about a generated
+kernel.
 
 Done, and it was not the image. The control — `fixtures/ascend-add-v1` compiled by hand inside the
 pinned image — links a real executable through CANN's CMake `ASC` package. The prompt was prescribing
@@ -162,11 +168,13 @@ stack is already running at `9e4a9c4`; a rebuild is only needed if the worker ch
    files document `find_package(ASC)`, the supported Ascend C build, and all eight are unreachable.
    The model asked for one of them by name on 2026-08-16 and was refused. See gap 1; this is the
    same gap with a price on it ([`ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
-4. **A build leases an NPU it does not need.** The build contract requires `device_count == 1` and
-   the worker mounts a card, but the control compiles and links `fixtures/ascend-add-v1` with **no
-   accelerator attached**. On a shared host where every Ready card carries another user's process
-   this is the difference between blocked and building. Changing it touches Design 0038 and what a
-   build receipt attests, so it is a decision, not a patch.
+4. **A build no longer uses a card, but still waits for one.** The contract, the container mount and
+   the per-attempt lease are gone — the runner is two `cmake` calls and the control compiles with no
+   accelerator attached. What remains is capacity: a worker advertises one number,
+   `min(max_concurrency, usable_devices)`, so a build-capable worker shows zero slots when every card
+   is busy. The [0038 amendment](design/0038-standalone-ascend-build-worker.md) lists three ways out
+   and picks none; that choice is the next decision
+   ([`ascend-build-nodevice-20260817.md`](evidence/ascend-build-nodevice-20260817.md)).
 5. **No context compaction, and corpus reading is what fills the context.** Improving: 9 reads before
    the first candidate and 14 total on the latest run, against 18–20 and 24 the day before, with the
    largest single input 72 916 rather than 98 815. Still nothing summarises, and no behaviour is

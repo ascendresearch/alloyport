@@ -52,7 +52,7 @@ impl CandidateBuildToolConfig {
             || limits.disk_bytes == 0
             || limits.process_count == 0
             || limits.output_bytes == 0
-            || limits.device_count != 1
+            || limits.device_count != 0
         {
             return Err(CandidateBuildToolConfigError::InvalidResourceCeiling);
         }

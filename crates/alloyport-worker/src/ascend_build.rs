@@ -270,17 +270,15 @@ impl AscendBuildPolicy {
                 self.driver_path.display()
             ),
         ];
-        for device_node in &self.device_nodes {
-            argv.push("--device".to_owned());
-            argv.push(format!("{path}:{path}:rwm", path = device_node.display()));
-        }
+        // No `--device` and no `ASCEND_RT_VISIBLE_DEVICES`. The build runner is two `cmake` calls
+        // and never opens an accelerator; `fixtures/ascend-add-v1` compiles and links in this image
+        // with none attached. Mounting one only made every build queue behind other users'
+        // processes on a shared host, which is what blocked 2026-08-17.
         argv.extend([
             "--tmpfs".to_owned(),
             format!("{CONTAINER_WORK_PATH}:rw,exec,size={}", limits.disk_bytes),
             "--workdir".to_owned(),
             CONTAINER_WORK_PATH.to_owned(),
-            "--env".to_owned(),
-            format!("ASCEND_RT_VISIBLE_DEVICES={}", self.device.device_id),
             "--env".to_owned(),
             format!("TMPDIR={CONTAINER_WORK_PATH}/tmp"),
             "--env".to_owned(),
@@ -453,7 +451,7 @@ fn validate_limits(
         || limits.process_count > ceilings.process_count
         || limits.output_bytes == 0
         || limits.output_bytes > ceilings.output_bytes
-        || limits.device_count != 1
+        || limits.device_count != 0
         || limits.network != NetworkPolicy::Disabled
     {
         return Err(AscendBuildContractError::Assignment(

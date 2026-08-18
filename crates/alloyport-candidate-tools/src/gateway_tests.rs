@@ -181,7 +181,8 @@ fn build_config() -> Result<CandidateBuildToolConfig, Box<dyn Error>> {
             disk_bytes: 256 * 1024 * 1024,
             process_count: 64,
             output_bytes: 1024 * 1024,
-            device_count: 1,
+            // A build compiles and never opens an accelerator; asking for one only made it queue.
+            device_count: 0,
             network: NetworkPolicy::Disabled,
         },
     )?)

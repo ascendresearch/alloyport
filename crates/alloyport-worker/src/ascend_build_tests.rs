@@ -135,7 +135,7 @@ fn assignment(bundle: Sha256Digest, size: u64, image: Sha256Digest) -> StoredAss
                 disk_bytes: 256 * 1024 * 1024,
                 process_count: 64,
                 output_bytes: 1024 * 1024,
-                device_count: 1,
+                device_count: 0,
                 network: NetworkPolicy::Disabled,
             }),
         },
@@ -175,4 +175,63 @@ const fn ceilings() -> AscendResourceCeilings {
         process_count: 128,
         output_bytes: 2 * 1024 * 1024,
     }
+}
+
+/// A build asks for no accelerator, and its container mounts none.
+///
+/// The runner is two `cmake` calls and never opens a device; `fixtures/ascend-add-v1` compiles and
+/// links in the pinned image with none attached. Requiring one made every build queue behind other
+/// users' processes on the shared host and blocked the pipeline for a day, buying nothing: the
+/// build receipt names no device, and the architecture and firmware it attests are configuration
+/// cross-checked at policy time, not read from a card.
+#[test]
+fn a_build_neither_requests_nor_mounts_an_accelerator() -> Result<(), Box<dyn Error>> {
+    let artifacts = Arc::new(InMemoryArtifactStore::new(16 * 1024 * 1024));
+    let bytes = serde_json::to_vec(&build_bundle())?;
+    let stored = artifacts
+        .ingest(&mut Cursor::new(bytes), IngestRequest::unverified())?
+        .artifact;
+    let directory = tempfile::tempdir()?;
+    let image_manifest = digest("image-manifest");
+    let policy = AscendBuildPolicy::new(
+        image_manifest,
+        format!("example.invalid/alloyport/build@{image_manifest}"),
+        digest("image-id"),
+        device(),
+        device_nodes(),
+        DRIVER_PATH,
+        directory.path().join("sandboxes"),
+        ceilings(),
+        environment()?,
+    )?;
+    let mut assignment = assignment(stored.digest, stored.size_bytes, image_manifest);
+    policy.validate_assignment(&assignment)?;
+
+    let sandbox = policy.materialize_bundle(&assignment, artifacts.as_ref())?;
+    let plan = policy.docker_create_plan(&assignment, &sandbox)?;
+    assert!(
+        !plan.argv.iter().any(|item| item == "--device"),
+        "a build container must mount no device: {:?}",
+        plan.argv
+    );
+    assert!(
+        !plan
+            .argv
+            .iter()
+            .any(|item| item.starts_with("ASCEND_RT_VISIBLE_DEVICES")),
+        "a build container must not be told which device to use: {:?}",
+        plan.argv
+    );
+
+    assignment
+        .execution
+        .limits
+        .as_mut()
+        .expect("limits")
+        .device_count = 1;
+    assert!(
+        policy.validate_assignment(&assignment).is_err(),
+        "a build that asks for a card must be refused"
+    );
+    Ok(())
 }

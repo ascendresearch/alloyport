@@ -40,7 +40,7 @@
       "disk_bytes": 1073741824,
       "process_count": 128,
       "output_bytes": 8388608,
-      "device_count": 1
+      "device_count": 0
     }
   },
   "correctness": {

@@ -87,6 +87,16 @@ fn write_fixture(root: &Path, unknown: bool) -> Result<PathBuf, Box<dyn Error>> 
         "output_bytes": 8_388_608_u64,
         "device_count": 1
     });
+    // A build compiles and never opens an accelerator, so it asks for none. Correctness executes
+    // and still does.
+    let build_limits = json!({
+        "cpu_millis": 4000,
+        "memory_bytes": 8_589_934_592_u64,
+        "disk_bytes": 1_073_741_824_u64,
+        "process_count": 128,
+        "output_bytes": 8_388_608_u64,
+        "device_count": 0
+    });
     let mut config = json!({
         "schema_version": 1,
         "model_catalog": "catalog.json",
@@ -117,7 +127,7 @@ fn write_fixture(root: &Path, unknown: bool) -> Result<PathBuf, Box<dyn Error>> 
             "worker_id": "ascend-build-1",
             "image": image("build-image"),
             "timeout_ms": 120_000,
-            "limits": limits.clone()
+            "limits": build_limits
         },
         "correctness": {
             "cuda": {
