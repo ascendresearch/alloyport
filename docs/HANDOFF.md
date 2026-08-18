@@ -1422,3 +1422,53 @@ other stores, and seven modules that each held two jobs were split along the sea
 modules so no receipt or record had to widen a private field
 ([`evidence/boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)). Nothing has
 been pushed, so CI still has not run either gate.
+
+## 2026-08-18 closeout: every obstacle between the model and a compiler was ours
+
+Eight live migrations have now run and **not one has failed because the model wrote a bad kernel**.
+No compiler has yet formed an opinion about a generated kernel either: every failure has been in the
+harness, and this session removed the remaining ones bar a single device coupling.
+
+**The read → correct → rebuild loop closed**, three times in one Episode — the hop that had never
+completed. The blocker moved with it, out of the control plane and into what we were telling the
+model. The prompt listed `kernel_operator.h`'s directory and a `ccec` binary, every path real and
+individually probed, and nobody had ever compiled with them; that invocation cannot resolve
+`kernel_tpipe.h`, which lives in a different CANN tree. The supported path is CANN's CMake `ASC`
+language package, documented in eight vendored corpus files, **all eight among the 972 that
+`read_reference` cannot serve**, one of which the model had asked for by name and been refused. The
+control settles it: `fixtures/ascend-add-v1`, a kernel a person wrote, compiles and links inside the
+pinned image with no accelerator attached. After the prompt was corrected the model took the
+supported path immediately and its first candidate passed the Source Gate on the first attempt
+([`evidence/rebuild-loop-closed-20260817.md`](evidence/rebuild-loop-closed-20260817.md),
+[`evidence/ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
+
+Walking that gate before the model did found the second half: `MissingBuildReference` required every
+generated source to appear in the build text, so the supported composition — one translation unit
+listed, the kernel `#include`d — would have been refused. **This repository's own specimen would have
+failed its own Source Gate.** It now asks about reachability.
+
+**Design 0044 is implemented.** `candidate-record` projects a task's candidate lineage into a real
+git repository, built after a run rather than during it, and verified by re-reading every blob
+through `git cat-file`. It corrected the previous closeout in one command and measured that a patch
+interface is not worth building ([`evidence/candidate-record-20260817.md`](evidence/candidate-record-20260817.md)).
+
+**The verification baseline was red and unrun for four days** — nine boundary violations, gates that
+could not run locally for want of ripgrep, and a CI runner that had none either. All repaired, CI now
+installs it, and both gates evaluate for the first time
+([`evidence/boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)).
+
+**The Ascend image was re-fingerprinted** to `sha256:17b67083…` so it states its own toolchain
+contract as labels. The digest boundary and the three places the pin lives are recorded
+([`evidence/ascend-image-fingerprint-20260817.md`](evidence/ascend-image-fingerprint-20260817.md)).
+
+**Four fatal harness defects the runs surfaced** were fixed: a stop-feedback re-ask that never
+rebound its input digest, two producers both starting one run, `attach` refusing to show a run whose
+stream violated the contract, and a build requesting an accelerator it never opens. Capacity and
+readiness are now split by role — device-bound and device-free — and the preflight waits only for
+builders, deferring verifiers to a gate a run may never reach
+([`evidence/ascend-build-nodevice-20260817.md`](evidence/ascend-build-nodevice-20260817.md), and the
+[0038 amendment](design/0038-standalone-ascend-build-worker.md)).
+
+What remains is one coupling and one unexplained observation, both in [`NEXT_SESSION.md`](NEXT_SESSION.md) §3:
+the device guard still leases a card for every attempt, and a worker preflighted device 0 while
+devices 3 and 4 were healthy and free.

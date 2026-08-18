@@ -1,232 +1,171 @@
 # Start here
 
-- Session closeout: 2026-08-17 (second session that day; the first ends at `6302541`)
+- Session closeout: 2026-08-18 (the session began 2026-08-17; the one before it ends at `6302541`)
 - Branch: `main`, working tree clean, **pushed** — `origin/main` is current
-- 374 passing tests, 2 ignored because they require Docker and a real device
-- **The whole verification baseline is green, including both boundary gates**, which had been red
-  since 2026-08-13 and unrun by anyone. All nine violations are repaired
-  ([`boundary-gates-red-20260817.md`](evidence/boundary-gates-red-20260817.md)). Locally they need
-  `/home/dawei/.cache/opencode/bin/rg` on `PATH`; CI now installs ripgrep itself.
-- CI's `rust` job passes, including both gates — the first time either has evaluated anything in CI.
-  **`msrv` fails**: SIGSEGV in the `alloyport-server` test binary under Rust 1.88.0. Pre-existing,
-  also failing on 2026-08-13, unexamined.
-- **The deployment is current** — server at `f43f30f`, workers at `9e4a9c4` (worker code unchanged
-  since), Ascend image re-pinned to `sha256:17b67083…`. The Ascend worker is connected and
-  advertises both roles; it reports `busy` because every card carries another user's process.
-- **The GB10's `nvidia-smi` returns status 9**, so the CUDA worker connects and reports its device
-  unavailable. Host condition, not AlloyPort, and it only blocks the Correctness Gate.
+- `git log --oneline 6302541..HEAD` — 22 commits
+- 386 passing tests, 2 ignored because they require Docker and a real device
+- **The whole verification baseline is green**, including both boundary gates, which had been red
+  since 2026-08-13 and which nobody had run
+- CI: `rust` and `portable-linux` pass. **`msrv` fails** — SIGSEGV in the `alloyport-server` test
+  binary under Rust 1.88.0. Pre-existing, also failing on 2026-08-13, unexamined.
 
 This is the lean entry point. [`CLAUDE.md`](../CLAUDE.md) is how this project decides what counts as
 evidence. [`HANDOFF.md`](HANDOFF.md) is the accumulated architecture record — read it for what a
 subsystem does, not for what to do next.
 
+## What is deployed and running
+
+| | identity | state |
+|---|---|---|
+| controller | `41ce7ab3…`, current with HEAD | running, `0.0.0.0:50051` |
+| Ascend worker (x86-64) | `f2635a2e…`, current with HEAD | running, connected |
+| Ascend image (build + correctness) | `sha256:17b67083…` | pinned in three places, see below |
+| GB10 worker (aarch64) | `91af4250…`, **stale** (built at `9e4a9c4`) | **down** |
+
+One reverse tunnel per host. `.alloyport-local/host-connections.md` is the authority for paths,
+digests, and how to restart any of it — that file, not recollection.
+
 ---
 
 ## 1. The one fact that should shape the next session
 
-**The rebuild loop closed, and the blocker is now the build image rather than the harness.**
-`task-002ee08d6d5540c05e5f7361` ran on the redeployed stack and produced seven candidates, six Source
-Gate runs and **four builds** — each build after the first on a candidate the model had corrected
-after reading the previous build's diagnostics. Read → correct → rebuild had never completed once
-before; it completed three times
-([`rebuild-loop-closed-20260817.md`](evidence/rebuild-loop-closed-20260817.md)).
+**Every obstacle between the model and a compiled kernel was ours, and they are now removed except
+one.** Eight live migrations have run. Not one failed because the model wrote a bad kernel; no
+compiler has ever formed an opinion about a generated kernel at all.
 
-**Then the control refuted the obvious conclusion.** Builds 2–4 all failed identically inside CANN's
-own `kernel_operator.h`, on an include it could not resolve, and that looked like a broken image. It
-is not: the repository's own person-written kernel, `fixtures/ascend-add-v1`, **compiles and links in
-that exact image** using CANN's CMake `ASC` language package, which owns the include set.
+The last two obstacles are worth stating together because they were the same mistake in different
+clothes:
 
-What was broken is that **the prompt prescribed a method that cannot work** — a raw `ccec` command
-line with one `-I` — and the model obeyed it for three of its last turns. The supported pattern is
-documented in eight corpus files, every one of them among the 972 `read_reference` cannot serve, and
-the model had asked for one of them by name a day earlier and been refused
-([`ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
+- **We told the model to compile the wrong way.** The prompt listed `kernel_operator.h`'s directory
+  and a `ccec` binary — every path real, every path probed, nobody had ever compiled with them. That
+  invocation cannot work, and the model spent three of its last turns obeying it. CANN's CMake `ASC`
+  language package is the supported path; it is documented in eight corpus files, all eight among the
+  972 that `read_reference` cannot serve, one of which the model had asked for by name and been
+  refused. Fixed; the model immediately took the supported path and its first candidate passed the
+  Source Gate on the first attempt.
+- **Our own Source Gate would have refused the supported composition.** `MissingBuildReference`
+  required every generated source to appear in the build text, while the supported build lists one
+  translation unit and `#include`s the kernel into it. `fixtures/ascend-add-v1` — a kernel a person
+  wrote, which compiles — would have failed its own gate. Fixed.
 
-Walking that gate before the model did found a second trap: `MissingBuildReference` required every
-generated source to appear in the build text, so the supported composition — one translation unit
-listed, the kernel `#include`d — would have been refused. **This repository's own specimen would have
-failed its own Source Gate.** Both are fixed; the image and its digest are untouched.
-
-Nothing is correct yet. All four builds failed before the compiler formed any opinion about the
-model's Ascend C, so no candidate has been shown to be wrong either.
-
-**Across eight live runs, not one has failed because the model wrote a bad kernel.** Seven died in
-the harness ([`fatal-harness-defects-20260816.md`](evidence/fatal-harness-defects-20260816.md)); the
-eighth ran out of turns against a build image that cannot compile Ascend C. No compiler has yet
-formed an opinion about a generated kernel.
+What remains is one device coupling: `prepare_attempt` still leases and health-checks a card for
+every attempt, including a build that opens none. See §3.
 
 ---
 
 ## 2. What changed
 
-**This session: [0044](design/0044-git-as-the-candidate-record.md) is accepted and implemented.**
-`alloyport-server candidate-record TASK_ID --into DIRECTORY` projects one task's candidate lineage
-into a real git repository — one commit per candidate, tree exactly that candidate, tagged
-`c001-…` in submission order, gate outcomes and the compiler's first error in the message. Two
-amendments to the decision as proposed, both recorded in it: the projection is built **after** a run
-rather than during it (a commit written at submission time cannot carry the gate outcome the decision
-also asked for, and nothing new belongs in a paid run's path), and it is a `alloyport-server`
-subcommand rather than a CLI one (it reads the Episode database and the CAS directly). After importing
-it re-reads every blob through `git cat-file` and rehashes it against the manifest digest.
+**Design 0044 is implemented.** `alloyport-server candidate-record TASK_ID --into DIRECTORY` projects
+a task's candidate lineage into a real git repository — one commit per candidate, tree exactly that
+candidate, tagged in submission order, gate outcomes and the compiler's first error in the message.
+Built after a run rather than during it, because a commit written at submission time cannot carry the
+gate outcome the design also asked for, and nothing new belongs in a paid run's path. It re-reads
+every blob through `git cat-file` and rehashes it against the manifest.
 
-It ran against the three real Episodes from 2026-08-16 and immediately said three things
-([`candidate-record-20260817.md`](evidence/candidate-record-20260817.md)): the correction loop had not
-closed, 18–20 corpus reads happen before the first line of Ascend C, and **a patch interface is not
-worth building** — measured, a unified diff is 27–70% of the whole tree it changes and 113% across a
-fork, against the 20× inheritance already banked. That question is now closed with evidence rather
-than deferred.
+It immediately corrected the previous closeout: `acl/acl.h` and `kernel_operator.h` were two separate
+migrations, not one loop going deeper, and **no corrected candidate had ever been rebuilt**. It also
+measured that a patch interface is not worth building — a unified diff is 27–70% of the tree it
+changes, 113% across a fork, against the 20× inheritance already banked.
 
-**Then the baseline itself was repaired.** Nine violations, in five commits that each build, test,
-and gate-check on their own: migration intake SQL moved behind the adapter boundary and the server's
-task lifecycle onto a port; `correctness.rs` 1311 → 658 across measure / calibrate / evaluate;
-`agent_runtime.rs` 901 → 372 across model turn and tool turn; `model.rs` 812 → 552; `gateway.rs`
-886 → 522 across submission and recovery; `main.rs` 1069 → 590 across connection and rendering; and
-three inline test modules moved to the `*_tests.rs` siblings this repository already uses.
+**The verification baseline was repaired.** Nine boundary violations, in five commits that each
+build, test, and gate-check on their own: intake SQL moved behind the adapter boundary, and seven
+modules that each held two jobs split along the seam. CI now installs the ripgrep both gates refuse
+to run without — they had never evaluated anything in CI.
 
-Two things the gates caught while being repaired, which is what they are for: moving a `match` on
-tool-name constants into a module where those constants were out of scope silently turned every arm
-into a catch-all (three tests failed, clippy reported the unreachable arms), and the architecture
-check noticed that `tools.reconcile` had moved file — a location assertion is how it notices a move
-at all, so the path was updated with the code.
+**The Ascend build path was straightened.** The prompt states what the toolchain provides instead of
+prescribing a command line; the Source Gate asks about reachability; the image states its own
+toolchain contract as OCI labels and was re-pinned (`sha256:521fea11…` → `sha256:17b67083…`).
 
-### The previous session (through `6302541`)
+**Four fatal defects the runs surfaced.** A stop-feedback re-ask that never rebound its input digest
+and killed an Episode before any provider call; two producers both starting one run, which made
+`attach` refuse every migration; `attach` aborting on a contract violation instead of showing the
+run; and a build asking for an accelerator it never opens.
 
-Nine defects fixed, each verified red against the code exactly as it shipped. In the order they
-would bite again:
-
-- **Citations the model could not obtain.** Gate results now name their receipt, so
-  `request_ascend_build`, `read_build_diagnostics`, and the Correctness Gate became callable at all
-  ([0042](design/0042-model-visible-receipt-references.md)).
-- **`validate_call` never ran in production.** A decorator forwarded three trait methods and
-  inherited a defaulted fourth, so Design 0040's whole correction path was dead while its tests
-  passed. The default is deleted; omitting it is now a compile error.
-- **Wrong citation versus broken machine** were one error variant. `Citation` is separate now, and
-  one chokepoint turns it into a correction turn.
-- **Retry guidance was computed and discarded.** `Never` stops, `AfterMillis` waits, and a
-  byte-identical repeat is treated as deterministic instead of retried 21 times.
-- **Failure diagnostics were hashed and thrown away** at six sites. They are published before they
-  are recorded.
-- **Budget exhaustion could not be represented.** The allowance left Episode identity, so a finished
-  Episode is reopenable and each grant is recorded
-  ([0043](design/0043-allowance-outside-episode-identity.md)).
-- **The controller could not hand a worker anything it wrote itself**, and a half-enqueued
-  assignment was unrecoverable. Both fixed at the funnel every dispatch path shares.
-- **A complete bundle cost a whole model response.** A candidate may inherit the files it did not
-  change: measured 16 384 → 788 output tokens on a live correction.
-- **One quarantined NPU idled a seven-card worker.** Capacity is now the lesser of what may run at
-  once and what is left to run it on.
-
-Also: blocking Source Gate failures name the paths they are missing, rejections name the move that
-fixes them, the build environment is stated instead of discovered, and the accelerator probe bound
-is measured rather than asserted
-([`device-probe-timeout-20260816.md`](evidence/device-probe-timeout-20260816.md)).
+**Capacity and readiness are split by role.** A worker advertises device-bound and device-free
+capacity, the readiness preflight asks for the one the role consumes, and it waits only for builders
+— verifiers are deferred to the Correctness Gate, because a run that has never compiled anything
+should not be stopped by a gate it may never reach.
 
 ---
 
 ## 3. Do this next
 
-**Decide how a build-capable worker advertises capacity**, then get a build to run. A build no
-longer needs a card; it still waits for one, because capacity is a single device-derived number. The
-three options are in the [0038 amendment](design/0038-standalone-ascend-build-worker.md) — the
-cheapest one is also the worst, because it would let a correctness assignment be dispatched with no
-free card and fail at attempt time instead of queueing.
+**1. Find out why the worker preflights device 0.** The last run had a Source-Gate-passing candidate,
+dispatched a build, and the worker failed repeatedly on `device 0 is Unhealthy` while devices 3 and 4
+were `OK` and process-free. That is not explained. The likely thread: `AscendRuntime::new` constructs
+its supervisor against `inventory[0]`, and the execution path may not be using the per-attempt
+runtime `for_attempt` returns. Start there, and read before changing — a shortcut in this exact area
+was tried and reverted on 2026-08-17 for making things worse.
 
-Everything else is downstream of that: no compiler has yet formed an opinion about a generated
-kernel.
+**2. Then decide what a device-free build receipt says.** `AscendRunReceipt` attests `device`,
+`lease`, and both device observations for every attempt. A build that genuinely holds no card needs
+that receipt able to say *no device*. That decision, not a runtime branch, is what removes the last
+coupling.
 
-Done, and it was not the image. The control — `fixtures/ascend-add-v1` compiled by hand inside the
-pinned image — links a real executable through CANN's CMake `ASC` package. The prompt was prescribing
-an impossible compiler invocation; it now states what the toolchain provides instead, and the model
-immediately took the supported path
-([`ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
+**3. Then get one build to succeed.** Everything else is downstream: no compiler has yet judged a
+generated kernel. The candidate from `task-162932dc10916e06aa0b88d2` is durable and readable with
+`candidate-record`; it uses the supported ASC build and has visible defects a compiler will name
+(`$ASCEND_HOME_PATH` where CMake needs `$ENV{…}`, `lib/` for `lib64/`, `find_package` after
+`project`). Those are the errors a correction turn exists to fix.
 
-`attach` is fixed and the image now states its own toolchain contract, so the next run can be
-watched and the environment can be asked rather than probed. What it needs is a card.
-
-**Re-run the migration**, with the record as the way to read it:
-
-```
-alloyport-cli --config <client.json> migrate fixtures/migrations/cuda-reduction-v1 --retry
-alloyport-server --config <server.json> candidate-record <task-id> --into <dir>
-git -C <dir> log --all --graph --oneline
-```
-
-Deployment state is in `.alloyport-local/host-connections.md` — that file, not recollection. The
-stack is already running at `9e4a9c4`; a rebuild is only needed if the worker changes.
+Host conditions to check first, because both are outside this repository: the GB10's `nvidia-smi`
+returns status 9, and Ascend devices 0–2 sit in `Alarm` health.
 
 ---
 
 ## 4. Known open defects and gaps
 
-1. **`read_reference` serves 127 of 1099 vendored files.** Not theoretical: the cards cite the other
-   972 by path, the model followed those citations and was refused six times in one run, and in
-   another it called the unreachable files "the critical piece". The ledger has one row per card, so
-   serving sub-files is a ledger decision, not a reader change.
-2. **Nothing observes that a candidate ran on the device.** Unchanged from the last session. Every
-   verdict still carries `unverified: [device_execution, runner_attestation]`.
-3. **`read_reference` serving 127 of 1099 files has now cost a migration, measured.** Eight corpus
-   files document `find_package(ASC)`, the supported Ascend C build, and all eight are unreachable.
-   The model asked for one of them by name on 2026-08-16 and was refused. See gap 1; this is the
-   same gap with a price on it ([`ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
-4. **A build's guard lease is the last device coupling.** Its contract asks for no card, its
-   container mounts none, capacity is split by role, and the preflight defers verifiers — but
-   `prepare_attempt` still calls `DeviceGuard::acquire_and_preflight`, which requires a card that is
-   `Ready` and process-free. Removing it needs `AscendRunReceipt` to be able to say *no device*,
-   since it attests `device`, `lease` and both observations for every attempt. A shortcut that
-   skipped selection and used `inventory[0]` was tried and reverted: it pinned builds to device 0,
-   which is in `Alarm` health
-   ([`ascend-build-nodevice-20260817.md`](evidence/ascend-build-nodevice-20260817.md)).
-5. **A cancelled task leaves its accepted attempt on the worker forever.** `task-498e257f…` was
-   cancelled and its build attempt stayed at phase `Accepted`, holding the worker's only concurrency
-   slot until the row was deleted by hand. With `max_concurrency: 1` that bricks a worker silently.
-6. **The shared Ascend host's device 0-2 sit in `Alarm` health** and the GB10's `nvidia-smi` returns
-   status 9 (`could not communicate with the NVIDIA driver`). Both are host conditions, and the
-   second keeps the CUDA verifier from registering at all.
-5. **No context compaction, and corpus reading is what fills the context.** Improving: 9 reads before
-   the first candidate and 14 total on the latest run, against 18–20 and 24 the day before, with the
-   largest single input 72 916 rather than 98 815. Still nothing summarises, and no behaviour is
-   defined for reaching the 128 000 ceiling. On the latest run **model turns**, not context, were the
-   binding constraint — three of them spent on an error nothing could fix.
-6. **Explaining a failed run still means reading SQLite by hand for anything but candidates.**
-   `candidate-record` now covers candidate lineage and gate outcomes. Turn-level history, model
-   attempts, and rejections are still hand-read JSON out of `episode.sqlite3`.
-7. **A first submission has no headroom.** Inheritance fixes corrections, not the first candidate,
-   which must be complete and measured 89.9% and 100.0% of the output ceiling on two runs. The model
-   worked around it by writing tersely; a draft mechanism is the real answer and is unbuilt. A patch
-   interface is **not** the answer and is now refuted with measurements, not argument
-   ([`candidate-record-20260817.md`](evidence/candidate-record-20260817.md) §3).
+1. **`read_reference` serves 127 of 1099 vendored files**, and the cost is now measured: the eight
+   files documenting the supported Ascend C build are all unreachable, and the model asked for one by
+   name and was refused. The ledger has one row per card, so serving sub-files is a ledger decision.
+2. **Nothing observes that a candidate ran on the device.** Every verdict still carries
+   `unverified: [device_execution, runner_attestation]`.
+3. **A build still leases a card through the device guard**, which requires `Ready` and process-free.
+   Removing it needs `AscendRunReceipt` to be able to say *no device*.
+4. **A cancelled task leaves its accepted attempt on the worker forever.** `task-498e257f…` was
+   cancelled and its build attempt held the worker's only concurrency slot until the row was deleted
+   by hand. With `max_concurrency: 1` this bricks a worker silently.
+5. **No context compaction.** Improving — 9 corpus reads before the first candidate on one run,
+   against 18–20 the day before — but nothing summarises and no behaviour is defined for the 128 000
+   ceiling.
+6. **Explaining a failed run means reading SQLite by hand** for anything but candidate lineage, which
+   `candidate-record` now covers.
+7. **A first submission has no headroom.** Inheritance fixes corrections, not the first candidate. A
+   patch interface is **not** the answer and is refuted with measurements.
 8. **Performance has rules but no execution path**, and **knowledge has an admission gate but no
-   store**. Both unchanged.
-9. **The specimen is welded into the types**, and **the vendored corpus has no license text**. Both
-   unchanged.
-10. **Two states, `Created` and `CancellationPending`, do not permit `Failed`.** No runtime path was
-   found that attempts it; that is an unverified absence, not a cleared one.
-11. **CI's `msrv` job fails with a SIGSEGV** in the `alloyport-server` test binary under Rust
-    1.88.0, the declared minimum. Pre-existing — it also failed on 2026-08-13 — and nobody has looked
-    at it. The workspace's MSRV claim is therefore unverified.
+   store**.
+9. **The specimen is welded into the types**, and **the vendored corpus has no license text**.
+10. **Two states, `Created` and `CancellationPending`, do not permit `Failed`.** An unverified
+    absence, not a cleared one.
+11. **CI's `msrv` job fails with a SIGSEGV** under Rust 1.88.0, the declared minimum. The MSRV claim
+    is unverified.
+12. **The GB10 worker is stale and down**, and its host's NVIDIA driver is not answering. It serves
+    only the Correctness Gate, which nothing has reached.
 
 ---
 
 ## 5. Rules these sessions kept paying for
 
-**Read the record, not the applicant — including your own record.** The claim that the correction loop
-had closed was written from watching two runs live. The record says they were two migrations and no
-rebuild ever finished. Nothing was dishonest; nobody went back and looked.
+**Read the record, not the applicant — including your own record.** The claim that the correction
+loop had closed was written from watching runs live. The record said otherwise, in one command.
 
-**A gate whose fallback is another runner must say whether that runner ran.** §4.9 said "CI still
-runs them" while the same page's second line said nothing had been pushed. Both true, and together
-they hid three days of a red baseline.
+**A probe that lists ingredients is not a recipe that was cooked.** Every path in the build-environment
+prompt was real and individually probed. Nobody had compiled with them, and the combination could not
+work. Same shape as the tolerance nobody measured.
 
-**Fix the class, not the site.** Corrected four times, and the fourth was caught by a compiler rather
-than by reading. A net at one call site is a fix that buys exactly one more run.
+**Walk the honest path through every gate you tighten, yourself, before the model does.** Doing it
+found that this repository's own person-written kernel would have failed this repository's own Source
+Gate.
 
-**We apply "don't trust, verify" to the model and exempt ourselves.** Twice in one day, in the same
-codebase: a test that took its digest from the gateway's return value, and a test that exercised a
-gateway production never uses unwrapped. Both passed for months.
+**A gate whose fallback is another runner must say whether that runner ran.** "CI still runs them"
+was true and useless: nothing had been pushed, and the runner had no ripgrep either.
 
-**A check that cannot fail proves nothing.** Three assertions written this session were true by
-construction — a configured value equal to its default, a digest compared against a stored copy of
-itself — and each was found by mutating the implementation rather than by rereading the test.
+**Fix the class, not the site.** A build's device requirement lived in four places. Fixing three left
+it blocked, and the fourth is a receipt schema, not a branch.
 
-**A defect the model can read and fix must not end the migration.** Stated in `CLAUDE.md`, designed
-in 0040, and dead in production for three days because a decorator inherited a default.
+**A check that cannot fail proves nothing** — and a change nothing can catch is the same defect. The
+mutation that ignored a worker's role compiled cleanly and no test noticed until the decision was
+lifted out of the loop it was buried in.
+
+**When you move fast in a device path, you break a device path.** A shortcut that pinned builds to
+`inventory[0]` was worse than what it replaced and had to be reverted the same evening.
