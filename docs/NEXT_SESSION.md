@@ -10,8 +10,11 @@
 - CI's `rust` job passes, including both gates — the first time either has evaluated anything in CI.
   **`msrv` fails**: SIGSEGV in the `alloyport-server` test binary under Rust 1.88.0. Pre-existing,
   also failing on 2026-08-13, unexamined.
-- **The deployment is current at `9e4a9c4`** — server, x86-64 Ascend worker, GB10-native aarch64
-  worker. Both workers connected READY. Server, tunnels and workers were left running.
+- **The deployment is current** — server at `f43f30f`, workers at `9e4a9c4` (worker code unchanged
+  since), Ascend image re-pinned to `sha256:17b67083…`. The Ascend worker is connected and
+  advertises both roles; it reports `busy` because every card carries another user's process.
+- **The GB10's `nvidia-smi` returns status 9**, so the CUDA worker connects and reports its device
+  unavailable. Host condition, not AlloyPort, and it only blocks the Correctness Gate.
 
 This is the lean entry point. [`CLAUDE.md`](../CLAUDE.md) is how this project decides what counts as
 evidence. [`HANDOFF.md`](HANDOFF.md) is the accumulated architecture record — read it for what a
@@ -131,16 +134,10 @@ an impossible compiler invocation; it now states what the toolchain provides ins
 immediately took the supported path
 ([`ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
 
-**A run is queued on this**: `task-498e257f6379bf01c4a47406` has a Source-Gate-passing candidate
-built the supported way, with `request_ascend_build` pending because no NPU was free. If it is still
-pending, check `npu-smi` on the Ascend host first; nothing in this repository is blocking it.
+`attach` is fixed and the image now states its own toolchain contract, so the next run can be
+watched and the environment can be asked rather than probed. What it needs is a card.
 
-**Then fix `alloyport-cli attach`**, which prints `run event sequence is invalid: run.started must be
-the first event` and stops. Every observation in
-[`rebuild-loop-closed-20260817.md`](evidence/rebuild-loop-closed-20260817.md) had to come from
-reading SQLite and the CAS by hand. Watching a run is how you decide whether to keep paying for it.
-
-**Then re-run the migration**, with the record as the way to read it:
+**Re-run the migration**, with the record as the way to read it:
 
 ```
 alloyport-cli --config <client.json> migrate fixtures/migrations/cuda-reduction-v1 --retry
@@ -165,8 +162,11 @@ stack is already running at `9e4a9c4`; a rebuild is only needed if the worker ch
    files document `find_package(ASC)`, the supported Ascend C build, and all eight are unreachable.
    The model asked for one of them by name on 2026-08-16 and was refused. See gap 1; this is the
    same gap with a price on it ([`ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
-4. **`alloyport-cli attach` is broken.** `run event sequence is invalid: run.started must be the
-   first event`, two lines in, on a run the server executed correctly. The operator has no live view.
+4. **A build leases an NPU it does not need.** The build contract requires `device_count == 1` and
+   the worker mounts a card, but the control compiles and links `fixtures/ascend-add-v1` with **no
+   accelerator attached**. On a shared host where every Ready card carries another user's process
+   this is the difference between blocked and building. Changing it touches Design 0038 and what a
+   build receipt attests, so it is a decision, not a patch.
 5. **No context compaction, and corpus reading is what fills the context.** Improving: 9 reads before
    the first candidate and 14 total on the latest run, against 18–20 and 24 the day before, with the
    largest single input 72 916 rather than 98 815. Still nothing summarises, and no behaviour is
