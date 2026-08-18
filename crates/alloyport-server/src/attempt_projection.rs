@@ -8,11 +8,33 @@ use super::{
 };
 
 impl WorkerControlService {
+    /// Starts a run, unless something that owns it already did.
+    ///
+    /// An assignment used to be a run, so dispatching one published `run.started`. A migration run
+    /// is now the umbrella: the management service starts it when the migration is captured, and
+    /// many assignments happen inside it. Both producers published a start under different dedup
+    /// keys, so every `alloyport-cli attach` on a migration died two events in with
+    /// `run.started must be the first event` — the reducer was right and the stream was wrong.
+    ///
+    /// The condition is emptiness rather than a producer check, because the operator path that runs
+    /// a candidate Episode directly still has no management-service start and would otherwise leave
+    /// a run nothing can replay. Design 0017 already says this translator does not emit
+    /// `run.completed` or verdicts because it does not own those decisions; a run's start is the
+    /// same class, and this is the narrowest way to say so without silencing the only start some
+    /// runs get.
     pub(super) fn record_run_started(
         &self,
         contract: &AssignmentContract,
         now_ms: u64,
     ) -> Result<AppendOutcome, InteractionError> {
+        if let Some(existing) = self
+            .interactions
+            .events_after(contract.task_id.as_str(), 0, 1)?
+            .into_iter()
+            .next()
+        {
+            return Ok(AppendOutcome::Duplicate(existing));
+        }
         let mut frame = ProducerEvent::new(
             contract.task_id.to_string(),
             Producer::new("alloyport-server", "controller"),
@@ -203,5 +225,104 @@ impl WorkerControlService {
                 .map_err(|error| interaction_status(&error))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloyport_core::{
+        ArtifactDescriptor, AssignmentId, AttemptId, CandidateId, ExecutionContract, ExecutionKind,
+        TaskId,
+    };
+    use alloyport_events::{EventEnvelope, RunReducer};
+
+    fn contract(task_id: &str) -> AssignmentContract {
+        AssignmentContract {
+            assignment_id: AssignmentId::try_from("assignment-1").expect("assignment"),
+            attempt_id: AttemptId::try_from("attempt-1").expect("attempt"),
+            attempt_number: 1,
+            idempotency_key: "key-1".to_owned(),
+            task_id: TaskId::try_from(task_id).expect("task"),
+            candidate_id: CandidateId::try_from("candidate-1").expect("candidate"),
+            execution: ExecutionContract {
+                executor_kind: ExecutionKind::AscendBuild,
+                argv: vec!["fixture".into()],
+                working_directory: ".".into(),
+                environment: Vec::new(),
+                timeout_ms: 1_000,
+                bundle: ArtifactDescriptor {
+                    digest: format!("sha256:{}", "a".repeat(64))
+                        .parse()
+                        .expect("digest"),
+                    size_bytes: 1,
+                    media_type: "application/octet-stream".into(),
+                },
+                image: ArtifactDescriptor {
+                    digest: format!("sha256:{}", "b".repeat(64))
+                        .parse()
+                        .expect("digest"),
+                    size_bytes: 0,
+                    media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+                },
+                limits: None,
+            },
+            required_features: Vec::new(),
+        }
+    }
+
+    /// Two producers must not both start one run, or nothing can replay it.
+    ///
+    /// The management service starts a migration run when it is captured; assignments then run
+    /// inside it. Both used to publish `run.started`, so `alloyport-cli attach` failed two events
+    /// in on every migration with `run.started must be the first event`.
+    #[test]
+    fn an_assignment_does_not_restart_a_run_its_owner_already_started() {
+        let service = WorkerControlService::new();
+        let task = "task-attach-1";
+
+        // What the management service publishes when a migration is captured.
+        let mut start = ProducerEvent::new(
+            task.to_owned(),
+            Producer::new("alloyport-server", "management"),
+            Event::RunStarted {
+                task: "migrate something".to_owned(),
+            },
+        );
+        start.task_id = Some(task.to_owned());
+        start.emitted_at_unix_ms = 1;
+        start.authority = Authority::Observed;
+        start.visibility = Visibility::User;
+        service
+            .interactions
+            .append("migration-captured", &start)
+            .expect("owner start");
+
+        service
+            .record_run_started(&contract(task), 2)
+            .expect("assignment start");
+
+        let events: Vec<EventEnvelope> = service.interactions.events(task).expect("events");
+        assert_eq!(events.len(), 1, "the run must be started exactly once");
+        let mut reducer = RunReducer::new();
+        for event in &events {
+            reducer.apply(event).expect("the stream must replay");
+        }
+    }
+
+    /// A run nothing else started still gets one, or the operator path becomes unreplayable.
+    #[test]
+    fn an_assignment_still_starts_a_run_nobody_owns() {
+        let service = WorkerControlService::new();
+        let task = "task-attach-2";
+        service
+            .record_run_started(&contract(task), 1)
+            .expect("assignment start");
+        let events: Vec<EventEnvelope> = service.interactions.events(task).expect("events");
+        assert_eq!(events.len(), 1);
+        let mut reducer = RunReducer::new();
+        for event in &events {
+            reducer.apply(event).expect("the stream must replay");
+        }
     }
 }

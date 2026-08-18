@@ -264,6 +264,11 @@ async fn attach_migration(task_id: String) -> Result<(), String> {
         .into_inner();
     let mut reducer = RunReducer::new();
     let mut stdout = io::stdout().lock();
+    // The reducer checks the run contract; attach shows the run. A stream that violates the
+    // contract is exactly when an operator most needs to see it, so a violation is reported once
+    // and rendering continues. Aborting instead made every migration unwatchable the moment two
+    // producers both published `run.started`, and left eight recorded runs unreadable after it.
+    let mut reported = false;
     while let Some(event) = stream
         .message()
         .await
@@ -271,9 +276,15 @@ async fn attach_migration(task_id: String) -> Result<(), String> {
     {
         let envelope: EventEnvelope = serde_json::from_slice(&event.envelope_json)
             .map_err(|error| format!("server returned an invalid canonical event: {error}"))?;
-        reducer
-            .apply(&envelope)
-            .map_err(|error| format!("run event sequence is invalid: {error}"))?;
+        if let Err(error) = reducer.apply(&envelope)
+            && !reported
+        {
+            reported = true;
+            eprintln!(
+                "warning: this run's event sequence violates the canonical contract ({error}); \
+                 showing it anyway, and the lifecycle summary below may be wrong"
+            );
+        }
         stdout
             .write_all(render_plain(&envelope).as_bytes())
             .map_err(|error| error.to_string())?;
