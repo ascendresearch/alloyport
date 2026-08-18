@@ -122,21 +122,18 @@ is measured rather than asserted
 
 ## 3. Do this next
 
-**Make the Ascend build image able to compile Ascend C.** Everything else is now downstream of this;
-four builds have failed without the compiler ever reaching the model's kernel. In order of how much
-each assumes:
+**Get one build onto a free NPU.** Everything else is downstream: no compiler has yet formed an
+opinion about a generated kernel, and the last candidate is waiting on hardware, not on code.
 
-1. **Invoke the vendor's supported driver.** CANN ships `ascendc`/`bisheng` wrappers that set their
-   own include paths. The trusted build runner building a raw `ccec` command line with one `-I` is
-   this repository's choice, and it is the choice that fails. This assumes least: it stops the
-   harness from having an opinion about CANN's internal layout.
-2. **Or give the runner the full include set**, so `kernel_operator.h` resolves. That is a fact about
-   the image and belongs in the image's contract, not in a candidate's `CMakeLists.txt`.
-3. **Either way, tell the model what the toolchain layout is.** Its `GLOB_RECURSE` move shows it will
-   use such a thing correctly; today it can only search the one subtree it was told about.
+Done, and it was not the image. The control — `fixtures/ascend-add-v1` compiled by hand inside the
+pinned image — links a real executable through CANN's CMake `ASC` package. The prompt was prescribing
+an impossible compiler invocation; it now states what the toolchain provides instead, and the model
+immediately took the supported path
+([`ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
 
-Walk the honest path first: build `fixtures/ascend-add-v1` — a kernel a person wrote — inside that
-image by hand. If it does not compile either, no candidate could have.
+**A run is queued on this**: `task-498e257f6379bf01c4a47406` has a Source-Gate-passing candidate
+built the supported way, with `request_ascend_build` pending because no NPU was free. If it is still
+pending, check `npu-smi` on the Ascend host first; nothing in this repository is blocking it.
 
 **Then fix `alloyport-cli attach`**, which prints `run event sequence is invalid: run.started must be
 the first event` and stops. Every observation in

@@ -140,3 +140,51 @@ already earns a new fingerprint.
   past are gone.
 - **Nothing about the arch flag.** `--npu-arch=dav-3510` is what the fixture uses and what the prompt
   already stated; whether it is right for every future target SoC is not established by one fixture.
+
+## The verification runs, and what they did and did not settle
+
+**`task-d59407d835a580f4c5cf5aee` never reached a candidate.** It failed at turn 5, before any
+provider call, with `model continuation input digest does not bind its results`. Unrelated to the
+build path: a turn that calls no tools leaves the durable provider context with no pending results,
+and `review_stop` re-asked the model without rebinding `next_input_digest`, so the loop presented a
+digest binding the previous turn's results while the store recomputed it from an empty set. Fixed,
+with a test that fails against the reverted implementation.
+
+That defect is very likely what ended `task-ccd149dfc0f421d97ed7feb4` on 2026-08-16 with 21
+consecutive `confirmed_not_sent` attempts. **That run's diagnostic was hashed and thrown away as it
+was recorded**, so it cost a paid run and a day of not knowing. This one, with bytes behind the
+digest, cost twenty minutes and one query. That is the entire value of the fix that publishes
+diagnostics before recording them, measured.
+
+**`task-498e257f6379bf01c4a47406` settles the source question.** Its Source-Gate-passing candidate
+builds this way:
+
+```cmake
+project(alloyport_reduction_candidate LANGUAGES ASC CXX)
+find_package(ASC REQUIRED)
+add_library(alloyport_reduction_candidate STATIC reduce_sum_kernel.asc reduce_sum_launch.asc)
+target_compile_options(alloyport_reduction_candidate PRIVATE
+    $<$<COMPILE_LANGUAGE:ASC>:--npu-arch=dav-3510>)
+```
+
+`.asc` sources, the ASC language, the arch flag on ASC sources only. No hand-rolled compiler command
+line and no guessed include directory. **Its first candidate also passed the Source Gate on the first
+attempt**, which no previous run has done.
+
+The candidate still has visible defects — `$ASCEND_HOME_PATH` where CMake needs
+`$ENV{ASCEND_HOME_PATH}`, `lib/` where the toolkit has `lib64/`, and `find_package(ASC)` after
+`project(... LANGUAGES ASC)` rather than before it, which is the order the working fixture uses.
+Those are exactly the errors a compiler names and a correction turn can fix. That is the difference
+this change was for: the model is now wrong in ways the loop can resolve, instead of obedient to an
+instruction that could not be satisfied.
+
+**The build itself is unverified**, and not for a reason in this repository. Every Ready NPU on the
+shared Ascend host carried another user's process, and the one process-free card was in `Alarm`
+health, so the device guard correctly refused to run:
+
+```
+device probe unavailable: no allowed accelerator is Ready, process-free, and unleased
+```
+
+The build request stayed pending. Whether this candidate compiles is the next thing a run answers,
+and it needs a free card rather than a change.
