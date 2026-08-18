@@ -1382,11 +1382,16 @@ loop three times** — seven candidates, six Source Gate runs, four builds, each
 on a candidate corrected from the previous build's diagnostics. That hop had never completed once.
 The blocker moved with it: build 1 failed in CMake configuration, past every earlier run, and builds
 2–4 failed identically inside CANN's own `kernel_operator.h`, which includes a `kernel_tpipe.h` that
-lives in a different top-level tree. No candidate can fix that from its `CMakeLists.txt`, and the
-model — after guessing twice and then writing a `GLOB_RECURSE` to discover the path instead — could
-only search the subtree it had been told about. **The Ascend build image, not the harness, is now the
-blocking defect**
-([`evidence/rebuild-loop-closed-20260817.md`](evidence/rebuild-loop-closed-20260817.md)).
+lives in a different top-level tree. That looked like a broken image and is not: the
+repository's own person-written kernel compiles and links in that exact image through CANN's CMake
+`ASC` language package. **The prompt had prescribed a method that cannot work** — a raw `ccec`
+command line with one `-I` — while the supported pattern sat in eight corpus files that
+`read_reference` cannot serve, one of which the model had asked for by name and been refused. Walking
+the Source Gate against the supported composition found a second trap: it required every generated
+source to appear in the build text, which this repository's own specimen does not do. Both fixed;
+the image digest is deliberately untouched, so receipts stay comparable
+([`evidence/rebuild-loop-closed-20260817.md`](evidence/rebuild-loop-closed-20260817.md),
+[`evidence/ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
 
 ## 2026-08-17: the candidate record
 

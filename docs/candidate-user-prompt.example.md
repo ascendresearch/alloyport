@@ -12,16 +12,23 @@ do not copy source files or supply those identities manually.
 ## Build environment
 
 The Build Gate compiles your bundle inside one pinned image with CMake and no network. Replace the
-facts below with ones probed from the exact image your deployment pins; they are environment facts,
-not a prescribed method, and a wrong one costs a whole build round trip. The first migration to
-reach this compiler spent two builds discovering that `acl/acl.h` and `kernel_operator.h` were not
-on the default include path.
+facts below with ones **observed by compiling a known-good kernel in the exact image your deployment
+pins** — not merely probed. Listing paths that exist is not the same as having built with them, and
+that difference cost one whole migration.
 
 - CANN root: `$ASCEND_HOME_PATH` (exported in the image)
-- ACL runtime headers: `$ASCEND_HOME_PATH/<arch>-linux/include`
-- Ascend C kernel headers: `$ASCEND_HOME_PATH/<arch>-linux/tikcpp/tikcfw`
-- Ascend C compiler: `$ASCEND_HOME_PATH/<arch>-linux/ccec_compiler/bin/ccec`
+- CANN ships a CMake package for the Ascend C language. `find_package(ASC REQUIRED)` with
+  `project(... LANGUAGES ASC CXX)` registers `.asc` as a compiled language and configures the
+  device compiler, its linker, and its complete include set.
+- Device architecture flag, applied to ASC sources only, e.g.
+  `$<$<COMPILE_LANGUAGE:ASC>:--npu-arch=<arch>>`
+- ACL runtime headers for the host wrapper: `$ASCEND_HOME_PATH/<arch>-linux/include`
 - Host compiler: the image's system C++ compiler; CMake uses it unless your build files say otherwise
 
-Device sources are Ascend C and are not compiled by the host compiler. Your build integration is
-responsible for pointing at these locations; nothing is added to the include path for you.
+Device sources are Ascend C and are not compiled by the host compiler.
+
+**A recorded dead end, so you do not repeat it.** Invoking the device compiler by hand — a raw
+`ccec`/`bisheng` command line with `-I .../tikcpp/tikcfw` — does not work. `kernel_operator.h`
+includes `kernel_tpipe.h`, which lives in a different top-level tree, and no set of include flags you
+can guess from outside the image will resolve it. A previous migration spent three of its remaining
+turns on this and ran out. The language package exists precisely to own that include set.

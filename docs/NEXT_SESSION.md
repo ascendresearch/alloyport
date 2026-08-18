@@ -28,21 +28,21 @@ after reading the previous build's diagnostics. Read → correct → rebuild had
 before; it completed three times
 ([`rebuild-loop-closed-20260817.md`](evidence/rebuild-loop-closed-20260817.md)).
 
-**The failure moved out of the model's reach.** Build 1 failed in CMake configuration — past every
-previous run, which died on a missing include in the first translation unit. Builds 2–4 all failed
-identically inside the vendor's own header:
+**Then the control refuted the obvious conclusion.** Builds 2–4 all failed identically inside CANN's
+own `kernel_operator.h`, on an include it could not resolve, and that looked like a broken image. It
+is not: the repository's own person-written kernel, `fixtures/ascend-add-v1`, **compiles and links in
+that exact image** using CANN's CMake `ASC` language package, which owns the include set.
 
-```
-/usr/local/Ascend/.../tikcpp/tikcfw/kernel_operator.h:22:10:
-fatal error: 'kernel_tpipe.h' file not found
-```
+What was broken is that **the prompt prescribed a method that cannot work** — a raw `ccec` command
+line with one `-I` — and the model obeyed it for three of its last turns. The supported pattern is
+documented in eight corpus files, every one of them among the 972 `read_reference` cannot serve, and
+the model had asked for one of them by name a day earlier and been refused
+([`ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
 
-`kernel_tpipe.h` is real, and it is in `asc/include/interface/`, a different top-level tree from the
-one `kernel_operator.h` sits in. Compiling with `-I .../tikcpp/tikcfw` cannot resolve it and no
-correction to that line can. The model guessed twice, then wrote a `GLOB_RECURSE` to discover the
-path instead of guessing — the right move — and searched the only subtree anything had told it about.
-It cannot list the image. **The harness handed it a compiler whose requirements it has no way to
-see.**
+Walking that gate before the model did found a second trap: `MissingBuildReference` required every
+generated source to appear in the build text, so the supported composition — one translation unit
+listed, the kernel `#include`d — would have been refused. **This repository's own specimen would have
+failed its own Source Gate.** Both are fixed; the image and its digest are untouched.
 
 Nothing is correct yet. All four builds failed before the compiler formed any opinion about the
 model's Ascend C, so no candidate has been shown to be wrong either.
@@ -164,11 +164,10 @@ stack is already running at `9e4a9c4`; a rebuild is only needed if the worker ch
    serving sub-files is a ledger decision, not a reader change.
 2. **Nothing observes that a candidate ran on the device.** Unchanged from the last session. Every
    verdict still carries `unverified: [device_execution, runner_attestation]`.
-3. **The Ascend build image cannot compile Ascend C.** `kernel_operator.h` includes
-   `kernel_tpipe.h`, which lives in a different top-level CANN tree; the runner's raw `ccec`
-   invocation with one `-I` cannot resolve it, and no candidate can fix that from its
-   `CMakeLists.txt`. Four builds, three of them identical. This is now the blocking defect
-   ([`rebuild-loop-closed-20260817.md`](evidence/rebuild-loop-closed-20260817.md)).
+3. **`read_reference` serving 127 of 1099 files has now cost a migration, measured.** Eight corpus
+   files document `find_package(ASC)`, the supported Ascend C build, and all eight are unreachable.
+   The model asked for one of them by name on 2026-08-16 and was refused. See gap 1; this is the
+   same gap with a price on it ([`ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
 4. **`alloyport-cli attach` is broken.** `run event sequence is invalid: run.started must be the
    first event`, two lines in, on a run the server executed correctly. The operator has no live view.
 5. **No context compaction, and corpus reading is what fills the context.** Improving: 9 reads before

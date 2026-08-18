@@ -228,3 +228,136 @@ fn a_blocking_failure_names_the_paths_it_is_missing() {
         );
     }
 }
+
+/// The composition CANN's own `CMake` language package expects, which the gate used to refuse.
+///
+/// `fixtures/ascend-add-v1` — a kernel a person wrote and that compiles in the pinned build image —
+/// lists one translation unit and `#include`s the kernel into it. The earlier rule required every
+/// generated source to appear in the build text, so this repository's own specimen would not have
+/// passed its own Source Gate. Nobody had walked the gate against a supported build.
+#[test]
+fn a_kernel_included_into_a_listed_translation_unit_is_reached() {
+    let device =
+        "#include \"kernel_operator.h\"\nclass K { __aicore__ inline void Run(GM_ADDR x) {} };";
+    let host = concat!(
+        "#include \"reduce_kernel.asc\"\n",
+        "extern \"C\" int alloyport_reduce_sum_f32(const float *input, size_t elements, float *output)",
+        " { ACLRT_LAUNCH_KERNEL(reduce_sum); }"
+    );
+    // Only the host translation unit is listed, exactly as the fixture's CMakeLists does.
+    let build = concat!(
+        "find_package(ASC REQUIRED)\n",
+        "project(x LANGUAGES ASC CXX)\n",
+        "add_library(alloyport_reduction_candidate host.asc)"
+    );
+    let mapping = "input/kernel.cu -> generated/reduce_kernel.asc\ninput/host.cu -> generated/host.asc\ngenerated/CMakeLists.txt";
+    let (manifest, sources) = asc_source_set(device, host, build, mapping);
+    let digest = Sha256Digest::digest_bytes(b"manifest");
+    let receipt = evaluate_source_gate(&manifest, digest, &sources);
+    assert!(
+        receipt.passed(),
+        "the supported composition must pass: {:?}",
+        receipt.failures()
+    );
+}
+
+/// A source nothing reaches still blocks: the compiler would never see it.
+#[test]
+fn a_generated_source_no_build_file_reaches_still_blocks() {
+    let device =
+        "#include \"kernel_operator.h\"\nclass K { __aicore__ inline void Run(GM_ADDR x) {} };";
+    let host = "extern \"C\" int alloyport_reduce_sum_f32(const float *input, size_t elements, float *output) { ACLRT_LAUNCH_KERNEL(reduce_sum); }";
+    let build = concat!(
+        "find_package(ASC REQUIRED)\n",
+        "project(x LANGUAGES ASC CXX)\n",
+        "add_library(alloyport_reduction_candidate host.asc)"
+    );
+    let mapping = "input/kernel.cu -> generated/reduce_kernel.asc\ninput/host.cu -> generated/host.asc\ngenerated/CMakeLists.txt";
+    let (manifest, sources) = asc_source_set(device, host, build, mapping);
+    let digest = Sha256Digest::digest_bytes(b"manifest");
+    let receipt = evaluate_source_gate(&manifest, digest, &sources);
+    let blocking: Vec<_> = receipt.blocking().map(|failure| failure.kind).collect();
+    assert!(
+        blocking.contains(&SourceGateFailureKind::MissingBuildReference),
+        "an unreached kernel must block: {blocking:?}"
+    );
+}
+
+/// A mention that is not an `#include` does not reach anything.
+#[test]
+fn naming_a_source_in_prose_does_not_reach_it() {
+    let device =
+        "#include \"kernel_operator.h\"\nclass K { __aicore__ inline void Run(GM_ADDR x) {} };";
+    let host = concat!(
+        "// the kernel lives in reduce_kernel.asc and is built separately\n",
+        "extern \"C\" int alloyport_reduce_sum_f32(const float *input, size_t elements, float *output)",
+        " { ACLRT_LAUNCH_KERNEL(reduce_sum); }"
+    );
+    let build = "find_package(ASC REQUIRED)\nadd_library(alloyport_reduction_candidate host.asc)";
+    let mapping = "input/kernel.cu -> generated/reduce_kernel.asc\ninput/host.cu -> generated/host.asc\ngenerated/CMakeLists.txt";
+    let (manifest, sources) = asc_source_set(device, host, build, mapping);
+    let digest = Sha256Digest::digest_bytes(b"manifest");
+    let receipt = evaluate_source_gate(&manifest, digest, &sources);
+    assert!(
+        receipt
+            .blocking()
+            .any(|failure| failure.kind == SourceGateFailureKind::MissingBuildReference),
+        "a comment is not a build edge"
+    );
+}
+
+fn asc_source_set(
+    device: &str,
+    host: &str,
+    build: &str,
+    mapping: &str,
+) -> (CandidateSourceManifest, BTreeMap<BundlePath, Vec<u8>>) {
+    let files = vec![
+        file(
+            "generated/reduce_kernel.asc",
+            GeneratedSourceKind::AscendCDevice,
+            device,
+        ),
+        file("generated/host.asc", GeneratedSourceKind::AscendHost, host),
+        file(
+            "generated/CMakeLists.txt",
+            GeneratedSourceKind::BuildIntegration,
+            build,
+        ),
+        file(
+            "generated/component-map.txt",
+            GeneratedSourceKind::ComponentMapping,
+            mapping,
+        ),
+    ];
+    let manifest = CandidateSourceManifest::new(CandidateSourceManifestSpec {
+        candidate_id: CandidateId::try_from("candidate-asc-1").expect("candidate ID"),
+        task_id: TaskId::try_from("task-source-1").expect("task ID"),
+        parent_candidate_id: None,
+        migration_spec_digest: Sha256Digest::digest_bytes(b"spec"),
+        generation_strategy: GenerationStrategy::DirectAscendC,
+        public_symbol: "alloyport_reduce_sum_f32".to_owned(),
+        build_target: "alloyport_reduction_candidate".to_owned(),
+        input_source_paths: ["input/kernel.cu", "input/host.cu"]
+            .into_iter()
+            .map(|path| BundlePath::try_from(path).expect("input path"))
+            .collect(),
+        source_bundle_digest: Sha256Digest::digest_bytes(b"bundle"),
+        files,
+    })
+    .expect("manifest");
+    let sources = manifest
+        .files()
+        .iter()
+        .map(|entry| {
+            let bytes = match entry.kind() {
+                GeneratedSourceKind::AscendCDevice => device.as_bytes(),
+                GeneratedSourceKind::AscendHost => host.as_bytes(),
+                GeneratedSourceKind::BuildIntegration => build.as_bytes(),
+                GeneratedSourceKind::ComponentMapping => mapping.as_bytes(),
+            };
+            (entry.path().clone(), bytes.to_vec())
+        })
+        .collect();
+    (manifest, sources)
+}

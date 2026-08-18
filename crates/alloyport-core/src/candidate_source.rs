@@ -524,6 +524,58 @@ fn inspect_host(
     }
 }
 
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or_default()
+}
+
+/// Every generated source the build reaches: named by a build file, or included by one it names.
+///
+/// The earlier rule required each source to appear in the build text itself, which forbids the
+/// composition CANN's own `CMake` language package expects — one translation unit listed, the kernel
+/// `#include`d into it. This repository's person-written specimen, `fixtures/ascend-add-v1`, is
+/// written that way and would have been refused by its own gate. That is what walking the honest
+/// path through a gate is for, and nobody had walked this one against a supported build.
+///
+/// Still text, and still blocking: a source nothing reaches is a source the compiler never sees, and
+/// the harness would link a candidate that does not contain it.
+fn buildable_names<'a>(
+    build: &str,
+    sources: &'a BTreeMap<BundlePath, (GeneratedSourceKind, &'a str)>,
+) -> BTreeSet<&'a str> {
+    let mut reached: BTreeSet<&str> = sources
+        .keys()
+        .map(|path| file_name(path.as_str()))
+        .filter(|name| build.contains(*name))
+        .collect();
+    // Includes can nest, and the fixed point is reached in at most one pass per file.
+    for _ in 0..sources.len() {
+        let mut grew = false;
+        for (path, (_, contents)) in sources {
+            if !reached.contains(file_name(path.as_str())) {
+                continue;
+            }
+            for candidate in sources.keys().map(|other| file_name(other.as_str())) {
+                if !reached.contains(candidate) && includes(contents, candidate) {
+                    reached.insert(candidate);
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    reached
+}
+
+/// Whether `contents` has an `#include` naming `target`, rather than merely mentioning it.
+fn includes(contents: &str, target: &str) -> bool {
+    contents.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("#include") && line.contains(target)
+    })
+}
+
 fn inspect_build(
     manifest: &CandidateSourceManifest,
     sources: &BTreeMap<BundlePath, (GeneratedSourceKind, &str)>,
@@ -538,6 +590,7 @@ fn inspect_build(
     // Naming the paths rather than the rule. The check already knows exactly which files are
     // unreferenced; withholding them made the model guess at a format it could not find, and cost
     // two to four turns on every run that reached this gate.
+    let reachable = buildable_names(&build, sources);
     let missing: Vec<&str> = manifest
         .files
         .iter()
@@ -545,7 +598,7 @@ fn inspect_build(
             matches!(
                 file.kind,
                 GeneratedSourceKind::AscendCDevice | GeneratedSourceKind::AscendHost
-            ) && !build.contains(file.path.as_str().rsplit('/').next().unwrap_or_default())
+            ) && !reachable.contains(file_name(file.path.as_str()))
         })
         .map(|file| file.path.as_str())
         .collect();
@@ -554,8 +607,8 @@ fn inspect_build(
             SourceGateFailureKind::MissingBuildReference,
             None,
             format!(
-                "build integration does not reference these generated sources: {}. The gate looks \
-                 for each file name in the build files it was given.",
+                "build integration does not reach these generated sources: {}. A source counts as \
+                 reached when the build files name it, or when a source they do name includes it.",
                 missing.join(", ")
             ),
         ));
