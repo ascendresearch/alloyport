@@ -292,11 +292,20 @@ fn trusted_images_declare_the_complete_runner_toolchain() {
     for required in [
         "python3",
         "ASCEND_TOOLKIT_HOME",
-        "ccec_compiler",
         "/usr/local/Ascend/driver/lib64",
+        // What the image says it can compile. The prompt once listed a `ccec` binary and an include
+        // directory, every path real, and invited an invocation that cannot work; the image said
+        // nothing either way and a migration was spent on it. It says so now.
+        "org.alloyport.toolchain.asc_cmake_package",
+        "org.alloyport.toolchain.device_compiler",
+        "org.alloyport.toolchain.verified_by",
     ] {
         assert!(ascend.contains(required), "Ascend image omits {required}");
     }
+    // An earlier revision required the literal `ccec_compiler`, satisfied by a `PATH` entry we added
+    // that does not exist in this CANN layout. It asserted a guarantee nobody had checked and would
+    // have passed just as happily with the compiler absent. Whether this toolchain compiles is
+    // established by building `fixtures/ascend-add-v1` in the image, not by a substring.
     assert!(!cuda.contains("COPY "));
     assert!(!ascend.contains("COPY "));
 }

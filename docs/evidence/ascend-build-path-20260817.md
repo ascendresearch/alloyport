@@ -3,7 +3,9 @@
 - Date: 2026-08-17
 - Corrects: [`rebuild-loop-closed-20260817.md`](rebuild-loop-closed-20260817.md), which called the
   Ascend build image the blocking defect. It is not. The image compiles Ascend C.
-- Image: `alloyport-ascend-build-v1:local`, config digest `sha256:521fea11…`, **unchanged**
+- Image at the time: `alloyport-ascend-build-v1:local`, config digest `sha256:521fea11…`. It was
+  re-fingerprinted later the same day for a different reason:
+  [`ascend-image-fingerprint-20260817.md`](ascend-image-fingerprint-20260817.md)
 
 ## The control, which should have been run before calling anything impossible
 
@@ -115,13 +117,15 @@ candidate configuration, and recording the digest boundary here so no reader com
 across it. It would also have had to stay a **base** image: the fix could not be anything that only
 `ascend-add-v1` needs, because one image serves every migration task.
 
-One real but cosmetic defect is left alone on purpose: the image's `PATH` includes
-`${ASCEND_TOOLKIT_HOME}/compiler/ccec_compiler/bin`, which does not exist in this CANN layout — the
-real one is `${ASCEND_TOOLKIT_HOME}/x86_64-linux/ccec_compiler/bin`. It is harmless because
-`${ASCEND_TOOLKIT_HOME}/bin` already carries `ccec`, `bisheng`, and `bishengir-compile`. Fixing it
-would change the digest and invalidate that comparability for no behavioural gain. It is recorded
-here so the next person who touches the Dockerfile fixes it in the same breath as a change that
-already earns a new fingerprint.
+One real but cosmetic defect was left alone at the time: the image's `PATH` includes
+`${ASCEND_TOOLKIT_HOME}/compiler/ccec_compiler/bin`, which does not exist in this CANN layout. It is
+harmless because `${ASCEND_TOOLKIT_HOME}/bin` already carries `ccec`, `bisheng`, and
+`bishengir-compile`. Fixing it alone would have changed the digest for no behavioural gain.
+
+**That is what happened next**, for a reason that does earn a fingerprint: the image now states the
+toolchain contract this file is about, so nobody has to probe it and draw the wrong conclusion again.
+The digest boundary, what it costs, and the three places the pin lives are in
+[`ascend-image-fingerprint-20260817.md`](ascend-image-fingerprint-20260817.md).
 
 ## What changed
 
