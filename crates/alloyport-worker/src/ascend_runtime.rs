@@ -266,25 +266,6 @@ impl AscendExecutionRuntime {
             .iter()
             .find(|lease| lease.attempt_id.to_string() == attempt_id)
             .map(|lease| lease.device_id.as_str());
-        // A build compiles; it does not execute. The runner is two `cmake` calls, the container
-        // mounts no device, and the build receipt names none — so requiring a card that is Ready,
-        // process-free, and unleased bought nothing and cost everything on a shared host, where it
-        // queued every build behind other users' processes. The identity below is only what the
-        // supervisor is constructed against, the same one `AscendRuntime::new` already uses before
-        // any attempt exists. Correctness runs are unchanged and still take a real lease.
-        if attempt.assignment.execution.executor_kind == alloyport_core::ExecutionKind::AscendBuild
-        {
-            let supervisor = (dynamic.supervisor_factory)(&dynamic.inventory[0])?;
-            let mut runtime = Self::new(
-                &self.worker_id,
-                Arc::clone(&self.artifacts),
-                supervisor,
-                Arc::clone(&self.engine),
-                Arc::clone(&self.device_manager),
-            )?;
-            runtime.active_attempts = Arc::clone(&self.active_attempts);
-            return Ok(runtime);
-        }
         let selected = if let Some(device_id) = leased_device {
             dynamic
                 .inventory
