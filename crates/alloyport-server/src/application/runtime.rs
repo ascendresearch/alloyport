@@ -2,7 +2,7 @@
 
 use super::CandidateEpisodeApplication;
 use super::assembly::ServerApplication;
-use super::candidate_config::RequiredWorker;
+use super::candidate_config::{RequiredWorker, WorkerRole};
 use crate::WorkerControlService;
 use crate::migration_task::MigrationTaskStore;
 use crate::storage::RepositoryError;
@@ -245,10 +245,30 @@ async fn drive_candidate_inner(
     let deadline = cancellation
         .is_none()
         .then(|| tokio::time::Instant::now() + runtime.ready_timeout);
+    // Wait for the roles this episode needs to start, not for every role it may ever need. A
+    // builder is needed as soon as the model has something to compile; a verifier is needed at the
+    // Correctness Gate, which is many turns later and which a run may never reach. Requiring both up
+    // front meant a broken driver on the CUDA host, or a busy card on the Ascend host, stopped a
+    // migration from compiling anything at all.
+    let (starting, deferred): (Vec<_>, Vec<_>) = runtime
+        .required_workers
+        .iter()
+        .partition(|required| required.role == WorkerRole::Builder);
+    if !deferred.is_empty() {
+        println!(
+            "deferring {} verifier role(s) until the Correctness Gate: {}",
+            deferred.len(),
+            deferred
+                .iter()
+                .map(|required| required.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     loop {
         check_cancelled(cancellation)?;
         let mut missing = Vec::new();
-        for required in &runtime.required_workers {
+        for required in &starting {
             let ready = runtime
                 .control
                 .worker_snapshot(&required.id)
@@ -480,6 +500,11 @@ mod tests {
             id: "ascend-worker-1".to_owned(),
             backend: Backend::Ascend,
             feature,
+            role: if requires_device {
+                WorkerRole::Verifier
+            } else {
+                WorkerRole::Builder
+            },
             requires_device,
         }
     }
@@ -526,5 +551,26 @@ mod tests {
             &required("ascend-build-v1", false),
             &offline
         ));
+    }
+
+    /// An episode starts on its builder alone; verifiers are needed at a gate many turns away.
+    ///
+    /// On 2026-08-17 the CUDA host's driver stopped answering and every Ascend card carried another
+    /// user's process. Both are verifier problems, and both stopped the migration from compiling
+    /// anything at all — a run that had never yet produced a successful compile could not attempt
+    /// one because a gate it might never reach had no worker.
+    #[test]
+    fn an_episode_starts_on_its_builder_and_defers_its_verifiers() {
+        let workers = [
+            required("ascend-build-v1", false),
+            required("cuda-reduction-correctness-v1", true),
+        ];
+        let (starting, deferred): (Vec<_>, Vec<_>) = workers
+            .iter()
+            .partition(|required| required.role == WorkerRole::Builder);
+        assert_eq!(starting.len(), 1);
+        assert_eq!(starting[0].feature, "ascend-build-v1");
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].feature, "cuda-reduction-correctness-v1");
     }
 }

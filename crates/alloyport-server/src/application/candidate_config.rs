@@ -34,10 +34,23 @@ pub(super) struct CandidateEpisodeConfig {
     pub(super) required_workers: Vec<RequiredWorker>,
 }
 
+/// What a worker is for, which decides both when it is needed and whether it occupies a card.
+///
+/// A builder compiles: it opens no accelerator, and the episode needs it as soon as the model has
+/// something to compile. A verifier executes: it needs a card, and the episode needs it only when it
+/// reaches the Correctness Gate, which is many turns later and may never arrive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum WorkerRole {
+    Builder,
+    Verifier,
+}
+
+#[derive(Debug)]
 pub(super) struct RequiredWorker {
     pub(super) id: String,
     pub(super) backend: Backend,
     pub(super) feature: &'static str,
+    pub(super) role: WorkerRole,
     /// Whether this role occupies an accelerator, taken from its own configured limits.
     ///
     /// The role is the assignment's, not the process's: one worker builds and verifies, a build
@@ -438,18 +451,21 @@ fn load_worker_policies(
             id: build_worker_id.clone(),
             backend: Backend::Ascend,
             feature: ASCEND_BUILD_FEATURE,
+            role: WorkerRole::Builder,
             requires_device: file.build.limits.device_count > 0,
         },
         RequiredWorker {
             id: cuda_worker_id.clone(),
             backend: Backend::Cuda,
             feature: CUDA_REDUCTION_CORRECTNESS_FEATURE,
+            role: WorkerRole::Verifier,
             requires_device: file.correctness.cuda.limits.device_count > 0,
         },
         RequiredWorker {
             id: ascend_worker_id.clone(),
             backend: Backend::Ascend,
             feature: ASCEND_REDUCTION_CORRECTNESS_FEATURE,
+            role: WorkerRole::Verifier,
             requires_device: file.correctness.ascend.limits.device_count > 0,
         },
     ];
