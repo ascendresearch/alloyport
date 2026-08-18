@@ -54,14 +54,40 @@ Every fixture that stated the old contract had to move with it — seven tests f
 which is the contract being stated in more than one place and all of them agreeing. Both directions
 are mutation-checked: restoring the mounts fails the new test, and requiring a device again fails it.
 
-## What this does not fix
+## Capacity was split by role, and that half is done
 
-**Builds still queue on this host**, because a worker advertises one capacity number computed from
-free cards. The combined worker serving both roles cannot express "no card needed for half my work",
-and neither can the standalone build worker as implemented, which binds a device and attaches a probe.
+A worker now advertises two numbers: `available_slots`, clamped by cards that are Ready,
+process-free and unleased, and `device_free_slots`, clamped only by concurrency. The readiness
+preflight asks for the one the role consumes, and a role's device need comes from its own configured
+limits rather than a feature name matched in the scheduler. The preflight also now waits only for
+**builder** roles and defers verifiers until the Correctness Gate, because a run that has never
+compiled anything should not be stopped by a gate it may never reach.
 
-The amendment lists the three ways out and picks none. Until one is chosen, this change removes the
-*use* of a card without removing the *wait* for one.
+That last part was not hypothetical. On the evening of 2026-08-17 the CUDA host's driver stopped
+answering `nvidia-smi` entirely and every Ready Ascend card carried another user's process — both
+verifier problems, both of which prevented any compilation at all.
+
+## What is still not fixed, and the mistake I made reaching for it
+
+**The worker's execution path still leases and health-checks a card for every attempt, including a
+build.** `prepare_attempt` calls `DeviceGuard::acquire_and_preflight`, which requires `health ==
+Ready && process_count == 0`.
+
+I tried to shortcut it: for an `AscendBuild` attempt, skip selection and build the supervisor against
+`inventory[0]`, on the reasoning that the identity is only what the supervisor is constructed from
+because nothing is mounted. On this host `inventory[0]` is device 0, which is in `Alarm` health, so
+every build then failed the guard with `device 0 is Unhealthy` — strictly worse than what it
+replaced, which at least selected a Ready card. **Reverted.**
+
+The reason the shortcut could not work is worth keeping, because it is the actual shape of the
+remaining problem: the worker's own `AscendRunReceipt` attests `device`, `lease`, `pre_observation`
+and `post_observation` for every attempt. A build that genuinely holds no device needs that receipt
+to be able to say *no device*. That is a decision about what a worker receipt claims, not a branch in
+the runtime, and I took the branch without following it that far.
+
+So this change removes a build's *use* of a card — contract, container mount, visible-device
+variable — and a build's *wait* for capacity. It does not yet remove the guard's lease, and until the
+receipt can express a device-free run it should not.
 
 ## What this does not establish
 

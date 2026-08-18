@@ -168,13 +168,20 @@ stack is already running at `9e4a9c4`; a rebuild is only needed if the worker ch
    files document `find_package(ASC)`, the supported Ascend C build, and all eight are unreachable.
    The model asked for one of them by name on 2026-08-16 and was refused. See gap 1; this is the
    same gap with a price on it ([`ascend-build-path-20260817.md`](evidence/ascend-build-path-20260817.md)).
-4. **A build no longer uses a card, but still waits for one.** The contract, the container mount and
-   the per-attempt lease are gone — the runner is two `cmake` calls and the control compiles with no
-   accelerator attached. What remains is capacity: a worker advertises one number,
-   `min(max_concurrency, usable_devices)`, so a build-capable worker shows zero slots when every card
-   is busy. The [0038 amendment](design/0038-standalone-ascend-build-worker.md) lists three ways out
-   and picks none; that choice is the next decision
+4. **A build's guard lease is the last device coupling.** Its contract asks for no card, its
+   container mounts none, capacity is split by role, and the preflight defers verifiers — but
+   `prepare_attempt` still calls `DeviceGuard::acquire_and_preflight`, which requires a card that is
+   `Ready` and process-free. Removing it needs `AscendRunReceipt` to be able to say *no device*,
+   since it attests `device`, `lease` and both observations for every attempt. A shortcut that
+   skipped selection and used `inventory[0]` was tried and reverted: it pinned builds to device 0,
+   which is in `Alarm` health
    ([`ascend-build-nodevice-20260817.md`](evidence/ascend-build-nodevice-20260817.md)).
+5. **A cancelled task leaves its accepted attempt on the worker forever.** `task-498e257f…` was
+   cancelled and its build attempt stayed at phase `Accepted`, holding the worker's only concurrency
+   slot until the row was deleted by hand. With `max_concurrency: 1` that bricks a worker silently.
+6. **The shared Ascend host's device 0-2 sit in `Alarm` health** and the GB10's `nvidia-smi` returns
+   status 9 (`could not communicate with the NVIDIA driver`). Both are host conditions, and the
+   second keeps the CUDA verifier from registering at all.
 5. **No context compaction, and corpus reading is what fills the context.** Improving: 9 reads before
    the first candidate and 14 total on the latest run, against 18–20 and 24 the day before, with the
    largest single input 72 916 rather than 98 815. Still nothing summarises, and no behaviour is
